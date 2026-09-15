@@ -68,11 +68,16 @@ London/NY killzone background shading (sweeps inside a killzone get a 🔥 empha
 - **Auto R:R projection** on SFPs — entry / stop / target lines with a reward:risk label.
 - **Backtest stat panel** — rolling sweep → reversal hit rate.
 
+### ⑭ Confluence & Context
+- **MTF liquidity dashboard** — a compact table showing, per timeframe (default 15m / 1H / 4H / D): nearest buy-side liquidity above, nearest sell-side below, directional bias, and premium/discount location — the whole liquidity picture at a glance.
+- **SMT divergence** — compares this symbol against a correlated one (e.g. ES vs NQ, BTC vs ETH). When one makes a higher high / lower low while the other fails to, it flags an SMT divergence (a strong reversal cue). Set the correlated symbol in the input.
+- **Confluence score (0–100)** — rolls up everything overlapping a cluster zone (stacked levels, order block, liquidity void, OTE fib, premium/discount extreme, round number) into a single ⭐ score on the zone label, with an optional filter to hide low-score zones.
+
 ---
 
 ## Alerts
 
-`SFP fired`, `SFP long`, `SFP short`, `Order block entered`, `BOS`, `CHoCH`, `DOL flipped`, plus previous-day / session / liquidity-sweep touches.
+`SFP fired`, `SFP long`, `SFP short`, `Order block entered`, `BOS`, `CHoCH`, `DOL flipped`, `SMT divergence`, plus previous-day / session / liquidity-sweep touches.
 
 ---
 
