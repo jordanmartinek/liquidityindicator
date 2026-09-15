@@ -116,6 +116,7 @@ dolUseConf = input.bool(true, "Reward confluence (clustered levels)", tooltip = 
 dolMomWt   = input.float(30, "Momentum tilt %", minval = 0, maxval = 100, step = 5, tooltip = "How much live directional momentum (trend + rate-of-change) biases the arrow on top of the static liquidity score. 0 = pure liquidity; 100 = momentum dominates. Keeps the arrow dynamic when order flow is clearly one-directional.", group = G_DOL)
 dolTgtLine = input.bool(true, "Draw target line at primary magnet", tooltip = "Draws a faint horizontal line + tag at the single strongest magnet level - the specific price price is being pulled toward.", group = G_DOL)
 dolMeter   = input.bool(true, "Show conviction meter in label", tooltip = "Adds a bar-style conviction meter (filled blocks) reflecting how lopsided the pull is.", group = G_DOL)
+dolOffset  = input.int(20, "Arrow right offset (extra bars)", minval = 0, maxval = 200, tooltip = "Pushes the DOL gauge further to the right, past the level lines/labels, so it doesn't crowd them. The gauge is already placed beyond the longest level extension; this adds more gap on top.", group = G_DOL)
 
 // -----------------------------------------------------------------------------
 // INPUTS — LIQUIDITY GRAB ENGINE (sweep + reversal / SFP, order blocks, rvol)
@@ -1252,8 +1253,11 @@ if barstate.islast
 
         string dolTxt = arrow + " DOL " + (drawUp ? "UP" : "DOWN") + " " + str.tostring(math.round(conv)) + "%" + distTxt + meter + agree
 
-        // horizontal placement: a few bars off the right (or left) edge
-        int dolX = dolPos == "Left" ? (bar_index - 40) : (bar_index + extendR + 8)
+        // horizontal placement: sit BEYOND the longest possible level extension
+        // (extendR + age-scaled extra) so the gauge never crowds level lines/labels,
+        // plus a user-adjustable extra offset.
+        int dolMaxExt = extendR + (ageExtend ? ageMaxBars : 0)
+        int dolX = dolPos == "Left" ? (bar_index - 40 - dolOffset) : (bar_index + dolMaxExt + 12 + dolOffset)
         // vertical placement from the recent visible range
         float hi100 = ta.highest(high, 100)
         float lo100 = ta.lowest(low, 100)
