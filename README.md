@@ -68,6 +68,9 @@ London/NY killzone background shading (sweeps inside a killzone get a 🔥 empha
 - **Auto R:R projection** on SFPs — entry / stop / target lines with a reward:risk label.
 - **Backtest stat panel** — rolling sweep → reversal hit rate.
 
+### ⑮ Ghost Levels
+When a level is **swept** (price trades through it), it leaves behind a faint **ghost** — a very light dotted line marking where liquidity was recently taken. Ghosts fade from the set opacity toward invisible over their lifetime, then disappear. Adjustable **opacity**, **lifetime (bars)**, **color**, and max kept; fully toggleable. Covers swept swing highs/lows, equal highs/lows, and previous-period levels.
+
 ---
 
 ## Alerts
