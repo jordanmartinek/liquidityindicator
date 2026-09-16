@@ -185,6 +185,27 @@ statsPos   = input.string("Bottom Left", "  Stat panel position", options = ["To
 statsWin   = input.int(10, "  Reversal confirm window (bars)", minval = 2, maxval = 50, tooltip = "After a sweep, how many bars to wait to judge whether price reversed back through the level (a successful grab) or continued.", group = G_EXTRA)
 
 // -----------------------------------------------------------------------------
+// INPUTS — CONFLUENCE & CONTEXT (MTF dashboard, SMT divergence, zone score)
+// -----------------------------------------------------------------------------
+var string G_CTX = "⑭ Confluence & Context"
+// -- MTF liquidity dashboard --
+showMTFdash = input.bool(true, "MTF liquidity dashboard", tooltip = "A compact table pinned to the MIDDLE-RIGHT of the chart showing, per timeframe, the nearest buy-side liquidity above, nearest sell-side below, directional bias, and whether price sits in premium or discount - the whole liquidity picture at a glance.", group = G_CTX)
+mtfTF1      = input.timeframe("15",  "  TF 1", group = G_CTX)
+mtfTF2      = input.timeframe("60",  "  TF 2", group = G_CTX)
+mtfTF3      = input.timeframe("240", "  TF 3", group = G_CTX)
+mtfTF4      = input.timeframe("D",   "  TF 4", group = G_CTX)
+// -- SMT divergence --
+showSMT     = input.bool(true, "SMT divergence", tooltip = "Compares this symbol against a correlated one. When one makes a higher high (or lower low) while the other fails to, a liquidity grab on one side is not confirmed by the other - a Smart-Money-Technique divergence and a strong reversal cue.", group = G_CTX)
+smtSym      = input.symbol("", "  Correlated symbol", tooltip = "Leave blank to auto-pick a sensible correlate is NOT supported; pick e.g. the paired instrument (ES vs NQ, BTCUSD vs ETHUSD). If blank, SMT is skipped.", group = G_CTX)
+smtLen      = input.int(5, "  SMT pivot length", minval = 2, maxval = 50, tooltip = "Swing pivot length used to compare highs/lows across the two symbols.", group = G_CTX)
+smtColBull  = input.color(color.new(#26a69a, 0), "  Bullish SMT color", group = G_CTX)
+smtColBear  = input.color(color.new(#ef5350, 0), "  Bearish SMT color", group = G_CTX)
+// -- Confluence score --
+showConf    = input.bool(true, "Confluence score on zones (0-100)", tooltip = "Rolls up everything overlapping a cluster zone - stacked levels, FVG, order block, OTE fib, volume-profile POC, premium/discount, round number - into one 0-100 'how loaded is this zone' score shown on the label.", group = G_CTX)
+confMin     = input.int(0, "  Hide zones below score", minval = 0, maxval = 100, tooltip = "Only show cluster zones whose confluence score is at least this. 0 = show all.", group = G_CTX)
+confRound   = input.float(0.0, "  Round-number step (price)", minval = 0.0, tooltip = "Adds confluence when a zone sits near a round-number multiple of this step (e.g. 50 or 100 for indices, 1000 for BTC). 0 = disable the round-number factor.", group = G_CTX)
+
+// -----------------------------------------------------------------------------
 // INPUTS — CANDLE VOLUME PROFILE (LTF reconstruction, last closed candle)
 // -----------------------------------------------------------------------------
 var string G_VP = "⑧b Candle Volume Profile"
@@ -281,6 +302,18 @@ volOK  = (not sfpUseVol) or (rvol >= rvolMult)
 // map a table-position string to a Pine position constant
 f_tablePos(string p) =>
     p == "Top Right" ? position.top_right : p == "Top Left" ? position.top_left : p == "Bottom Right" ? position.bottom_right : p == "Bottom Left" ? position.bottom_left : p == "Middle Left" ? position.middle_left : position.middle_right
+
+// bias text from a fast/slow EMA pair
+f_biasTxt(float ef, float es) =>
+    na(ef) or na(es) ? "–" : ef > es ? "▲ up" : ef < es ? "▼ dn" : "→ flat"
+
+// premium/discount text from price position within a recent range
+f_pdTxt(float c, float hi, float lo) =>
+    if na(c) or na(hi) or na(lo) or hi <= lo
+        "–"
+    else
+        float pos = (c - lo) / (hi - lo)
+        pos >= 0.7 ? "PREM" : pos <= 0.3 ? "DISC" : "EQ"
 
 // heat color: fade->glow by rest age (feature #7). Older = brighter (less transparent).
 f_heatCol(color base, int birthBar) =>
@@ -442,11 +475,60 @@ f_sessHL(bool active, string sess) =>
 ph = ta.pivothigh(high, swingLen, swingLen)
 pl = ta.pivotlow(low, swingLen, swingLen)
 
+// ---- SMT DIVERGENCE (feature #4): compare vs a correlated symbol ----
+// SMT = one symbol takes liquidity (new high/low) while the correlate fails to.
+smtEnabled = showSMT and str.length(smtSym) > 0
+// use a valid symbol for the request even when disabled (fall back to this chart's
+// own ticker, which yields no divergence) so request.security never gets "".
+smtReqSym = smtEnabled ? smtSym : syminfo.tickerid
+smtHigh = request.security(smtReqSym, timeframe.period, high, lookahead = barmerge.lookahead_off)
+smtLow  = request.security(smtReqSym, timeframe.period, low,  lookahead = barmerge.lookahead_off)
+// confirmed pivots on BOTH series (same pivot length)
+myPH  = ta.pivothigh(high, smtLen, smtLen)
+myPL  = ta.pivotlow(low,  smtLen, smtLen)
+coPH  = smtEnabled ? ta.pivothigh(smtHigh, smtLen, smtLen) : na
+coPL  = smtEnabled ? ta.pivotlow(smtLow,  smtLen, smtLen)  : na
+// remember the previous confirmed pivot on each series to compare "higher/lower"
+var float myPHp = na, var float myPLp = na
+var float coPHp = na, var float coPLp = na
+bool bearSMT = false
+bool bullSMT = false
+if smtEnabled and not na(myPH) and not na(coPH)
+    // bearish SMT: this symbol makes a HIGHER high but the correlate makes a LOWER high
+    if not na(myPHp) and not na(coPHp)
+        bearSMT := (myPH > myPHp) and (coPH < coPHp)
+    myPHp := myPH
+    coPHp := coPH
+if smtEnabled and not na(myPL) and not na(coPL)
+    // bullish SMT: this symbol makes a LOWER low but the correlate makes a HIGHER low
+    if not na(myPLp) and not na(coPLp)
+        bullSMT := (myPL < myPLp) and (coPL > coPLp)
+    myPLp := myPL
+    coPLp := coPL
+
 // higher-timeframe swing pivots (for MAJOR structural levels far back)
 f_htfPH() => ta.pivothigh(high, htfLen, htfLen)
 f_htfPL() => ta.pivotlow(low, htfLen, htfLen)
 htfPH = htfSwingOn ? request.security(syminfo.tickerid, htfTF, f_htfPH(), lookahead = barmerge.lookahead_off) : na
 htfPL = htfSwingOn ? request.security(syminfo.tickerid, htfTF, f_htfPL(), lookahead = barmerge.lookahead_off) : na
+
+// ---- MTF LIQUIDITY DASHBOARD data (feature #1) ----
+// For each timeframe we compute: recent swing high (BSL above), recent swing low
+// (SSL below), a bias from a fast/slow EMA relationship, and the position within
+// the recent range (premium vs discount). Bundled into one security call per TF.
+f_mtfBundle() =>
+    float rHi = ta.highest(high, 20)
+    float rLo = ta.lowest(low, 20)
+    float ef  = ta.ema(close, 21)
+    float es  = ta.ema(close, 55)
+    [rHi, rLo, ef, es, close]
+
+// (security is always evaluated; the dashboard is simply not rendered when off.)
+[m1Hi, m1Lo, m1Ef, m1Es, m1C] = request.security(syminfo.tickerid, mtfTF1, f_mtfBundle(), lookahead = barmerge.lookahead_off)
+[m2Hi, m2Lo, m2Ef, m2Es, m2C] = request.security(syminfo.tickerid, mtfTF2, f_mtfBundle(), lookahead = barmerge.lookahead_off)
+[m3Hi, m3Lo, m3Ef, m3Es, m3C] = request.security(syminfo.tickerid, mtfTF3, f_mtfBundle(), lookahead = barmerge.lookahead_off)
+[m4Hi, m4Lo, m4Ef, m4Es, m4C] = request.security(syminfo.tickerid, mtfTF4, f_mtfBundle(), lookahead = barmerge.lookahead_off)
+
 htfPHchg = not na(htfPH) and (na(htfPH[1]) or htfPH != htfPH[1])
 htfPLchg = not na(htfPL) and (na(htfPL[1]) or htfPL != htfPL[1])
 var float lastPH = na
@@ -938,6 +1020,12 @@ if masterOn and showBOS and bosUp
 if masterOn and showBOS and bosDn
     label.new(bar_index, low, chochDn ? "CHoCH▼" : "BOS▼", yloc = yloc.belowbar, style = label.style_label_up, color = color.new(bosColBear, 20), textcolor = color.white, size = size.tiny)
 
+// SMT divergence markers (feature #4). Pivot is confirmed smtLen bars back.
+if masterOn and bearSMT
+    label.new(bar_index - smtLen, high[smtLen], "SMT▼", yloc = yloc.abovebar, style = label.style_label_down, color = color.new(smtColBear, 10), textcolor = color.white, size = size.small)
+if masterOn and bullSMT
+    label.new(bar_index - smtLen, low[smtLen], "SMT▲", yloc = yloc.belowbar, style = label.style_label_up, color = color.new(smtColBull, 10), textcolor = color.white, size = size.small)
+
 // -----------------------------------------------------------------------------
 // COLLECT → CLUSTER → RENDER  (runs only on the last bar)
 // Persistent drawing pools are fully cleared and rebuilt each time.
@@ -1003,6 +1091,61 @@ f_addLevel(bool active, float price, string name, color col, string emo, int bir
         array.push(lv_emo, emo)
         array.push(lv_birth, birthBar)
         array.push(lv_side, side)
+
+// ---- CONFLUENCE SCORE (feature #6): 0-100 for a price band [lo..hi] ----
+// Rolls up everything overlapping the zone: stacked levels, order block, void,
+// OTE fib, premium/discount extreme, and round-number proximity.
+f_confScore(float mid, float loB, float hiB, int members) =>
+    float score = 0.0
+    string parts = ""
+    float tol = math.max(nz(atr) * 0.25, syminfo.mintick)
+    // stacked levels (the base): up to 35 pts
+    score := score + math.min(members, 5) * 7.0
+    if members >= 2
+        parts := parts + "stack "
+    // order-block overlap: +20
+    bool obHit = false
+    if array.size(obTop) > 0
+        for oi = 0 to array.size(obTop) - 1
+            if hiB >= array.get(obBot, oi) and loB <= array.get(obTop, oi)
+                obHit := true
+    if obHit
+        score := score + 20.0
+        parts := parts + "OB "
+    // liquidity-void overlap: +12
+    bool vHit = false
+    if array.size(voidMid) > 0
+        for vi = 0 to array.size(voidMid) - 1
+            float vm = array.get(voidMid, vi)
+            if vm >= loB - tol and vm <= hiB + tol
+                vHit := true
+    if vHit
+        score := score + 12.0
+        parts := parts + "void "
+    // OTE fib proximity (from the live dealing range): +18
+    if showPD and not na(rngHi) and not na(rngLo) and rngHi > rngLo
+        float rng = rngHi - rngLo
+        bool bullLeg = rangeDir >= 0
+        f1 = bullLeg ? (rngHi - pdFib1 * rng) : (rngLo + pdFib1 * rng)
+        f2 = bullLeg ? (rngHi - pdFib2 * rng) : (rngLo + pdFib2 * rng)
+        f3 = bullLeg ? (rngHi - pdFib3 * rng) : (rngLo + pdFib3 * rng)
+        bool fibHit = (math.abs(mid - f1) <= tol) or (math.abs(mid - f2) <= tol) or (math.abs(mid - f3) <= tol)
+        if fibHit
+            score := score + 18.0
+            parts := parts + "OTE "
+        // premium/discount extreme: +8 when in the outer quarter of the range
+        float pos = (mid - rngLo) / rng
+        if pos >= 0.75 or pos <= 0.25
+            score := score + 8.0
+            parts := parts + (pos >= 0.75 ? "prem " : "disc ")
+    // round-number proximity: +7
+    if confRound > 0
+        float nearest = math.round(mid / confRound) * confRound
+        if math.abs(mid - nearest) <= tol
+            score := score + 7.0
+            parts := parts + "round "
+    int s = int(math.min(math.round(score), 100))
+    [s, parts]
 
 if barstate.islast
     // ---- clear previous frame ----
@@ -1205,20 +1348,26 @@ if barstate.islast
                 int domSide = sideSum > 0 ? 1 : sideSum < 0 ? -1 : 0
                 color zbase = f_sideColI(domSide, mid, colZone)
                 string sideTag = (showSideTag and sideColorOn) ? f_sideTagI(domSide, mid) : ""
-                box bx = box.new(bar_index, mid + pad, bar_index + ext, mid - pad, border_color = color.new(zbase, 25), border_width = lineWidth, bgcolor = color.new(zbase, op))
-                // strength emojis (repeated) — restored and toggleable
-                string strength = showStrengthEmoji ? (f_repeat(f_sideEmojiI(domSide, mid), members) + " x" + str.tostring(members)) : ("x" + str.tostring(members))
-                // fun tiered emoji prefix that escalates with strength
-                string tier = tieredEmoji ? (f_tierEmoji(members) + " ") : ""
-                // MTF confluence badge (feature #8)
-                string mtfBadge = (mtfBadgeOn and f_isMTF(names)) ? "🔱 " : ""
-                string full = mtfBadge + tier + strength + (sideTag == "" ? "" : " " + sideTag) + "  " + names + "  " + str.tostring(mid, format.mintick) + f_countdown(mid)
-                // outlined tag: solid side-colored background + contrasting text so the
-                // whole tag reads as red (BSL) / green (SSL); else neutral dark bg.
-                color lblBg  = outlineTags ? zbase : color.new(#1e222d, 10)
-                label lb = label.new(bar_index + ext, mid, full, style = label.style_label_left, color = lblBg, textcolor = clustLblTxt, size = f_strongSize(members))
-                array.push(pool_boxes, bx)
-                array.push(pool_labels, lb)
+                // confluence score (feature #6) — computed before drawing so it can gate
+                [confS, confParts] = f_confScore(mid, minP, maxP, members)
+                // hide zones below the confluence threshold when scoring is on
+                if not showConf or confS >= confMin
+                    box bx = box.new(bar_index, mid + pad, bar_index + ext, mid - pad, border_color = color.new(zbase, 25), border_width = lineWidth, bgcolor = color.new(zbase, op))
+                    // strength emojis (repeated) — restored and toggleable
+                    string strength = showStrengthEmoji ? (f_repeat(f_sideEmojiI(domSide, mid), members) + " x" + str.tostring(members)) : ("x" + str.tostring(members))
+                    // fun tiered emoji prefix that escalates with strength
+                    string tier = tieredEmoji ? (f_tierEmoji(members) + " ") : ""
+                    // MTF confluence badge (feature #8)
+                    string mtfBadge = (mtfBadgeOn and f_isMTF(names)) ? "🔱 " : ""
+                    // confluence score badge (feature #6)
+                    string confTag = showConf ? ("  ⭐" + str.tostring(confS) + (confParts == "" ? "" : " [" + confParts + "]")) : ""
+                    string full = mtfBadge + tier + strength + (sideTag == "" ? "" : " " + sideTag) + "  " + names + "  " + str.tostring(mid, format.mintick) + confTag + f_countdown(mid)
+                    // outlined tag: solid side-colored background + contrasting text so the
+                    // whole tag reads as red (BSL) / green (SSL); else neutral dark bg.
+                    color lblBg  = outlineTags ? zbase : color.new(#1e222d, 10)
+                    label lb = label.new(bar_index + ext, mid, full, style = label.style_label_left, color = lblBg, textcolor = clustLblTxt, size = f_strongSize(members))
+                    array.push(pool_boxes, bx)
+                    array.push(pool_labels, lb)
 
             gi := gi + 1
 
@@ -1481,6 +1630,42 @@ if barstate.islast
         table.cell(statTbl, 0, 1, "Hit rate: " + str.tostring(math.round(hitRate)) + "%", text_color = color.white, bgcolor = color.new(#1e222d, 10), text_size = size.small)
         table.cell(statTbl, 0, 2, "Sample: " + str.tostring(sweepHit) + "/" + str.tostring(sweepTotal), text_color = color.new(#90caf9, 0), bgcolor = color.new(#1e222d, 10), text_size = size.small)
 
+    // ---- MTF LIQUIDITY DASHBOARD (feature #1) ----
+    if masterOn and showMTFdash
+        // hard-pinned to middle-right so the HTF bias scanner never lands in the
+        // crowded top-left corner (its own corner, clear of the other panels).
+        var table mtfTbl = table.new(position.middle_right, 5, 5, border_width = 1)
+        color hdrBg = color.new(#1e222d, 0)
+        color rowBg = color.new(#1e222d, 12)
+        table.cell(mtfTbl, 0, 0, "TF",       text_color = color.new(#ffd54f, 0), bgcolor = hdrBg, text_size = size.small)
+        table.cell(mtfTbl, 1, 0, "BSL▲",     text_color = color.new(#ffd54f, 0), bgcolor = hdrBg, text_size = size.small)
+        table.cell(mtfTbl, 2, 0, "SSL▼",     text_color = color.new(#ffd54f, 0), bgcolor = hdrBg, text_size = size.small)
+        table.cell(mtfTbl, 3, 0, "bias",     text_color = color.new(#ffd54f, 0), bgcolor = hdrBg, text_size = size.small)
+        table.cell(mtfTbl, 4, 0, "zone",     text_color = color.new(#ffd54f, 0), bgcolor = hdrBg, text_size = size.small)
+        // pack the 4 TFs into arrays and loop (avoids nested functions / repetition)
+        mtfTFs = array.from(mtfTF1, mtfTF2, mtfTF3, mtfTF4)
+        mtfHis = array.from(m1Hi, m2Hi, m3Hi, m4Hi)
+        mtfLos = array.from(m1Lo, m2Lo, m3Lo, m4Lo)
+        mtfEfs = array.from(m1Ef, m2Ef, m3Ef, m4Ef)
+        mtfEss = array.from(m1Es, m2Es, m3Es, m4Es)
+        mtfCs  = array.from(m1C,  m2C,  m3C,  m4C)
+        for mi = 0 to 3
+            int rowN = mi + 1
+            float hi = array.get(mtfHis, mi)
+            float lo = array.get(mtfLos, mi)
+            float ef = array.get(mtfEfs, mi)
+            float es = array.get(mtfEss, mi)
+            float c  = array.get(mtfCs, mi)
+            string biasT = f_biasTxt(ef, es)
+            string pdT   = f_pdTxt(c, hi, lo)
+            color  biasC = na(ef) or na(es) ? color.gray : ef > es ? colSSL : colBSL
+            color  pdC   = pdT == "PREM" ? colBSL : pdT == "DISC" ? colSSL : color.gray
+            table.cell(mtfTbl, 0, rowN, array.get(mtfTFs, mi), text_color = color.white, bgcolor = rowBg, text_size = size.small)
+            table.cell(mtfTbl, 1, rowN, na(hi) ? "–" : str.tostring(hi, format.mintick), text_color = colBSL, bgcolor = rowBg, text_size = size.small)
+            table.cell(mtfTbl, 2, rowN, na(lo) ? "–" : str.tostring(lo, format.mintick), text_color = colSSL, bgcolor = rowBg, text_size = size.small)
+            table.cell(mtfTbl, 3, rowN, biasT, text_color = biasC, bgcolor = rowBg, text_size = size.small)
+            table.cell(mtfTbl, 4, rowN, pdT, text_color = pdC, bgcolor = rowBg, text_size = size.small)
+
     // ---- DISCIPLINE COACH PANEL ----
     if masterOn and showCoach
         // rotating motivational quotes
@@ -1717,3 +1902,4 @@ alertcondition(obEntered, "Order block entered", "Price entered an active order 
 alertcondition(bosUp or bosDn, "BOS", "Break of structure")
 alertcondition(chochUp or chochDn, "CHoCH", "Change of character (early reversal warning)")
 alertcondition(dolFlip, "DOL flipped", "Draw-on-liquidity momentum bias flipped direction")
+alertcondition(bullSMT or bearSMT, "SMT divergence", "SMT divergence vs correlated symbol (reversal cue)")
