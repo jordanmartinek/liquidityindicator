@@ -71,6 +71,16 @@ pdFib2     = input.float(0.788, "  OTE fib 2", step = 0.001, group = G_STRUCT)
 pdFib3     = input.float(0.886, "  OTE fib 3", step = 0.001, group = G_STRUCT)
 
 // -----------------------------------------------------------------------------
+// INPUTS — GHOST LEVELS (recently swept levels, faint fading dotted lines)
+// -----------------------------------------------------------------------------
+var string G_GHOST = "⑮ Ghost Levels"
+showGhost   = input.bool(true, "Show ghost levels", tooltip = "When a level is SWEPT (price trades through it), leave behind a faint 'ghost' - a very light dotted line marking where liquidity was recently taken. Ghosts fade out over their lifetime, then disappear.", group = G_GHOST)
+ghostOpacity = input.int(80, "Ghost opacity (0 solid, 100 invisible)", minval = 0, maxval = 100, tooltip = "Starting transparency of a fresh ghost line. Higher = fainter. Ghosts fade further toward invisible as they age.", group = G_GHOST)
+ghostLife   = input.int(30, "Ghost lifetime (bars)", minval = 1, maxval = 500, tooltip = "How many bars a ghost lingers after the level was swept before it disappears. Over this span it fades from the set opacity toward fully transparent.", group = G_GHOST)
+ghostCol    = input.color(color.new(#b0bec5, 0), "Ghost line color", tooltip = "Base color of the ghost dotted line (opacity is applied on top).", group = G_GHOST)
+ghostKeep   = input.int(40, "Max ghosts kept", minval = 1, maxval = 200, tooltip = "Cap on the number of ghost lines retained at once (oldest dropped first).", group = G_GHOST)
+
+// -----------------------------------------------------------------------------
 // INPUTS — COUNTDOWN
 // -----------------------------------------------------------------------------
 showCD    = input.bool(true,  "Show countdown to level",  group = G_CD)
@@ -101,10 +111,13 @@ outlineTags  = input.bool(true, "Outline level/cluster tags in side color", tool
 tieredEmoji  = input.bool(true, "Fun tiered strength emojis (💧⚡🔥💎🐋)", tooltip = "Prefix each level/cluster with a big emoji that escalates with strength: 1=💧, 2=⚡, 3=🔥, 4=💎, 5+=🐋. Stronger zones also render with a larger label.", group = G_CLUST)
 bigStrongLbl = input.bool(true, "Enlarge label for strong zones", group = G_CLUST)
 
-var string G_DOL = "⑧ Draw-on-Liquidity Arrow"
-showDOL   = input.bool(true, "Show draw-on-liquidity arrow", tooltip = "A large up/down arrow off to the side pointing to the side (BSL above vs SSL below) with the greater LIQUIDITY GRAVITY - a multi-factor score of where price is most likely being drawn.", group = G_DOL)
-dolPos    = input.string("Right", "Arrow position", options = ["Right","Left"], group = G_DOL)
-dolVPos   = input.string("Middle", "Arrow vertical position", options = ["Top","Middle","Bottom"], group = G_DOL)
+var string G_DOL = "⑧ Draw-on-Liquidity Gauge"
+showDOL   = input.bool(true, "Show draw-on-liquidity gauge", tooltip = "A status gauge showing the side (BSL above vs SSL below) with the greater LIQUIDITY GRAVITY - a multi-factor score of where price is most likely being drawn.", group = G_DOL)
+dolMode   = input.string("Status banner (corner)", "Display mode", options = ["Status banner (corner)","Floating arrow (on chart)"], tooltip = "Status banner: a fixed panel pinned to a chart corner (recommended - never crowds the levels). Floating arrow: the classic big arrow drawn out to the side of price.", group = G_DOL)
+dolBanPos = input.string("Top Right", "Banner position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], tooltip = "Corner for the status banner.", group = G_DOL)
+dolPulse  = input.bool(true, "Pulse the banner outline", tooltip = "Animates the banner's border brightness bar-to-bar - GREEN when price is being drawn UP (buy-side), RED when drawn DOWN (sell-side).", group = G_DOL)
+dolPos    = input.string("Right", "Floating arrow: position", options = ["Right","Left"], group = G_DOL)
+dolVPos   = input.string("Middle", "Floating arrow: vertical position", options = ["Top","Middle","Bottom"], group = G_DOL)
 dolBull   = input.string("🔼", "Bullish draw arrow (BSL-heavy = up)", options = ["🔼","🟢","🚀","📈","👆","🐂"], group = G_DOL)
 dolBear   = input.string("🔽", "Bearish draw arrow (SSL-heavy = down)", options = ["🔽","🔴","🐻","📉","👇","🩸"], group = G_DOL)
 dolSize   = input.string("Huge", "Arrow size", options = ["Normal","Large","Huge"], group = G_DOL)
@@ -541,6 +554,17 @@ var swHiB  = array.new<int>()
 var swLo   = array.new<float>()
 var swLoB  = array.new<int>()
 
+// ---- GHOST LEVELS store (feature #15): recently-swept levels + when swept ----
+var ghostP    = array.new<float>()   // price of the swept level
+var ghostBar  = array.new<int>()     // bar_index at which it was swept
+var ghostSide = array.new<int>()     // +1 = a swept HIGH (BSL), -1 = a swept LOW (SSL)
+// record a ghost (only when the feature is on and price is valid)
+f_addGhost(float price, int side) =>
+    if showGhost and not na(price)
+        array.push(ghostP, price)
+        array.push(ghostBar, bar_index)
+        array.push(ghostSide, side)
+
 // push each newly-confirmed pivot (its bar_index is swingLen bars back)
 if showSwing and not na(ph)
     array.push(swHi, ph)
@@ -564,6 +588,7 @@ if removeSwept and array.size(swHi) > 0
     int ih = 0
     while ih < array.size(swHi)
         if high > array.get(swHi, ih)
+            f_addGhost(array.get(swHi, ih), 1)   // leave a ghost where the high was taken
             array.remove(swHi, ih)
             array.remove(swHiB, ih)
         else
@@ -572,6 +597,7 @@ if removeSwept and array.size(swLo) > 0
     int il = 0
     while il < array.size(swLo)
         if low < array.get(swLo, il)
+            f_addGhost(array.get(swLo, il), -1)  // leave a ghost where the low was taken
             array.remove(swLo, il)
             array.remove(swLoB, il)
         else
@@ -672,6 +698,7 @@ if array.size(eqHiA) > 0
     int i = 0
     while i < array.size(eqHiA)
         if removeSwept and high > array.get(eqHiA, i)
+            f_addGhost(array.get(eqHiA, i), 1)
             array.remove(eqHiA, i)
             array.remove(eqHiB, i)
         else
@@ -680,6 +707,7 @@ if array.size(eqLoA) > 0
     int i = 0
     while i < array.size(eqLoA)
         if removeSwept and low < array.get(eqLoA, i)
+            f_addGhost(array.get(eqLoA, i), -1)
             array.remove(eqLoA, i)
             array.remove(eqLoB, i)
         else
@@ -743,6 +771,36 @@ pwhM = (removeSwept and sw_pwh) ? na : pwh
 pwlM = (removeSwept and sw_pwl) ? na : pwl
 pmhM = (removeSwept and sw_pmh) ? na : pmh
 pmlM = (removeSwept and sw_pml) ? na : pml
+
+// ---- GHOST capture for previous-period levels (rising edge of the sweep flag) ----
+if removeSwept
+    if sw_pdh and not sw_pdh[1]
+        f_addGhost(pdh, 1)
+    if sw_pdl and not sw_pdl[1]
+        f_addGhost(pdl, -1)
+    if sw_pwh and not sw_pwh[1]
+        f_addGhost(pwh, 1)
+    if sw_pwl and not sw_pwl[1]
+        f_addGhost(pwl, -1)
+    if sw_pmh and not sw_pmh[1]
+        f_addGhost(pmh, 1)
+    if sw_pml and not sw_pml[1]
+        f_addGhost(pml, -1)
+
+// ---- GHOST expiry + cap: drop ghosts older than their lifetime, then cap count ----
+if array.size(ghostP) > 0
+    int gj = 0
+    while gj < array.size(ghostP)
+        if bar_index - array.get(ghostBar, gj) > ghostLife
+            array.remove(ghostP, gj)
+            array.remove(ghostBar, gj)
+            array.remove(ghostSide, gj)
+        else
+            gj += 1
+while array.size(ghostP) > ghostKeep
+    array.shift(ghostP)
+    array.shift(ghostBar)
+    array.shift(ghostSide)
 
 // =============================================================================
 // PER-BAR LIQUIDITY ENGINE  (runs every bar, feeds markers/OBs/stats/alerts)
@@ -985,6 +1043,12 @@ var vp_labels = array.new<label>()
 var xtra_boxes  = array.new<box>()
 var xtra_lines  = array.new<line>()
 var xtra_labels = array.new<label>()
+
+// dedicated pool for ghost levels (rebuilt each last-bar pass)
+var ghost_lines = array.new<line>()
+f_clearGhost() =>
+    while array.size(ghost_lines) > 0
+        line.delete(array.pop(ghost_lines))
 
 f_clearXtra() =>
     while array.size(xtra_boxes) > 0
@@ -1401,16 +1465,32 @@ if barstate.islast
 
         string dolTxt = arrow + " DOL " + (drawUp ? "UP" : "DOWN") + " " + str.tostring(math.round(conv)) + "%" + distTxt + meter + agree
 
-        // horizontal placement: a few bars off the right (or left) edge
-        int dolX = dolPos == "Left" ? (bar_index - 40) : (bar_index + extendR + 8)
-        // vertical placement from the recent visible range
-        float hi100 = ta.highest(high, 100)
-        float lo100 = ta.lowest(low, 100)
-        float dolY = dolVPos == "Top" ? hi100 : dolVPos == "Bottom" ? lo100 : (hi100 + lo100) / 2.0
-        string dolStyle = dolPos == "Left" ? label.style_label_right : label.style_label_left
-        dolSz = dolSize == "Huge" ? size.huge : dolSize == "Large" ? size.large : size.normal
-        label dolLbl = label.new(dolX, dolY, dolTxt, style = dolStyle, color = color.new(arrowCol, 20), textcolor = color.new(color.white, 0), size = dolSz)
-        array.push(pool_labels, dolLbl)
+        // direction color for the pulse: GREEN when drawn UP, RED when drawn DOWN
+        color dirCol = drawUp ? color.new(#26a69a, 0) : color.new(#ef5350, 0)
+
+        if dolMode == "Status banner (corner)"
+            // ---- STATUS BANNER pinned to a chart corner ----
+            // Pulsing outline: alternate the border transparency each bar so it
+            // visibly "breathes" green (up) / red (down).
+            int pulseT = dolPulse ? (bar_index % 2 == 0 ? 0 : 55) : 0
+            color borderC = color.new(dirCol, pulseT)
+            dolSzB = dolSize == "Huge" ? size.large : dolSize == "Large" ? size.normal : size.small
+            var table dolTbl = table.new(position.top_right, 1, 1, border_width = 3)
+            table.set_position(dolTbl, f_tablePos(dolBanPos))
+            table.cell(dolTbl, 0, 0, dolTxt, text_color = color.white, bgcolor = color.new(dirCol, 12), text_size = dolSzB)
+            // recolor the frame each pass to create the pulse
+            table.set_frame_color(dolTbl, borderC)
+            table.set_frame_width(dolTbl, 3)
+        else
+            // ---- FLOATING ARROW out to the side of price (classic) ----
+            int dolX = dolPos == "Left" ? (bar_index - 40) : (bar_index + extendR + 8)
+            float hi100 = ta.highest(high, 100)
+            float lo100 = ta.lowest(low, 100)
+            float dolY = dolVPos == "Top" ? hi100 : dolVPos == "Bottom" ? lo100 : (hi100 + lo100) / 2.0
+            string dolStyle = dolPos == "Left" ? label.style_label_right : label.style_label_left
+            dolSz = dolSize == "Huge" ? size.huge : dolSize == "Large" ? size.large : size.normal
+            label dolLbl = label.new(dolX, dolY, dolTxt, style = dolStyle, color = color.new(arrowCol, 20), textcolor = color.new(color.white, 0), size = dolSz)
+            array.push(pool_labels, dolLbl)
 
         // --- target line at the primary magnet (the exact price price is drawn toward) ---
         if dolTgtLine and not na(tgtPrice)
@@ -1423,6 +1503,21 @@ if barstate.islast
     // EXTRA MODULES RENDER (order blocks, voids, Asian box, ranking, R:R)
     // =========================================================================
     f_clearXtra()
+
+    // ---- Ghost levels (feature #15): faint dotted lines that fade with age ----
+    f_clearGhost()
+    if masterOn and showGhost and array.size(ghostP) > 0
+        for gk = 0 to array.size(ghostP) - 1
+            float gp = array.get(ghostP, gk)
+            int   gb = array.get(ghostBar, gk)
+            int   age = math.max(0, bar_index - gb)
+            // fade from ghostOpacity toward 100 (invisible) across the lifetime
+            float fade = ghostLife > 0 ? (age / ghostLife) : 1.0
+            int transp = int(math.min(100, ghostOpacity + (100 - ghostOpacity) * fade))
+            color gc = color.new(ghostCol, transp)
+            // draw from where it was swept to a little past the current bar
+            line gl = line.new(gb, gp, bar_index + 3, gp, color = gc, width = 1, style = line.style_dotted)
+            array.push(ghost_lines, gl)
 
     // ---- Order blocks (feature #2) ----
     if masterOn and showOB and array.size(obTop) > 0
@@ -1706,10 +1801,26 @@ if barstate.islast
                     array.push(vp_labels, vll)
 
 // -----------------------------------------------------------------------------
+// TOGGLE-OFF CLEANUP (global scope, runs every bar)
+// The last-bar render pools (VP + extra modules) are normally cleared/rebuilt
+// inside `if barstate.islast`. But when a feature is switched OFF, that block
+// stops rebuilding it yet the previously drawn objects can linger. Wiping the
+// pools here at global scope guarantees they disappear the instant you toggle
+// the feature (or MASTER) off - mirroring the FVG cleanup pattern below.
+if (not masterOn or not showVP) and array.size(vp_boxes) + array.size(vp_lines) + array.size(vp_labels) > 0
+    f_clearVP()
+if not masterOn and array.size(xtra_boxes) + array.size(xtra_lines) + array.size(xtra_labels) > 0
+    f_clearXtra()
+
+// -----------------------------------------------------------------------------
 // FAIR VALUE GAPS (FVG)  — drawn independently as rolling boxes
 // -----------------------------------------------------------------------------
 var fvgBoxes  = array.new<box>()
 var fvgIsBull = array.new<bool>()   // parallel: true = bullish (support) gap
+
+// ghost levels off (or master off): wipe any lingering ghost lines immediately
+if (not masterOn or not showGhost) and array.size(ghost_lines) > 0
+    f_clearGhost()
 
 // master off (or FVG disabled): wipe any existing FVG boxes
 if (not masterOn or not showFVG) and array.size(fvgBoxes) > 0

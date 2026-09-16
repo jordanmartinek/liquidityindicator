@@ -69,9 +69,12 @@ London/NY killzone background shading (sweeps inside a killzone get a 🔥 empha
 - **Backtest stat panel** — rolling sweep → reversal hit rate.
 
 ### ⑭ Confluence & Context
-- **MTF liquidity dashboard** — a compact table showing, per timeframe (default 15m / 1H / 4H / D): nearest buy-side liquidity above, nearest sell-side below, directional bias, and premium/discount location — the whole liquidity picture at a glance.
+- **MTF liquidity dashboard** — a compact table pinned to the middle-right showing, per timeframe (default 15m / 1H / 4H / D): nearest buy-side liquidity above, nearest sell-side below, directional bias, and premium/discount location — the whole liquidity picture at a glance.
 - **SMT divergence** — compares this symbol against a correlated one (e.g. ES vs NQ, BTC vs ETH). When one makes a higher high / lower low while the other fails to, it flags an SMT divergence (a strong reversal cue). Set the correlated symbol in the input.
 - **Confluence score (0–100)** — rolls up everything overlapping a cluster zone (stacked levels, order block, liquidity void, OTE fib, premium/discount extreme, round number) into a single ⭐ score on the zone label, with an optional filter to hide low-score zones.
+
+### ⑮ Ghost Levels
+When a level is **swept** (price trades through it), it leaves behind a faint **ghost** — a very light dotted line marking where liquidity was recently taken. Ghosts fade from the set opacity toward invisible over their lifetime, then disappear. Adjustable **opacity**, **lifetime (bars)**, **color**, and max kept; fully toggleable. Covers swept swing highs/lows, equal highs/lows, and previous-period levels.
 
 ---
 
