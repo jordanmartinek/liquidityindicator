@@ -24,6 +24,16 @@ var string G_STYLE  = "⑥ Style & Compact Mode"
 var string G_EMO    = "⑦ Emoji Importance Tags"
 
 // -----------------------------------------------------------------------------
+// INPUTS — APPEARANCE / THEME  (elegant, refined panel styling)
+// -----------------------------------------------------------------------------
+var string G_THEME = "⓪ Appearance & Theme"
+uiTheme    = input.string("Refined Dark", "Panel theme", options = ["Refined Dark","Refined Light","Midnight","Slate","Classic (legacy)"], tooltip = "Controls the look of the on-chart panels (DOL banner, dashboards, coach). 'Refined' themes use a muted, low-contrast palette with soft borders for a cleaner, less garish feel.", group = G_THEME)
+uiPanelOpacity = input.int(16, "Panel background opacity boost", minval = 0, maxval = 60, tooltip = "Extra transparency added to panel backgrounds. Higher = more see-through / subtler panels.", group = G_THEME)
+uiAccentTint = input.int(70, "Accent softness", minval = 0, maxval = 90, tooltip = "How much accent colors (bias green/red, headers) are muted toward the panel background. Higher = softer, more pastel; lower = punchier.", group = G_THEME)
+uiSlimBorders = input.bool(true, "Slim panel borders", tooltip = "Use thin 1px borders instead of thick frames for a more refined look.", group = G_THEME)
+perfMode   = input.bool(false, "⚡ Performance mode (disable heavy modules)", tooltip = "For low-end machines / faster loading: turns OFF the heaviest modules that use lower-timeframe or multi-symbol data - the Candle Volume Profile, the MTF Liquidity Dashboard, and SMT Divergence. All the on-chart level/zone drawing stays on.", group = G_THEME)
+
+// -----------------------------------------------------------------------------
 // INPUTS — PREVIOUS-PERIOD LEVELS
 // -----------------------------------------------------------------------------
 showPDHL = input.bool(true,  "Prev Day High/Low (PDH/PDL)",    group = G_PREV)
@@ -135,6 +145,8 @@ showSFP    = input.bool(true, "Detect sweep + reversal (SFP)", tooltip = "The co
 sfpUseVol  = input.bool(true, "  Require volume confirmation", tooltip = "Only flag a sweep as a real grab when it prints on elevated relative volume (thin-volume sweeps are usually noise).", group = G_GRAB)
 rvolLen    = input.int(20, "  Rel-volume lookback", minval = 5, maxval = 200, tooltip = "Bars used for the average volume baseline. Relative volume = current volume / average volume.", group = G_GRAB)
 rvolMult   = input.float(1.5, "  Min rel-volume for grab", minval = 1.0, maxval = 5.0, step = 0.1, tooltip = "A sweep must occur on at least this multiple of average volume to count as confirmed.", group = G_GRAB)
+sfpWick    = input.bool(true, "  Rejection wick-strength grade", tooltip = "Grade each sweep by how hard price rejected the level: the rejection wick as a share of the candle's range. Shows ✦ (weak) / ✦✦ (solid) / ✦✦✦ (strong) on the SFP marker.", group = G_GRAB)
+sfpMinWick = input.float(0.0, "  Min wick fraction to flag SFP", minval = 0.0, maxval = 0.9, step = 0.05, tooltip = "Require the rejection wick to be at least this fraction of the candle range for the SFP to count. 0 = don't filter. e.g. 0.5 = only strong rejections.", group = G_GRAB)
 sfpColLong  = input.color(color.new(#26a69a, 0), "  Bullish SFP color", group = G_GRAB)
 sfpColShort = input.color(color.new(#ef5350, 0), "  Bearish SFP color", group = G_GRAB)
 showOB     = input.bool(true, "Mark order blocks after displacement", tooltip = "After a sweep+displacement, mark the last opposing candle (the order block) as a high-probability return zone. Persists until price mitigates it.", group = G_GRAB)
@@ -201,6 +213,15 @@ smtColBear  = input.color(color.new(#ef5350, 0), "  Bearish SMT color", group = 
 showConf    = input.bool(true, "Confluence score on zones (0-100)", tooltip = "Rolls up everything overlapping a cluster zone - stacked levels, FVG, order block, OTE fib, volume-profile POC, premium/discount, round number - into one 0-100 'how loaded is this zone' score shown on the label.", group = G_CTX)
 confMin     = input.int(0, "  Hide zones below score", minval = 0, maxval = 100, tooltip = "Only show cluster zones whose confluence score is at least this. 0 = show all.", group = G_CTX)
 confRound   = input.float(0.0, "  Round-number step (price)", minval = 0.0, tooltip = "Adds confluence when a zone sits near a round-number multiple of this step (e.g. 50 or 100 for indices, 1000 for BTC). 0 = disable the round-number factor.", group = G_CTX)
+// -- Power-of-three daily bias (feature #7) --
+showPO3     = input.bool(true, "Power-of-three daily bias", tooltip = "Classifies the current day into Accumulation -> Manipulation -> Distribution around the daily open. The first decisive sweep of the opening range is the 'manipulation' (Judas swing); the expected distribution is the OPPOSITE direction. Shown as a small tag on the daily-open level.", group = G_CTX)
+po3Range    = input.float(0.5, "  Opening-range size (× ATR)", minval = 0.1, step = 0.1, tooltip = "How far beyond the daily open (in ATRs) price must push to count as the manipulation leg / breakout.", group = G_CTX)
+po3Col      = input.color(color.new(#d4b483, 0), "  PO3 tag color", group = G_CTX)
+// -- Correlation / DXY context (feature #12) --
+showCorr    = input.bool(false, "Correlation / driver context", tooltip = "Compares this symbol's short-term direction against a DRIVER symbol (e.g. DXY for FX/indices, or a lead instrument). Shows whether the driver AGREES or CONFLICTS with your bias - a conflict warns that the move may lack support.", group = G_CTX)
+corrSym     = input.symbol("DXY", "  Driver symbol", tooltip = "The driver/benchmark to compare against (e.g. DXY, ES1!, BTCUSD). Its rise/fall is compared to this symbol.", group = G_CTX)
+corrInverse = input.bool(true, "  Driver is inversely correlated", tooltip = "ON: driver up = bearish for this symbol (e.g. DXY vs EURUSD / risk assets). OFF: driver up = bullish for this symbol (positively correlated).", group = G_CTX)
+corrLen     = input.int(9, "  Correlation lookback (bars)", minval = 2, maxval = 100, tooltip = "Bars used to read the driver's short-term direction (rate of change).", group = G_CTX)
 
 // -----------------------------------------------------------------------------
 // INPUTS — CANDLE VOLUME PROFILE (LTF reconstruction, last closed candle)
@@ -275,6 +296,29 @@ f_lineStyle() =>
 
 f_labelSize() =>
     labelSize == "Tiny" ? size.tiny : labelSize == "Normal" ? size.normal : size.small
+
+// -----------------------------------------------------------------------------
+// THEME PALETTE — one coherent, muted palette drives every panel so the UI
+// looks refined rather than garish. Colors are resolved once here.
+// -----------------------------------------------------------------------------
+// base panel background per theme
+themeBgBase   = uiTheme == "Refined Light" ? color.new(#f5f6fa, 0) : uiTheme == "Midnight" ? color.new(#0d1117, 0) : uiTheme == "Slate" ? color.new(#262b36, 0) : uiTheme == "Classic (legacy)" ? color.new(#1e222d, 0) : color.new(#171a21, 0)
+// primary + secondary text per theme (light theme flips to dark text)
+themeTxt      = uiTheme == "Refined Light" ? color.new(#2b2f3a, 0) : color.new(#e6e9ef, 0)
+themeMuted    = uiTheme == "Refined Light" ? color.new(#6b7280, 0) : color.new(#9aa4b2, 0)
+// header accent — a soft amber/blue depending on theme, muted by uiAccentTint
+themeHdrRaw   = uiTheme == "Refined Light" ? #b45309 : #d4b483
+themeHdr      = color.new(themeHdrRaw, uiAccentTint > 40 ? uiAccentTint - 40 : 0)
+// bias colors (up/down) softened toward pastel via uiAccentTint
+themeUp       = color.new(#4db6ac, math.min(uiAccentTint, 60))
+themeDn       = color.new(#e08d8d, math.min(uiAccentTint, 60))
+themeUpSolid  = color.new(#4db6ac, 0)
+themeDnSolid  = color.new(#e08d8d, 0)
+// final panel background + row background with the opacity boost applied
+themePanelBg  = color.new(themeBgBase, math.min(100, uiPanelOpacity))
+themeRowBg    = color.new(themeBgBase, math.min(100, uiPanelOpacity + 8))
+themeBorder   = color.new(uiTheme == "Refined Light" ? #d0d4dc : #3a4150, uiSlimBorders ? 20 : 0)
+themeBW       = uiSlimBorders ? 1 : 2
 
 // price velocity = avg absolute change per bar over velLen
 velocity  = ta.sma(math.abs(ta.change(close)), velLen)
@@ -414,15 +458,38 @@ dOpen = request.security(syminfo.tickerid, "D", open,    lookahead = barmerge.lo
 
 // Lower-timeframe intrabar data for the candle volume profile.
 // Each element is an array of the LTF values that occurred within the chart bar.
-vpLoArr = showVP ? request.security_lower_tf(syminfo.tickerid, vpLTF, low)    : array.new<float>()
-vpHiArr = showVP ? request.security_lower_tf(syminfo.tickerid, vpLTF, high)   : array.new<float>()
-vpVoArr = showVP ? request.security_lower_tf(syminfo.tickerid, vpLTF, volume) : array.new<float>()
+// effective feature flags: performance mode force-disables the heaviest modules
+vpOn      = showVP and not perfMode
+mtfOn     = showMTFdash and not perfMode
+vpLoArr = vpOn ? request.security_lower_tf(syminfo.tickerid, vpLTF, low)    : array.new<float>()
+vpHiArr = vpOn ? request.security_lower_tf(syminfo.tickerid, vpLTF, high)   : array.new<float>()
+vpVoArr = vpOn ? request.security_lower_tf(syminfo.tickerid, vpLTF, volume) : array.new<float>()
 
 // Sessions -------------------------------------------------------------------
 f_inSession(string s) => not na(time(timeframe.period, s, sessTZ))
 
 // new trading day detector (in the chosen session timezone)
 newDay = ta.change(time("D", "0000-0000", sessTZ)) != 0
+
+// ---- POWER-OF-THREE daily bias (feature #7) ----
+// Around the daily open: accumulation (chop near open) -> manipulation (first
+// decisive sweep of the opening range, the Judas leg) -> distribution (expected
+// move in the OPPOSITE direction to the manipulation).
+var float po3Open = na
+var int   po3Manip = 0     // 0 = none yet, +1 = swept UP first, -1 = swept DOWN first
+if newDay
+    po3Open := open
+    po3Manip := 0
+float po3Band = po3Range * nz(atr)
+if showPO3 and po3Manip == 0 and not na(po3Open)
+    if high > po3Open + po3Band
+        po3Manip := 1     // pushed up first => manipulation up => expect distribution DOWN
+    else if low < po3Open - po3Band
+        po3Manip := -1    // pushed down first => expect distribution UP
+// phase + expected distribution direction (opposite of the manipulation leg)
+string po3Phase = po3Manip == 0 ? "Accumulation" : "Distribution"
+int    po3Dist  = po3Manip == 0 ? 0 : -po3Manip   // +1 expect up, -1 expect down
+string po3Txt = po3Manip == 0 ? "PO3: Accumulation (await manipulation)" : ("PO3: " + (po3Manip > 0 ? "Manip↑ → distribute DOWN" : "Manip↓ → distribute UP"))
 
 // Session H/L with: daily reset, sweep-removal, and carry-over reclassification.
 // Returns [high, low, hiCarried, loCarried] where the *Carried flags mark a
@@ -474,7 +541,7 @@ pl = ta.pivotlow(low, swingLen, swingLen)
 
 // ---- SMT DIVERGENCE (feature #4): compare vs a correlated symbol ----
 // SMT = one symbol takes liquidity (new high/low) while the correlate fails to.
-smtEnabled = showSMT and str.length(smtSym) > 0
+smtEnabled = showSMT and str.length(smtSym) > 0 and not perfMode
 // use a valid symbol for the request even when disabled (fall back to this chart's
 // own ticker, which yields no divergence) so request.security never gets "".
 smtReqSym = smtEnabled ? smtSym : syminfo.tickerid
@@ -520,11 +587,26 @@ f_mtfBundle() =>
     float es  = ta.ema(close, 55)
     [rHi, rLo, ef, es, close]
 
-// (security is always evaluated; the dashboard is simply not rendered when off.)
-[m1Hi, m1Lo, m1Ef, m1Es, m1C] = request.security(syminfo.tickerid, mtfTF1, f_mtfBundle(), lookahead = barmerge.lookahead_off)
-[m2Hi, m2Lo, m2Ef, m2Es, m2C] = request.security(syminfo.tickerid, mtfTF2, f_mtfBundle(), lookahead = barmerge.lookahead_off)
-[m3Hi, m3Lo, m3Ef, m3Es, m3C] = request.security(syminfo.tickerid, mtfTF3, f_mtfBundle(), lookahead = barmerge.lookahead_off)
-[m4Hi, m4Lo, m4Ef, m4Es, m4C] = request.security(syminfo.tickerid, mtfTF4, f_mtfBundle(), lookahead = barmerge.lookahead_off)
+// Under performance mode we request the chart's OWN timeframe (already loaded,
+// effectively free) instead of 4 foreign timeframes; the dashboard isn't rendered
+// then anyway. Otherwise request the configured MTF timeframes.
+mtfR1 = mtfOn ? mtfTF1 : timeframe.period
+mtfR2 = mtfOn ? mtfTF2 : timeframe.period
+mtfR3 = mtfOn ? mtfTF3 : timeframe.period
+mtfR4 = mtfOn ? mtfTF4 : timeframe.period
+[m1Hi, m1Lo, m1Ef, m1Es, m1C] = request.security(syminfo.tickerid, mtfR1, f_mtfBundle(), lookahead = barmerge.lookahead_off)
+[m2Hi, m2Lo, m2Ef, m2Es, m2C] = request.security(syminfo.tickerid, mtfR2, f_mtfBundle(), lookahead = barmerge.lookahead_off)
+[m3Hi, m3Lo, m3Ef, m3Es, m3C] = request.security(syminfo.tickerid, mtfR3, f_mtfBundle(), lookahead = barmerge.lookahead_off)
+[m4Hi, m4Lo, m4Ef, m4Es, m4C] = request.security(syminfo.tickerid, mtfR4, f_mtfBundle(), lookahead = barmerge.lookahead_off)
+
+// ---- CORRELATION / DRIVER CONTEXT (feature #12) ----
+// Compare a driver symbol's short-term direction against this symbol's bias.
+corrOn     = showCorr and str.length(corrSym) > 0 and not perfMode
+corrReqSym = corrOn ? corrSym : syminfo.tickerid
+corrClose  = request.security(corrReqSym, timeframe.period, close, lookahead = barmerge.lookahead_off)
+float corrRoc = ta.roc(corrClose, corrLen)
+// driver's implied direction for THIS symbol (invert if inversely correlated)
+int  corrDir = na(corrRoc) or corrRoc == 0 ? 0 : ((corrRoc > 0) == (not corrInverse) ? 1 : -1)
 
 htfPHchg = not na(htfPH) and (na(htfPH[1]) or htfPH != htfPH[1])
 htfPLchg = not na(htfPL) and (na(htfPL[1]) or htfPL != htfPL[1])
@@ -872,10 +954,19 @@ if showSFP and array.size(lvLoNow) > 0
         if low < lv and close > lv
             if na(sweptLoLvl) or lv < sweptLoLvl
                 sweptLoLvl := lv
+// ---- Rejection wick-strength (feature #3): how hard price rejected the level ----
+// Fraction of the candle range taken by the rejection wick on the sweep side.
+float barRange = math.max(high - low, syminfo.mintick)
+float upWickFrac = (high - math.max(open, close)) / barRange   // rejection off a swept HIGH
+float dnWickFrac = (math.min(open, close) - low) / barRange    // rejection off a swept LOW
+// grade -> star string + 0..3 tier
+f_wickGrade(float frac) =>
+    frac >= 0.6 ? "✦✦✦" : frac >= 0.35 ? "✦✦" : "✦"
+
 // bearish SFP: swept a high (buy-side) then closed back below -> expect down
-bool sfpShort = showSFP and not na(sweptHiLvl) and volOK
+bool sfpShort = showSFP and not na(sweptHiLvl) and volOK and ((not sfpWick) or upWickFrac >= sfpMinWick)
 // bullish SFP: swept a low (sell-side) then closed back above -> expect up
-bool sfpLong  = showSFP and not na(sweptLoLvl) and volOK
+bool sfpLong  = showSFP and not na(sweptLoLvl) and volOK and ((not sfpWick) or dnWickFrac >= sfpMinWick)
 
 // ---- Order block after displacement (feature #2) ----
 // Displacement = a large-bodied candle in the reversal direction right after a grab.
@@ -1006,10 +1097,12 @@ bgcolor(masterOn and showKZ and inKillzone ? kzColor : na, title = "Killzone")
 // SFP markers (feature #1). A grab inside a killzone gets a 🔥 emphasis.
 if masterOn and sfpLong
     string ktag = inKillzone ? " 🔥KZ" : ""
-    label.new(bar_index, low, "🎯 SFP▲" + (sfpUseVol ? " " + str.tostring(rvol, "#.0") + "x" : "") + ktag, yloc = yloc.belowbar, style = label.style_label_up, color = sfpColLong, textcolor = color.white, size = size.small)
+    string wtag = sfpWick ? " " + f_wickGrade(dnWickFrac) : ""
+    label.new(bar_index, low, "🎯 SFP▲" + (sfpUseVol ? " " + str.tostring(rvol, "#.0") + "x" : "") + wtag + ktag, yloc = yloc.belowbar, style = label.style_label_up, color = sfpColLong, textcolor = color.white, size = size.small)
 if masterOn and sfpShort
     string ktag = inKillzone ? " 🔥KZ" : ""
-    label.new(bar_index, high, "🎯 SFP▼" + (sfpUseVol ? " " + str.tostring(rvol, "#.0") + "x" : "") + ktag, yloc = yloc.abovebar, style = label.style_label_down, color = sfpColShort, textcolor = color.white, size = size.small)
+    string wtag = sfpWick ? " " + f_wickGrade(upWickFrac) : ""
+    label.new(bar_index, high, "🎯 SFP▼" + (sfpUseVol ? " " + str.tostring(rvol, "#.0") + "x" : "") + wtag + ktag, yloc = yloc.abovebar, style = label.style_label_down, color = sfpColShort, textcolor = color.white, size = size.small)
 
 // BOS / CHoCH markers (feature #9)
 if masterOn and showBOS and bosUp
@@ -1349,7 +1442,15 @@ if barstate.islast
                 [confS, confParts] = f_confScore(mid, minP, maxP, members)
                 // hide zones below the confluence threshold when scoring is on
                 if not showConf or confS >= confMin
-                    box bx = box.new(bar_index, mid + pad, bar_index + ext, mid - pad, border_color = color.new(zbase, 25), border_width = lineWidth, bgcolor = color.new(zbase, op))
+                    // confluence HEAT gradient (feature #11): blend the zone fill from
+                    // its side color toward a hot amber as the score climbs, and make
+                    // high-confluence zones more opaque (stronger presence).
+                    float heatT = showConf ? math.min(confS / 100.0, 1.0) : 0.0
+                    color zoneFillBase = color.from_gradient(heatT, 0.0, 1.0, zbase, color.new(#ffb300, 0))
+                    int   heatOp = int(op - (op) * 0.45 * heatT)   // hotter => less transparent
+                    color zoneFill = color.new(zoneFillBase, math.max(heatOp, 0))
+                    color zoneBorder = color.from_gradient(heatT, 0.0, 1.0, color.new(zbase, 25), color.new(#ffb300, 10))
+                    box bx = box.new(bar_index, mid + pad, bar_index + ext, mid - pad, border_color = zoneBorder, border_width = lineWidth, bgcolor = zoneFill)
                     // strength emojis (repeated) — restored and toggleable
                     string strength = showStrengthEmoji ? (f_repeat(f_sideEmojiI(domSide, mid), members) + " x" + str.tostring(members)) : ("x" + str.tostring(members))
                     // fun tiered emoji prefix that escalates with strength
@@ -1464,25 +1565,26 @@ if barstate.islast
         // target row text (the specific magnet price price is being pulled toward)
         string tgtTxt = na(tgtPrice) ? "" : ("🎯 target" + distTxt)
 
-        // direction color for the pulse: GREEN when drawn UP, RED when drawn DOWN
-        color dirCol = drawUp ? color.new(#26a69a, 0) : color.new(#ef5350, 0)
+        // refined direction accent: softened green (up) / red (down) from the theme
+        color dirAccent = drawUp ? themeUpSolid : themeDnSolid
 
         // ---- STATUS BANNER pinned to a chart corner (never floats at price) ----
-        // Pulsing outline: alternate the border transparency each bar so it
-        // visibly "breathes" green (up) / red (down).
+        // Refined look: muted panel background, direction shown via the TEXT color
+        // and a slim accent border that gently pulses (not a blaring fill).
         bool showTgtRow = dolTgtLine and not na(tgtPrice)
-        int pulseT = dolPulse ? (bar_index % 2 == 0 ? 0 : 55) : 0
-        color borderC = color.new(dirCol, pulseT)
+        // gentle pulse: small transparency wobble on the border only
+        int pulseT = dolPulse ? (bar_index % 2 == 0 ? 15 : 45) : 25
+        color borderC = color.new(dirAccent, pulseT)
         dolSzB = dolSize == "Huge" ? size.large : dolSize == "Large" ? size.normal : size.small
-        var table dolTbl = table.new(position.top_right, 1, 2, border_width = 3)
+        var table dolTbl = table.new(position.top_right, 1, 2, border_width = 1)
         table.set_position(dolTbl, f_tablePos(dolBanPos))
         table.clear(dolTbl, 0, 0, 0, 1)
-        table.cell(dolTbl, 0, 0, dolTxt, text_color = color.white, bgcolor = color.new(dirCol, 12), text_size = dolSzB)
+        table.cell(dolTbl, 0, 0, dolTxt, text_color = dirAccent, bgcolor = themePanelBg, text_size = dolSzB)
         if showTgtRow
-            table.cell(dolTbl, 0, 1, tgtTxt, text_color = color.white, bgcolor = color.new(dirCol, 30), text_size = size.small)
-        // recolor the frame each pass to create the pulse
+            table.cell(dolTbl, 0, 1, tgtTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
+        // slim accent frame that gently pulses
         table.set_frame_color(dolTbl, borderC)
-        table.set_frame_width(dolTbl, 3)
+        table.set_frame_width(dolTbl, themeBW)
 
     // =========================================================================
     // EXTRA MODULES RENDER (order blocks, voids, Asian box, ranking, R:R)
@@ -1503,6 +1605,19 @@ if barstate.islast
             // draw from where it was swept to a little past the current bar
             line gl = line.new(gb, gp, bar_index + 3, gp, color = gc, width = 1, style = line.style_dotted)
             array.push(ghost_lines, gl)
+
+    // ---- Power-of-three daily-bias tag (feature #7) ----
+    if masterOn and showPO3 and not na(po3Open)
+        string po3Emoji = po3Manip == 0 ? "⏳" : (po3Dist > 0 ? "▲" : "▼")
+        label po3lb = label.new(bar_index + 3, po3Open, po3Emoji + " " + po3Txt, style = label.style_label_left, color = themePanelBg, textcolor = po3Col, size = f_labelSize())
+        array.push(xtra_labels, po3lb)
+
+    // ---- Correlation / driver context tag (feature #12) ----
+    if masterOn and corrOn and corrDir != 0
+        string cAgree = corrDir > 0 ? "▲ driver supports UP" : "▼ driver supports DOWN"
+        color  cCol = corrDir > 0 ? themeUpSolid : themeDnSolid
+        label corrLb = label.new(bar_index + 3, na(m1Lo) ? low : m1Lo, "🧭 " + corrSym + ": " + cAgree, style = label.style_label_left, color = themePanelBg, textcolor = cCol, size = f_labelSize())
+        array.push(xtra_labels, corrLb)
 
     // ---- Order blocks (feature #2) ----
     if masterOn and showOB and array.size(obTop) > 0
@@ -1588,8 +1703,10 @@ if barstate.islast
         var table rankTbl = table.new(position.top_left, 2, 4, border_width = 1)
         table.set_position(rankTbl, f_tablePos(rankPos))
         table.clear(rankTbl, 0, 0, 1, 3)
-        table.cell(rankTbl, 0, 0, "🧲 DRAW", text_color = color.white, bgcolor = color.new(#1e222d, 0), text_size = size.small)
-        table.cell(rankTbl, 1, 0, "level", text_color = color.white, bgcolor = color.new(#1e222d, 0), text_size = size.small)
+        table.set_frame_color(rankTbl, themeBorder)
+        table.set_frame_width(rankTbl, themeBW)
+        table.cell(rankTbl, 0, 0, "DRAW", text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
+        table.cell(rankTbl, 1, 0, "level", text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
         for r = 0 to topN - 1
             float bestS = -1.0
             int   bestJ = -1
@@ -1602,8 +1719,8 @@ if barstate.islast
                 float pk = array.get(lv_price, li)
                 string nm = array.get(lv_name, li)
                 string sideTag = pk >= close ? "▲" : "▼"
-                table.cell(rankTbl, 0, r + 1, str.tostring(r + 1) + ". " + str.tostring(bestS, "#.0"), text_color = pk >= close ? colBSL : colSSL, bgcolor = color.new(#1e222d, 15), text_size = size.small)
-                table.cell(rankTbl, 1, r + 1, sideTag + " " + nm + " " + str.tostring(pk, format.mintick), text_color = color.white, bgcolor = color.new(#1e222d, 15), text_size = size.small)
+                table.cell(rankTbl, 0, r + 1, str.tostring(r + 1) + ". " + str.tostring(bestS, "#.0"), text_color = pk >= close ? themeDnSolid : themeUpSolid, bgcolor = themeRowBg, text_size = size.small)
+                table.cell(rankTbl, 1, r + 1, sideTag + " " + nm + " " + str.tostring(pk, format.mintick), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
                 array.set(rkScore, bestJ, -2.0)   // exclude from next pick
 
     // ---- Backtest stat panel (feature #11) ----
@@ -1611,22 +1728,26 @@ if barstate.islast
         float hitRate = sweepTotal > 0 ? (sweepHit / sweepTotal) * 100.0 : 0.0
         var table statTbl = table.new(position.bottom_left, 1, 3, border_width = 1)
         table.set_position(statTbl, f_tablePos(statsPos))
-        table.cell(statTbl, 0, 0, "📊 SWEEP→REVERSAL", text_color = color.new(#ffd54f, 0), bgcolor = color.new(#1e222d, 0), text_size = size.small)
-        table.cell(statTbl, 0, 1, "Hit rate: " + str.tostring(math.round(hitRate)) + "%", text_color = color.white, bgcolor = color.new(#1e222d, 10), text_size = size.small)
-        table.cell(statTbl, 0, 2, "Sample: " + str.tostring(sweepHit) + "/" + str.tostring(sweepTotal), text_color = color.new(#90caf9, 0), bgcolor = color.new(#1e222d, 10), text_size = size.small)
+        table.set_frame_color(statTbl, themeBorder)
+        table.set_frame_width(statTbl, themeBW)
+        table.cell(statTbl, 0, 0, "SWEEP → REVERSAL", text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
+        table.cell(statTbl, 0, 1, "Hit rate  " + str.tostring(math.round(hitRate)) + "%", text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
+        table.cell(statTbl, 0, 2, "Sample  " + str.tostring(sweepHit) + "/" + str.tostring(sweepTotal), text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
 
     // ---- MTF LIQUIDITY DASHBOARD (feature #1) ----
-    if masterOn and showMTFdash
+    if masterOn and mtfOn
         // hard-pinned to middle-right so the HTF bias scanner never lands in the
         // crowded top-left corner (its own corner, clear of the other panels).
         var table mtfTbl = table.new(position.middle_right, 5, 5, border_width = 1)
-        color hdrBg = color.new(#1e222d, 0)
-        color rowBg = color.new(#1e222d, 12)
-        table.cell(mtfTbl, 0, 0, "TF",       text_color = color.new(#ffd54f, 0), bgcolor = hdrBg, text_size = size.small)
-        table.cell(mtfTbl, 1, 0, "BSL▲",     text_color = color.new(#ffd54f, 0), bgcolor = hdrBg, text_size = size.small)
-        table.cell(mtfTbl, 2, 0, "SSL▼",     text_color = color.new(#ffd54f, 0), bgcolor = hdrBg, text_size = size.small)
-        table.cell(mtfTbl, 3, 0, "bias",     text_color = color.new(#ffd54f, 0), bgcolor = hdrBg, text_size = size.small)
-        table.cell(mtfTbl, 4, 0, "zone",     text_color = color.new(#ffd54f, 0), bgcolor = hdrBg, text_size = size.small)
+        table.set_frame_color(mtfTbl, themeBorder)
+        table.set_frame_width(mtfTbl, themeBW)
+        color hdrBg = themePanelBg
+        color rowBg = themeRowBg
+        table.cell(mtfTbl, 0, 0, "TF",       text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
+        table.cell(mtfTbl, 1, 0, "BSL▲",     text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
+        table.cell(mtfTbl, 2, 0, "SSL▼",     text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
+        table.cell(mtfTbl, 3, 0, "bias",     text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
+        table.cell(mtfTbl, 4, 0, "zone",     text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
         // pack the 4 TFs into arrays and loop (avoids nested functions / repetition)
         mtfTFs = array.from(mtfTF1, mtfTF2, mtfTF3, mtfTF4)
         mtfHis = array.from(m1Hi, m2Hi, m3Hi, m4Hi)
@@ -1643,11 +1764,11 @@ if barstate.islast
             float c  = array.get(mtfCs, mi)
             string biasT = f_biasTxt(ef, es)
             string pdT   = f_pdTxt(c, hi, lo)
-            color  biasC = na(ef) or na(es) ? color.gray : ef > es ? colSSL : colBSL
-            color  pdC   = pdT == "PREM" ? colBSL : pdT == "DISC" ? colSSL : color.gray
-            table.cell(mtfTbl, 0, rowN, array.get(mtfTFs, mi), text_color = color.white, bgcolor = rowBg, text_size = size.small)
-            table.cell(mtfTbl, 1, rowN, na(hi) ? "–" : str.tostring(hi, format.mintick), text_color = colBSL, bgcolor = rowBg, text_size = size.small)
-            table.cell(mtfTbl, 2, rowN, na(lo) ? "–" : str.tostring(lo, format.mintick), text_color = colSSL, bgcolor = rowBg, text_size = size.small)
+            color  biasC = na(ef) or na(es) ? themeMuted : ef > es ? themeUpSolid : themeDnSolid
+            color  pdC   = pdT == "PREM" ? themeDnSolid : pdT == "DISC" ? themeUpSolid : themeMuted
+            table.cell(mtfTbl, 0, rowN, array.get(mtfTFs, mi), text_color = themeTxt, bgcolor = rowBg, text_size = size.small)
+            table.cell(mtfTbl, 1, rowN, na(hi) ? "–" : str.tostring(hi, format.mintick), text_color = themeDnSolid, bgcolor = rowBg, text_size = size.small)
+            table.cell(mtfTbl, 2, rowN, na(lo) ? "–" : str.tostring(lo, format.mintick), text_color = themeUpSolid, bgcolor = rowBg, text_size = size.small)
             table.cell(mtfTbl, 3, rowN, biasT, text_color = biasC, bgcolor = rowBg, text_size = size.small)
             table.cell(mtfTbl, 4, rowN, pdT, text_color = pdC, bgcolor = rowBg, text_size = size.small)
 
@@ -1696,15 +1817,17 @@ if barstate.islast
 
         var table coachTbl = table.new(position.bottom_right, 1, 5, border_width = 1)
         table.set_position(coachTbl, tp)
-        table.cell(coachTbl, 0, 0, "🏆 DISCIPLINE COACH", bgcolor = color.new(#1e222d, 0), text_color = color.new(#ffd54f, 0), text_size = txtSz)
-        table.cell(coachTbl, 0, 1, nudge, bgcolor = color.new(#1e222d, 10), text_color = color.new(color.white, 0), text_size = txtSz)
-        table.cell(coachTbl, 0, 2, quote, bgcolor = color.new(#1e222d, 10), text_color = color.new(#90caf9, 0), text_size = txtSz)
-        table.cell(coachTbl, 0, 3, streakTxt, bgcolor = color.new(#1e222d, 10), text_color = color.new(#ffab91, 0), text_size = txtSz)
-        table.cell(coachTbl, 0, 4, "📌 " + coachCustom, bgcolor = color.new(#1e222d, 10), text_color = color.new(#a5d6a7, 0), text_size = txtSz)
+        table.set_frame_color(coachTbl, themeBorder)
+        table.set_frame_width(coachTbl, themeBW)
+        table.cell(coachTbl, 0, 0, "DISCIPLINE COACH", bgcolor = themePanelBg, text_color = themeHdr, text_size = txtSz)
+        table.cell(coachTbl, 0, 1, nudge, bgcolor = themeRowBg, text_color = themeTxt, text_size = txtSz)
+        table.cell(coachTbl, 0, 2, quote, bgcolor = themeRowBg, text_color = themeMuted, text_size = txtSz)
+        table.cell(coachTbl, 0, 3, streakTxt, bgcolor = themeRowBg, text_color = themeMuted, text_size = txtSz)
+        table.cell(coachTbl, 0, 4, "📌 " + coachCustom, bgcolor = themeRowBg, text_color = themeTxt, text_size = txtSz)
 
     // ---- CANDLE VOLUME PROFILE (LTF reconstruction of the LAST CLOSED candle) ----
     f_clearVP()
-    if masterOn and showVP
+    if masterOn and vpOn
         // intrabars of the previous (last CLOSED) chart bar
         loA = vpLoArr[1]
         hiA = vpHiArr[1]
@@ -1792,7 +1915,7 @@ if barstate.islast
 // stops rebuilding it yet the previously drawn objects can linger. Wiping the
 // pools here at global scope guarantees they disappear the instant you toggle
 // the feature (or MASTER) off - mirroring the FVG cleanup pattern below.
-if (not masterOn or not showVP) and array.size(vp_boxes) + array.size(vp_lines) + array.size(vp_labels) > 0
+if (not masterOn or not vpOn) and array.size(vp_boxes) + array.size(vp_lines) + array.size(vp_labels) > 0
     f_clearVP()
 if not masterOn and array.size(xtra_boxes) + array.size(xtra_lines) + array.size(xtra_labels) > 0
     f_clearXtra()
