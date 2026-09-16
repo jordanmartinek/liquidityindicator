@@ -10,6 +10,9 @@ A clean, feature-rich **TradingView Pine Script v6** indicator for trading liqui
 
 Settings are organized into numbered groups in the indicator's inputs.
 
+### ⓪ Appearance & Theme
+A refined, muted palette drives every on-chart panel (DOL banner, dashboards, coach) so the UI looks clean rather than garish. Choose a **theme** (Refined Dark/Light, Midnight, Slate, or Classic), adjust **panel opacity**, **accent softness**, and **slim borders**. Also includes **⚡ Performance mode** — one switch that disables the heaviest modules (Candle Volume Profile, MTF Dashboard, SMT) for faster loading on low-end machines while keeping all on-chart drawing.
+
 ### ① Previous-Period Levels
 PDH/PDL, PWH/PWL, PMH/PML and the daily open. Swept levels are removed automatically (toggleable).
 
@@ -52,6 +55,7 @@ A motivational panel with context-aware nudges (premium/discount location), a ro
 ### ⑩ Liquidity Grab Engine
 - **Sweep + reversal (SFP)** — the core entry trigger: a wick pierces a tracked level then the candle closes back on the origin side. Marks 🎯 SFP▲/▼.
 - **Volume confirmation** — only flags grabs on elevated relative volume.
+- **Rejection wick-strength grade** — grades each sweep by how hard price rejected the level (rejection wick as a share of the candle range), shown as ✦ / ✦✦ / ✦✦✦ on the marker, with an optional minimum-wick filter.
 - **Order blocks** — after displacement following a grab, marks the last opposing candle as a demand/supply zone until mitigated.
 
 ### ⑪ Structure Breaks & Voids
@@ -71,7 +75,9 @@ London/NY killzone background shading (sweeps inside a killzone get a 🔥 empha
 ### ⑭ Confluence & Context
 - **MTF liquidity dashboard** — a compact table pinned to the middle-right showing, per timeframe (default 15m / 1H / 4H / D): nearest buy-side liquidity above, nearest sell-side below, directional bias, and premium/discount location — the whole liquidity picture at a glance.
 - **SMT divergence** — compares this symbol against a correlated one (e.g. ES vs NQ, BTC vs ETH). When one makes a higher high / lower low while the other fails to, it flags an SMT divergence (a strong reversal cue). Set the correlated symbol in the input.
-- **Confluence score (0–100)** — rolls up everything overlapping a cluster zone (stacked levels, order block, liquidity void, OTE fib, premium/discount extreme, round number) into a single ⭐ score on the zone label, with an optional filter to hide low-score zones.
+- **Confluence score (0–100)** — rolls up everything overlapping a cluster zone (stacked levels, order block, liquidity void, OTE fib, premium/discount extreme, round number) into a single ⭐ score on the zone label, with an optional filter to hide low-score zones. Zones now also **heat-shade** from their side color toward hot amber as the score climbs.
+- **Power-of-three daily bias** — classifies the day into Accumulation → Manipulation → Distribution around the daily open (first decisive sweep = the Judas leg; distribution is the opposite direction), tagged on the daily-open level.
+- **Correlation / driver context** — compares this symbol against a driver (e.g. DXY, a lead instrument) and flags whether the driver **supports or conflicts** with your directional bias (invertible for inverse correlations).
 
 ### ⑮ Ghost Levels
 When a level is **swept** (price trades through it), it leaves behind a faint **ghost** — a very light dotted line marking where liquidity was recently taken. Ghosts fade from the set opacity toward invisible over their lifetime, then disappear. Adjustable **opacity**, **lifetime (bars)**, **color**, and max kept; fully toggleable. Covers swept swing highs/lows, equal highs/lows, and previous-period levels.
