@@ -176,8 +176,7 @@ statsWin   = input.int(10, "  Reversal confirm window (bars)", minval = 2, maxva
 // -----------------------------------------------------------------------------
 var string G_CTX = "⑭ Confluence & Context"
 // -- MTF liquidity dashboard --
-showMTFdash = input.bool(true, "MTF liquidity dashboard", tooltip = "A compact table showing, per timeframe, the nearest buy-side liquidity above, nearest sell-side below, directional bias, and whether price sits in premium or discount - the whole liquidity picture at a glance.", group = G_CTX)
-mtfPos      = input.string("Middle Right", "  Dashboard position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Left","Middle Right"], group = G_CTX)
+showMTFdash = input.bool(true, "MTF liquidity dashboard", tooltip = "A compact table pinned to the MIDDLE-RIGHT of the chart showing, per timeframe, the nearest buy-side liquidity above, nearest sell-side below, directional bias, and whether price sits in premium or discount - the whole liquidity picture at a glance.", group = G_CTX)
 mtfTF1      = input.timeframe("15",  "  TF 1", group = G_CTX)
 mtfTF2      = input.timeframe("60",  "  TF 2", group = G_CTX)
 mtfTF3      = input.timeframe("240", "  TF 3", group = G_CTX)
@@ -1538,8 +1537,9 @@ if barstate.islast
 
     // ---- MTF LIQUIDITY DASHBOARD (feature #1) ----
     if masterOn and showMTFdash
+        // hard-pinned to middle-right so the HTF bias scanner never lands in the
+        // crowded top-left corner (its own corner, clear of the other panels).
         var table mtfTbl = table.new(position.middle_right, 5, 5, border_width = 1)
-        table.set_position(mtfTbl, f_tablePos(mtfPos))
         color hdrBg = color.new(#1e222d, 0)
         color rowBg = color.new(#1e222d, 12)
         table.cell(mtfTbl, 0, 0, "TF",       text_color = color.new(#ffd54f, 0), bgcolor = hdrBg, text_size = size.small)
