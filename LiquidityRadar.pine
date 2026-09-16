@@ -111,10 +111,13 @@ outlineTags  = input.bool(true, "Outline level/cluster tags in side color", tool
 tieredEmoji  = input.bool(true, "Fun tiered strength emojis (💧⚡🔥💎🐋)", tooltip = "Prefix each level/cluster with a big emoji that escalates with strength: 1=💧, 2=⚡, 3=🔥, 4=💎, 5+=🐋. Stronger zones also render with a larger label.", group = G_CLUST)
 bigStrongLbl = input.bool(true, "Enlarge label for strong zones", group = G_CLUST)
 
-var string G_DOL = "⑧ Draw-on-Liquidity Arrow"
-showDOL   = input.bool(true, "Show draw-on-liquidity arrow", tooltip = "A large up/down arrow off to the side pointing to the side (BSL above vs SSL below) with the greater LIQUIDITY GRAVITY - a multi-factor score of where price is most likely being drawn.", group = G_DOL)
-dolPos    = input.string("Right", "Arrow position", options = ["Right","Left"], group = G_DOL)
-dolVPos   = input.string("Middle", "Arrow vertical position", options = ["Top","Middle","Bottom"], group = G_DOL)
+var string G_DOL = "⑧ Draw-on-Liquidity Gauge"
+showDOL   = input.bool(true, "Show draw-on-liquidity gauge", tooltip = "A status gauge showing the side (BSL above vs SSL below) with the greater LIQUIDITY GRAVITY - a multi-factor score of where price is most likely being drawn.", group = G_DOL)
+dolMode   = input.string("Status banner (corner)", "Display mode", options = ["Status banner (corner)","Floating arrow (on chart)"], tooltip = "Status banner: a fixed panel pinned to a chart corner (recommended - never crowds the levels). Floating arrow: the classic big arrow drawn out to the side of price.", group = G_DOL)
+dolBanPos = input.string("Top Right", "Banner position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], tooltip = "Corner for the status banner.", group = G_DOL)
+dolPulse  = input.bool(true, "Pulse the banner outline", tooltip = "Animates the banner's border brightness bar-to-bar - GREEN when price is being drawn UP (buy-side), RED when drawn DOWN (sell-side).", group = G_DOL)
+dolPos    = input.string("Right", "Floating arrow: position", options = ["Right","Left"], group = G_DOL)
+dolVPos   = input.string("Middle", "Floating arrow: vertical position", options = ["Top","Middle","Bottom"], group = G_DOL)
 dolBull   = input.string("🔼", "Bullish draw arrow (BSL-heavy = up)", options = ["🔼","🟢","🚀","📈","👆","🐂"], group = G_DOL)
 dolBear   = input.string("🔽", "Bearish draw arrow (SSL-heavy = down)", options = ["🔽","🔴","🐻","📉","👇","🩸"], group = G_DOL)
 dolSize   = input.string("Huge", "Arrow size", options = ["Normal","Large","Huge"], group = G_DOL)
@@ -1313,16 +1316,32 @@ if barstate.islast
 
         string dolTxt = arrow + " DOL " + (drawUp ? "UP" : "DOWN") + " " + str.tostring(math.round(conv)) + "%" + distTxt + meter + agree
 
-        // horizontal placement: a few bars off the right (or left) edge
-        int dolX = dolPos == "Left" ? (bar_index - 40) : (bar_index + extendR + 8)
-        // vertical placement from the recent visible range
-        float hi100 = ta.highest(high, 100)
-        float lo100 = ta.lowest(low, 100)
-        float dolY = dolVPos == "Top" ? hi100 : dolVPos == "Bottom" ? lo100 : (hi100 + lo100) / 2.0
-        string dolStyle = dolPos == "Left" ? label.style_label_right : label.style_label_left
-        dolSz = dolSize == "Huge" ? size.huge : dolSize == "Large" ? size.large : size.normal
-        label dolLbl = label.new(dolX, dolY, dolTxt, style = dolStyle, color = color.new(arrowCol, 20), textcolor = color.new(color.white, 0), size = dolSz)
-        array.push(pool_labels, dolLbl)
+        // direction color for the pulse: GREEN when drawn UP, RED when drawn DOWN
+        color dirCol = drawUp ? color.new(#26a69a, 0) : color.new(#ef5350, 0)
+
+        if dolMode == "Status banner (corner)"
+            // ---- STATUS BANNER pinned to a chart corner ----
+            // Pulsing outline: alternate the border transparency each bar so it
+            // visibly "breathes" green (up) / red (down).
+            int pulseT = dolPulse ? (bar_index % 2 == 0 ? 0 : 55) : 0
+            color borderC = color.new(dirCol, pulseT)
+            dolSzB = dolSize == "Huge" ? size.large : dolSize == "Large" ? size.normal : size.small
+            var table dolTbl = table.new(position.top_right, 1, 1, border_width = 3)
+            table.set_position(dolTbl, f_tablePos(dolBanPos))
+            table.cell(dolTbl, 0, 0, dolTxt, text_color = color.white, bgcolor = color.new(dirCol, 12), text_size = dolSzB)
+            // recolor the frame each pass to create the pulse
+            table.set_frame_color(dolTbl, borderC)
+            table.set_frame_width(dolTbl, 3)
+        else
+            // ---- FLOATING ARROW out to the side of price (classic) ----
+            int dolX = dolPos == "Left" ? (bar_index - 40) : (bar_index + extendR + 8)
+            float hi100 = ta.highest(high, 100)
+            float lo100 = ta.lowest(low, 100)
+            float dolY = dolVPos == "Top" ? hi100 : dolVPos == "Bottom" ? lo100 : (hi100 + lo100) / 2.0
+            string dolStyle = dolPos == "Left" ? label.style_label_right : label.style_label_left
+            dolSz = dolSize == "Huge" ? size.huge : dolSize == "Large" ? size.large : size.normal
+            label dolLbl = label.new(dolX, dolY, dolTxt, style = dolStyle, color = color.new(arrowCol, 20), textcolor = color.new(color.white, 0), size = dolSz)
+            array.push(pool_labels, dolLbl)
 
         // --- target line at the primary magnet (the exact price price is drawn toward) ---
         if dolTgtLine and not na(tgtPrice)
