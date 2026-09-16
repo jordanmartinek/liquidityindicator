@@ -1616,6 +1616,18 @@ if barstate.islast
                     array.push(vp_labels, vll)
 
 // -----------------------------------------------------------------------------
+// TOGGLE-OFF CLEANUP (global scope, runs every bar)
+// The last-bar render pools (VP + extra modules) are normally cleared/rebuilt
+// inside `if barstate.islast`. But when a feature is switched OFF, that block
+// stops rebuilding it yet the previously drawn objects can linger. Wiping the
+// pools here at global scope guarantees they disappear the instant you toggle
+// the feature (or MASTER) off - mirroring the FVG cleanup pattern below.
+if (not masterOn or not showVP) and array.size(vp_boxes) + array.size(vp_lines) + array.size(vp_labels) > 0
+    f_clearVP()
+if not masterOn and array.size(xtra_boxes) + array.size(xtra_lines) + array.size(xtra_labels) > 0
+    f_clearXtra()
+
+// -----------------------------------------------------------------------------
 // FAIR VALUE GAPS (FVG)  — drawn independently as rolling boxes
 // -----------------------------------------------------------------------------
 var fvgBoxes  = array.new<box>()
