@@ -113,21 +113,18 @@ bigStrongLbl = input.bool(true, "Enlarge label for strong zones", group = G_CLUS
 
 var string G_DOL = "⑧ Draw-on-Liquidity Gauge"
 showDOL   = input.bool(true, "Show draw-on-liquidity gauge", tooltip = "A status gauge showing the side (BSL above vs SSL below) with the greater LIQUIDITY GRAVITY - a multi-factor score of where price is most likely being drawn.", group = G_DOL)
-dolMode   = input.string("Status banner (corner)", "Display mode", options = ["Status banner (corner)","Floating arrow (on chart)"], tooltip = "Status banner: a fixed panel pinned to a chart corner (recommended - never crowds the levels). Floating arrow: the classic big arrow drawn out to the side of price.", group = G_DOL)
-dolBanPos = input.string("Top Right", "Banner position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], tooltip = "Corner for the status banner.", group = G_DOL)
+dolBanPos = input.string("Top Right", "Banner position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], tooltip = "Corner for the status banner. The gauge is ALWAYS a fixed corner panel - it never floats at the price line.", group = G_DOL)
 dolPulse  = input.bool(true, "Pulse the banner outline", tooltip = "Animates the banner's border brightness bar-to-bar - GREEN when price is being drawn UP (buy-side), RED when drawn DOWN (sell-side).", group = G_DOL)
-dolPos    = input.string("Right", "Floating arrow: position", options = ["Right","Left"], group = G_DOL)
-dolVPos   = input.string("Middle", "Floating arrow: vertical position", options = ["Top","Middle","Bottom"], group = G_DOL)
-dolBull   = input.string("🔼", "Bullish draw arrow (BSL-heavy = up)", options = ["🔼","🟢","🚀","📈","👆","🐂"], group = G_DOL)
-dolBear   = input.string("🔽", "Bearish draw arrow (SSL-heavy = down)", options = ["🔽","🔴","🐻","📉","👇","🩸"], group = G_DOL)
-dolSize   = input.string("Huge", "Arrow size", options = ["Normal","Large","Huge"], group = G_DOL)
+dolBull   = input.string("🔼", "Bullish draw emoji (BSL-heavy = up)", options = ["🔼","🟢","🚀","📈","👆","🐂"], group = G_DOL)
+dolBear   = input.string("🔽", "Bearish draw emoji (SSL-heavy = down)", options = ["🔽","🔴","🐻","📉","👇","🩸"], group = G_DOL)
+dolSize   = input.string("Huge", "Banner text size", options = ["Normal","Large","Huge"], group = G_DOL)
 // --- Liquidity Gravity model (multi-factor pull) ---
 dolSens   = input.string("Medium", "Gravity sensitivity", options = ["Low","Medium","High"], tooltip = "Master dial that scales how sharply nearby, important, aged and clustered liquidity dominates the pull. High = closest/strongest magnets take over quickly; Low = flatter, more democratic tally.", group = G_DOL)
 dolUseType = input.bool(true, "Weight by level importance (type)", tooltip = "Major levels (PDH/PDL, weekly/monthly, HTF swings) pull harder than minor session highs/lows or local swings.", group = G_DOL)
 dolUseAge  = input.bool(true, "Weight by level age (resting time)", tooltip = "Liquidity that has rested untapped for longer is a stronger magnet. Age weight is log-scaled and capped.", group = G_DOL)
 dolUseConf = input.bool(true, "Reward confluence (clustered levels)", tooltip = "Several levels stacked within a small band pull much harder than a single isolated level.", group = G_DOL)
 dolMomWt   = input.float(30, "Momentum tilt %", minval = 0, maxval = 100, step = 5, tooltip = "How much live directional momentum (trend + rate-of-change) biases the arrow on top of the static liquidity score. 0 = pure liquidity; 100 = momentum dominates. Keeps the arrow dynamic when order flow is clearly one-directional.", group = G_DOL)
-dolTgtLine = input.bool(true, "Draw target line at primary magnet", tooltip = "Draws a faint horizontal line + tag at the single strongest magnet level - the specific price price is being pulled toward.", group = G_DOL)
+dolTgtLine = input.bool(true, "Show primary-magnet target in banner", tooltip = "Adds a second banner row with the single strongest magnet level - the specific price price is being pulled toward - and its distance. Shown in the corner banner, NOT as a line at the price.", group = G_DOL)
 dolMeter   = input.bool(true, "Show conviction meter in label", tooltip = "Adds a bar-style conviction meter (filled blocks) reflecting how lopsided the pull is.", group = G_DOL)
 
 // -----------------------------------------------------------------------------
@@ -1289,7 +1286,6 @@ if barstate.islast
         bool drawUp = bias >= 0
 
         string arrow = drawUp ? dolBull : dolBear
-        color arrowCol = drawUp ? colBSL : colSSL
         // conviction 0..100 from the magnitude of the blended bias
         float conv = math.round(math.min(1.0, math.abs(bias)) * 100)
         // the primary magnet on the chosen side
@@ -1314,41 +1310,30 @@ if barstate.islast
         // momentum agreement flag: does live momentum agree with the liquidity pull?
         string agree = (dolMom >= 0) == (liqBias >= 0) ? " ✅" : " 🚩divergent"
 
-        string dolTxt = arrow + " DOL " + (drawUp ? "UP" : "DOWN") + " " + str.tostring(math.round(conv)) + "%" + distTxt + meter + agree
+        // main banner line (compact - target detail goes on its own row)
+        string dolTxt = arrow + " DOL " + (drawUp ? "UP" : "DOWN") + " " + str.tostring(math.round(conv)) + "%" + meter + agree
+        // target row text (the specific magnet price price is being pulled toward)
+        string tgtTxt = na(tgtPrice) ? "" : ("🎯 target" + distTxt)
 
         // direction color for the pulse: GREEN when drawn UP, RED when drawn DOWN
         color dirCol = drawUp ? color.new(#26a69a, 0) : color.new(#ef5350, 0)
 
-        if dolMode == "Status banner (corner)"
-            // ---- STATUS BANNER pinned to a chart corner ----
-            // Pulsing outline: alternate the border transparency each bar so it
-            // visibly "breathes" green (up) / red (down).
-            int pulseT = dolPulse ? (bar_index % 2 == 0 ? 0 : 55) : 0
-            color borderC = color.new(dirCol, pulseT)
-            dolSzB = dolSize == "Huge" ? size.large : dolSize == "Large" ? size.normal : size.small
-            var table dolTbl = table.new(position.top_right, 1, 1, border_width = 3)
-            table.set_position(dolTbl, f_tablePos(dolBanPos))
-            table.cell(dolTbl, 0, 0, dolTxt, text_color = color.white, bgcolor = color.new(dirCol, 12), text_size = dolSzB)
-            // recolor the frame each pass to create the pulse
-            table.set_frame_color(dolTbl, borderC)
-            table.set_frame_width(dolTbl, 3)
-        else
-            // ---- FLOATING ARROW out to the side of price (classic) ----
-            int dolX = dolPos == "Left" ? (bar_index - 40) : (bar_index + extendR + 8)
-            float hi100 = ta.highest(high, 100)
-            float lo100 = ta.lowest(low, 100)
-            float dolY = dolVPos == "Top" ? hi100 : dolVPos == "Bottom" ? lo100 : (hi100 + lo100) / 2.0
-            string dolStyle = dolPos == "Left" ? label.style_label_right : label.style_label_left
-            dolSz = dolSize == "Huge" ? size.huge : dolSize == "Large" ? size.large : size.normal
-            label dolLbl = label.new(dolX, dolY, dolTxt, style = dolStyle, color = color.new(arrowCol, 20), textcolor = color.new(color.white, 0), size = dolSz)
-            array.push(pool_labels, dolLbl)
-
-        // --- target line at the primary magnet (the exact price price is drawn toward) ---
-        if dolTgtLine and not na(tgtPrice)
-            line tln = line.new(bar_index, tgtPrice, bar_index + extendR + 8, tgtPrice, color = color.new(arrowCol, 35), width = 2, style = line.style_dotted)
-            array.push(pool_lines, tln)
-            label tlb = label.new(bar_index + extendR + 8, tgtPrice, "🎯 DOL target", style = label.style_label_left, color = color.new(arrowCol, 75), textcolor = color.new(arrowCol, 0), size = f_labelSize())
-            array.push(pool_labels, tlb)
+        // ---- STATUS BANNER pinned to a chart corner (never floats at price) ----
+        // Pulsing outline: alternate the border transparency each bar so it
+        // visibly "breathes" green (up) / red (down).
+        bool showTgtRow = dolTgtLine and not na(tgtPrice)
+        int pulseT = dolPulse ? (bar_index % 2 == 0 ? 0 : 55) : 0
+        color borderC = color.new(dirCol, pulseT)
+        dolSzB = dolSize == "Huge" ? size.large : dolSize == "Large" ? size.normal : size.small
+        var table dolTbl = table.new(position.top_right, 1, 2, border_width = 3)
+        table.set_position(dolTbl, f_tablePos(dolBanPos))
+        table.clear(dolTbl, 0, 0, 0, 1)
+        table.cell(dolTbl, 0, 0, dolTxt, text_color = color.white, bgcolor = color.new(dirCol, 12), text_size = dolSzB)
+        if showTgtRow
+            table.cell(dolTbl, 0, 1, tgtTxt, text_color = color.white, bgcolor = color.new(dirCol, 30), text_size = size.small)
+        // recolor the frame each pass to create the pulse
+        table.set_frame_color(dolTbl, borderC)
+        table.set_frame_width(dolTbl, 3)
 
     // =========================================================================
     // EXTRA MODULES RENDER (order blocks, voids, Asian box, ranking, R:R)

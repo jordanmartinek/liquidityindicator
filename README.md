@@ -34,14 +34,14 @@ Line/label styling, opacity controls, age-scaled line extension (older = longer)
 ### ⑦ Emoji Importance Tags
 Configurable emoji tags per level class.
 
-### ⑧ Draw-on-Liquidity Arrow — *Liquidity Gravity model*
-A large arrow pointing to the side price is most likely being drawn toward. The pull for each level is a multi-factor score:
+### ⑧ Draw-on-Liquidity Gauge — *Liquidity Gravity model*
+A **fixed status banner** pinned to a chart corner (default **Top Right**) showing the side price is most likely being drawn toward. It never floats at the price line. The pull for each level is a multi-factor score:
 
 ```
 pull = distance × type × age × confluence
 ```
 
-blended with a **momentum tilt** (EMA trend + ROC). The label shows conviction %, the primary magnet price with distance in ATR and %, a conviction meter, and a momentum-agreement flag. An optional dotted line marks the primary magnet.
+blended with a **momentum tilt** (EMA trend + ROC). The banner shows the direction emoji, conviction %, a conviction meter, and a momentum-agreement flag; an optional second row shows the primary-magnet **target** price and its distance (ATR / %). The border **pulses green (up) / red (down)**. Position is selectable to any corner or middle side.
 
 ### ⑧b Candle Volume Profile
 Reconstructs a real intrabar volume profile for the **last closed candle** using lower-timeframe data (`request.security_lower_tf`), drawn as a horizontal histogram with POC / VAH / VAL. Works on recent candles only (LTF data is limited); the intrabar timeframe must be lower than the chart timeframe.
