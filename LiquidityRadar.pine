@@ -86,7 +86,7 @@ pdFib3     = input.float(0.886, "  OTE fib 3", step = 0.001, group = G_STRUCT)
 var string G_GHOST = "⑮ Ghost Levels"
 showGhost   = input.bool(true, "Show ghost levels", tooltip = "When a level is SWEPT (price trades through it), leave behind a faint 'ghost' - a very light dotted line marking where liquidity was recently taken. Ghosts fade out over their lifetime, then disappear.", group = G_GHOST)
 ghostOpacity = input.int(80, "Ghost opacity (0 solid, 100 invisible)", minval = 0, maxval = 100, tooltip = "Starting transparency of a fresh ghost line. Higher = fainter. Ghosts fade further toward invisible as they age.", group = G_GHOST)
-ghostLife   = input.int(30, "Ghost lifetime (bars)", minval = 1, maxval = 500, tooltip = "How many bars a ghost lingers after the level was swept before it disappears. Over this span it fades from the set opacity toward fully transparent.", group = G_GHOST)
+ghostLife   = input.int(80, "Ghost lifetime (bars)", minval = 1, maxval = 2000, tooltip = "How many bars a ghost lingers after the level was swept before it disappears. Over this span it fades from the set opacity toward fully transparent. Increase it if ghosts vanish before you notice them.", group = G_GHOST)
 ghostCol    = input.color(color.new(#b0bec5, 0), "Ghost line color", tooltip = "Base color of the ghost dotted line (opacity is applied on top).", group = G_GHOST)
 ghostKeep   = input.int(40, "Max ghosts kept", minval = 1, maxval = 200, tooltip = "Cap on the number of ghost lines retained at once (oldest dropped first).", group = G_GHOST)
 
@@ -643,12 +643,6 @@ var swLoB  = array.new<int>()
 var ghostP    = array.new<float>()   // price of the swept level
 var ghostBar  = array.new<int>()     // bar_index at which it was swept
 var ghostSide = array.new<int>()     // +1 = a swept HIGH (BSL), -1 = a swept LOW (SSL)
-// record a ghost (only when the feature is on and price is valid)
-f_addGhost(float price, int side) =>
-    if showGhost and not na(price)
-        array.push(ghostP, price)
-        array.push(ghostBar, bar_index)
-        array.push(ghostSide, side)
 
 // push each newly-confirmed pivot (its bar_index is swingLen bars back)
 if showSwing and not na(ph)
@@ -673,7 +667,6 @@ if removeSwept and array.size(swHi) > 0
     int ih = 0
     while ih < array.size(swHi)
         if high > array.get(swHi, ih)
-            f_addGhost(array.get(swHi, ih), 1)   // leave a ghost where the high was taken
             array.remove(swHi, ih)
             array.remove(swHiB, ih)
         else
@@ -682,7 +675,6 @@ if removeSwept and array.size(swLo) > 0
     int il = 0
     while il < array.size(swLo)
         if low < array.get(swLo, il)
-            f_addGhost(array.get(swLo, il), -1)  // leave a ghost where the low was taken
             array.remove(swLo, il)
             array.remove(swLoB, il)
         else
@@ -783,7 +775,6 @@ if array.size(eqHiA) > 0
     int i = 0
     while i < array.size(eqHiA)
         if removeSwept and high > array.get(eqHiA, i)
-            f_addGhost(array.get(eqHiA, i), 1)
             array.remove(eqHiA, i)
             array.remove(eqHiB, i)
         else
@@ -792,7 +783,6 @@ if array.size(eqLoA) > 0
     int i = 0
     while i < array.size(eqLoA)
         if removeSwept and low < array.get(eqLoA, i)
-            f_addGhost(array.get(eqLoA, i), -1)
             array.remove(eqLoA, i)
             array.remove(eqLoB, i)
         else
@@ -857,20 +847,82 @@ pwlM = (removeSwept and sw_pwl) ? na : pwl
 pmhM = (removeSwept and sw_pmh) ? na : pmh
 pmlM = (removeSwept and sw_pml) ? na : pml
 
-// ---- GHOST capture for previous-period levels (rising edge of the sweep flag) ----
-if removeSwept
-    if sw_pdh and not sw_pdh[1]
-        f_addGhost(pdh, 1)
-    if sw_pdl and not sw_pdl[1]
-        f_addGhost(pdl, -1)
-    if sw_pwh and not sw_pwh[1]
-        f_addGhost(pwh, 1)
-    if sw_pwl and not sw_pwl[1]
-        f_addGhost(pwl, -1)
-    if sw_pmh and not sw_pmh[1]
-        f_addGhost(pmh, 1)
-    if sw_pml and not sw_pml[1]
-        f_addGhost(pml, -1)
+// ---- ROBUST GHOST CAPTURE (feature #15, self-contained per-bar detector) ----
+// Independent of removeSwept / showSFP / pivot timing: build the set of currently
+// tracked levels each bar and drop a ghost the instant THIS bar's high/low crosses
+// one (with the prior bar not already beyond it). De-duped so a price only ghosts
+// once while it stays swept. Inlined pushes (no helper) for reliability in Pine v6.
+if showGhost
+    // collect this bar's tracked HIGH-type (buy-side) and LOW-type (sell-side) levels
+    gHiNow = array.new<float>()
+    gLoNow = array.new<float>()
+    if showPDHL and not na(pdh)
+        array.push(gHiNow, pdh)
+    if showPDHL and not na(pdl)
+        array.push(gLoNow, pdl)
+    if showPWHL and not na(pwh)
+        array.push(gHiNow, pwh)
+    if showPWHL and not na(pwl)
+        array.push(gLoNow, pwl)
+    if showPMHL and not na(pmh)
+        array.push(gHiNow, pmh)
+    if showPMHL and not na(pml)
+        array.push(gLoNow, pml)
+    if showAsia and not na(asiaH)
+        array.push(gHiNow, asiaH)
+    if showAsia and not na(asiaL)
+        array.push(gLoNow, asiaL)
+    if showLond and not na(londH)
+        array.push(gHiNow, londH)
+    if showLond and not na(londL)
+        array.push(gLoNow, londL)
+    if showNY and not na(nyH)
+        array.push(gHiNow, nyH)
+    if showNY and not na(nyL)
+        array.push(gLoNow, nyL)
+    if showSwing and array.size(swHi) > 0
+        for gsi = 0 to array.size(swHi) - 1
+            array.push(gHiNow, array.get(swHi, gsi))
+    if showSwing and array.size(swLo) > 0
+        for gsi = 0 to array.size(swLo) - 1
+            array.push(gLoNow, array.get(swLo, gsi))
+    if showEQ and array.size(eqHiA) > 0
+        for gei = 0 to array.size(eqHiA) - 1
+            array.push(gHiNow, array.get(eqHiA, gei))
+    if showEQ and array.size(eqLoA) > 0
+        for gei = 0 to array.size(eqLoA) - 1
+            array.push(gLoNow, array.get(eqLoA, gei))
+
+    float gTol = math.max(nz(atr) * 0.05, syminfo.mintick)
+    // a HIGH is swept when this bar trades above it but the previous bar didn't
+    if array.size(gHiNow) > 0
+        for gi = 0 to array.size(gHiNow) - 1
+            float lv = array.get(gHiNow, gi)
+            if high >= lv and high[1] < lv
+                // de-dupe: skip if we already have a ghost at ~this price
+                bool dup = false
+                if array.size(ghostP) > 0
+                    for dj = 0 to array.size(ghostP) - 1
+                        if math.abs(array.get(ghostP, dj) - lv) <= gTol
+                            dup := true
+                if not dup
+                    array.push(ghostP, lv)
+                    array.push(ghostBar, bar_index)
+                    array.push(ghostSide, 1)
+    // a LOW is swept when this bar trades below it but the previous bar didn't
+    if array.size(gLoNow) > 0
+        for gi = 0 to array.size(gLoNow) - 1
+            float lv = array.get(gLoNow, gi)
+            if low <= lv and low[1] > lv
+                bool dup = false
+                if array.size(ghostP) > 0
+                    for dj = 0 to array.size(ghostP) - 1
+                        if math.abs(array.get(ghostP, dj) - lv) <= gTol
+                            dup := true
+                if not dup
+                    array.push(ghostP, lv)
+                    array.push(ghostBar, bar_index)
+                    array.push(ghostSide, -1)
 
 // ---- GHOST expiry + cap: drop ghosts older than their lifetime, then cap count ----
 if array.size(ghostP) > 0
