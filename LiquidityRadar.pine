@@ -593,6 +593,10 @@ f_mtfBundle() =>
     float es  = ta.ema(close, 55)
     [rHi, rLo, ef, es, close]
 
+// timeframe comparison in seconds: is the requested TF strictly HIGHER than chart?
+f_tfSec(string tf) => timeframe.in_seconds(tf)
+chartTfSec = timeframe.in_seconds(timeframe.period)
+
 // Under performance mode we request the chart's OWN timeframe (already loaded,
 // effectively free) instead of 4 foreign timeframes; the dashboard isn't rendered
 // then anyway. Otherwise request the configured MTF timeframes.
@@ -1816,6 +1820,11 @@ if barstate.islast
         mtfCs  = array.from(m1C,  m2C,  m3C,  m4C)
         for mi = 0 to 3
             int rowN = mi + 1
+            string tfStr = array.get(mtfTFs, mi)
+            // a row whose timeframe is <= the chart timeframe can't provide a
+            // genuine higher-TF read (security just mirrors the chart), so it would
+            // look "frozen"/duplicated - flag it instead of showing misleading data.
+            bool tooLow = f_tfSec(tfStr) <= chartTfSec
             float hi = array.get(mtfHis, mi)
             float lo = array.get(mtfLos, mi)
             float ef = array.get(mtfEfs, mi)
@@ -1835,12 +1844,14 @@ if barstate.islast
             float  tgt    = biasUp ? hi : biasDn ? lo : na
             color  tgtC   = biasUp ? themeDnSolid : biasDn ? themeUpSolid : themeMuted
             string tgtCell = na(tgt) ? "–" : (biasUp ? "▲ " : "▼ ") + str.tostring(tgt, format.mintick)
-            table.cell(mtfTbl, 0, rowN, array.get(mtfTFs, mi), text_color = themeTxt, bgcolor = rowBg, text_size = size.small)
-            table.cell(mtfTbl, 1, rowN, na(hi) ? "–" : str.tostring(hi, format.mintick), text_color = themeDnSolid, bgcolor = rowBg, text_size = size.small)
-            table.cell(mtfTbl, 2, rowN, na(lo) ? "–" : str.tostring(lo, format.mintick), text_color = themeUpSolid, bgcolor = rowBg, text_size = size.small)
-            table.cell(mtfTbl, 3, rowN, biasCell, text_color = biasC, bgcolor = rowBg, text_size = size.small)
-            table.cell(mtfTbl, 4, rowN, pdT, text_color = pdC, bgcolor = rowBg, text_size = size.small)
-            table.cell(mtfTbl, 5, rowN, tgtCell, text_color = tgtC, bgcolor = rowBg, text_size = size.small)
+            // TF label gets a marker: ≤ chart TF (mirrors chart) or a live dot
+            string tfCell = tfStr + (tooLow ? " ≤" : "")
+            table.cell(mtfTbl, 0, rowN, tfCell, text_color = tooLow ? themeMuted : themeTxt, bgcolor = rowBg, text_size = size.small)
+            table.cell(mtfTbl, 1, rowN, tooLow ? "·" : (na(hi) ? "–" : str.tostring(hi, format.mintick)), text_color = tooLow ? themeMuted : themeDnSolid, bgcolor = rowBg, text_size = size.small)
+            table.cell(mtfTbl, 2, rowN, tooLow ? "·" : (na(lo) ? "–" : str.tostring(lo, format.mintick)), text_color = tooLow ? themeMuted : themeUpSolid, bgcolor = rowBg, text_size = size.small)
+            table.cell(mtfTbl, 3, rowN, tooLow ? "use higher TF" : biasCell, text_color = tooLow ? themeMuted : biasC, bgcolor = rowBg, text_size = size.small)
+            table.cell(mtfTbl, 4, rowN, tooLow ? "·" : pdT, text_color = tooLow ? themeMuted : pdC, bgcolor = rowBg, text_size = size.small)
+            table.cell(mtfTbl, 5, rowN, tooLow ? "·" : tgtCell, text_color = tooLow ? themeMuted : tgtC, bgcolor = rowBg, text_size = size.small)
 
     // ---- DISCIPLINE COACH PANEL ----
     if masterOn and showCoach
