@@ -6,7 +6,7 @@
 // automatic CLUSTERING: nearby levels merge into a single strength-rated zone
 // so labels never pile up on top of each other.
 // =============================================================================
-indicator("Liquidity Radar", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, calc_on_every_tick = true)
+indicator("Liquidity Radar", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
 
 // Anchor plot so the compiler always sees at least one drawing output at the
 // top level (all real drawing happens on the last bar).
@@ -1982,12 +1982,12 @@ if barstate.islast
                 array.push(vp_lines, vahLn)
                 array.push(vp_lines, valLn)
                 if vpShowLbls
-                    label pl = label.new(xL + vpWidth + 6, pocPrice, "POC " + str.tostring(pocPrice, format.mintick), style = label.style_label_left, color = color.new(vpColPOC, 80), textcolor = vpColPOC, size = f_labelSize())
-                    label vhl = label.new(xL + vpWidth + 6, vahPrice, "VAH " + str.tostring(vahPrice, format.mintick), style = label.style_label_left, color = color.new(vpColVA, 85), textcolor = vpColVA, size = f_labelSize())
-                    label vll = label.new(xL + vpWidth + 6, valPrice, "VAL " + str.tostring(valPrice, format.mintick), style = label.style_label_left, color = color.new(vpColVA, 85), textcolor = vpColVA, size = f_labelSize())
-                    array.push(vp_labels, pl)
-                    array.push(vp_labels, vhl)
-                    array.push(vp_labels, vll)
+                    label vpPocLb = label.new(xL + vpWidth + 6, pocPrice, "POC " + str.tostring(pocPrice, format.mintick), style = label.style_label_left, color = color.new(vpColPOC, 80), textcolor = vpColPOC, size = f_labelSize())
+                    label vpVahLb = label.new(xL + vpWidth + 6, vahPrice, "VAH " + str.tostring(vahPrice, format.mintick), style = label.style_label_left, color = color.new(vpColVA, 85), textcolor = vpColVA, size = f_labelSize())
+                    label vpValLb = label.new(xL + vpWidth + 6, valPrice, "VAL " + str.tostring(valPrice, format.mintick), style = label.style_label_left, color = color.new(vpColVA, 85), textcolor = vpColVA, size = f_labelSize())
+                    array.push(vp_labels, vpPocLb)
+                    array.push(vp_labels, vpVahLb)
+                    array.push(vp_labels, vpValLb)
 
 // -----------------------------------------------------------------------------
 // TOGGLE-OFF CLEANUP (global scope, runs every bar)
