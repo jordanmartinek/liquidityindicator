@@ -348,6 +348,12 @@ f_tablePos(string p) =>
 f_biasTxt(float ef, float es) =>
     na(ef) or na(es) ? "–" : ef > es ? "▲ up" : ef < es ? "▼ dn" : "→ flat"
 
+// bias CONVICTION %: EMA separation as a share of the recent range (volatility
+// proxy), scaled to 0..100. Wider EMA gap vs range => stronger conviction.
+f_biasConv(float ef, float es, float hi, float lo) =>
+    float rng = hi - lo
+    (na(ef) or na(es) or na(rng) or rng <= 0) ? na : math.min(100.0, math.abs(ef - es) / rng * 100.0 * 4.0)
+
 // premium/discount text from price position within a recent range
 f_pdTxt(float c, float hi, float lo) =>
     if na(c) or na(hi) or na(lo) or hi <= lo
@@ -1746,7 +1752,7 @@ if barstate.islast
         table.cell(mtfTbl, 0, 0, "TF",       text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
         table.cell(mtfTbl, 1, 0, "BSL▲",     text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
         table.cell(mtfTbl, 2, 0, "SSL▼",     text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
-        table.cell(mtfTbl, 3, 0, "bias",     text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
+        table.cell(mtfTbl, 3, 0, "bias · conv", text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
         table.cell(mtfTbl, 4, 0, "zone",     text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
         // pack the 4 TFs into arrays and loop (avoids nested functions / repetition)
         mtfTFs = array.from(mtfTF1, mtfTF2, mtfTF3, mtfTF4)
@@ -1763,13 +1769,16 @@ if barstate.islast
             float es = array.get(mtfEss, mi)
             float c  = array.get(mtfCs, mi)
             string biasT = f_biasTxt(ef, es)
+            float  biasP = f_biasConv(ef, es, hi, lo)
+            // append conviction % to the bias so higher-TF conviction reads at a glance
+            string biasCell = biasT + (na(biasP) ? "" : "  " + str.tostring(math.round(biasP)) + "%")
             string pdT   = f_pdTxt(c, hi, lo)
             color  biasC = na(ef) or na(es) ? themeMuted : ef > es ? themeUpSolid : themeDnSolid
             color  pdC   = pdT == "PREM" ? themeDnSolid : pdT == "DISC" ? themeUpSolid : themeMuted
             table.cell(mtfTbl, 0, rowN, array.get(mtfTFs, mi), text_color = themeTxt, bgcolor = rowBg, text_size = size.small)
             table.cell(mtfTbl, 1, rowN, na(hi) ? "–" : str.tostring(hi, format.mintick), text_color = themeDnSolid, bgcolor = rowBg, text_size = size.small)
             table.cell(mtfTbl, 2, rowN, na(lo) ? "–" : str.tostring(lo, format.mintick), text_color = themeUpSolid, bgcolor = rowBg, text_size = size.small)
-            table.cell(mtfTbl, 3, rowN, biasT, text_color = biasC, bgcolor = rowBg, text_size = size.small)
+            table.cell(mtfTbl, 3, rowN, biasCell, text_color = biasC, bgcolor = rowBg, text_size = size.small)
             table.cell(mtfTbl, 4, rowN, pdT, text_color = pdC, bgcolor = rowBg, text_size = size.small)
 
     // ---- DISCIPLINE COACH PANEL ----
