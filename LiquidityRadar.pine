@@ -1744,7 +1744,7 @@ if barstate.islast
     if masterOn and mtfOn
         // hard-pinned to middle-right so the HTF bias scanner never lands in the
         // crowded top-left corner (its own corner, clear of the other panels).
-        var table mtfTbl = table.new(position.middle_right, 5, 5, border_width = 1)
+        var table mtfTbl = table.new(position.middle_right, 6, 5, border_width = 1)
         table.set_frame_color(mtfTbl, themeBorder)
         table.set_frame_width(mtfTbl, themeBW)
         color hdrBg = themePanelBg
@@ -1754,6 +1754,7 @@ if barstate.islast
         table.cell(mtfTbl, 2, 0, "SSL▼",     text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
         table.cell(mtfTbl, 3, 0, "bias · conv", text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
         table.cell(mtfTbl, 4, 0, "zone",     text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
+        table.cell(mtfTbl, 5, 0, "target",   text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
         // pack the 4 TFs into arrays and loop (avoids nested functions / repetition)
         mtfTFs = array.from(mtfTF1, mtfTF2, mtfTF3, mtfTF4)
         mtfHis = array.from(m1Hi, m2Hi, m3Hi, m4Hi)
@@ -1775,11 +1776,19 @@ if barstate.islast
             string pdT   = f_pdTxt(c, hi, lo)
             color  biasC = na(ef) or na(es) ? themeMuted : ef > es ? themeUpSolid : themeDnSolid
             color  pdC   = pdT == "PREM" ? themeDnSolid : pdT == "DISC" ? themeUpSolid : themeMuted
+            // target = the liquidity level in the direction of this TF's bias
+            // (bias up => the BSL above; bias down => the SSL below)
+            bool   biasUp = not na(ef) and not na(es) and ef > es
+            bool   biasDn = not na(ef) and not na(es) and ef < es
+            float  tgt    = biasUp ? hi : biasDn ? lo : na
+            color  tgtC   = biasUp ? themeDnSolid : biasDn ? themeUpSolid : themeMuted
+            string tgtCell = na(tgt) ? "–" : (biasUp ? "▲ " : "▼ ") + str.tostring(tgt, format.mintick)
             table.cell(mtfTbl, 0, rowN, array.get(mtfTFs, mi), text_color = themeTxt, bgcolor = rowBg, text_size = size.small)
             table.cell(mtfTbl, 1, rowN, na(hi) ? "–" : str.tostring(hi, format.mintick), text_color = themeDnSolid, bgcolor = rowBg, text_size = size.small)
             table.cell(mtfTbl, 2, rowN, na(lo) ? "–" : str.tostring(lo, format.mintick), text_color = themeUpSolid, bgcolor = rowBg, text_size = size.small)
             table.cell(mtfTbl, 3, rowN, biasCell, text_color = biasC, bgcolor = rowBg, text_size = size.small)
             table.cell(mtfTbl, 4, rowN, pdT, text_color = pdC, bgcolor = rowBg, text_size = size.small)
+            table.cell(mtfTbl, 5, rowN, tgtCell, text_color = tgtC, bgcolor = rowBg, text_size = size.small)
 
     // ---- DISCIPLINE COACH PANEL ----
     if masterOn and showCoach
