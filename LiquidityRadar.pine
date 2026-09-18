@@ -249,6 +249,13 @@ pathScaleConf = input.bool(true, "  Scale leg thickness by strength", tooltip = 
 dolTugBar   = input.bool(true, "DOL tug-of-war bar (BSL vs SSL)", tooltip = "Show both sides' aggregate pull as a balance bar in the DOL banner, not just the winner - so you see HOW lopsided (and when it's near-balanced / low conviction).", group = G_SQ)
 dolTrendOn  = input.bool(true, "DOL trend (strengthening / fading)", tooltip = "Track the DOL conviction over recent bars and show whether the draw is building or weakening.", group = G_SQ)
 dolTrendLen = input.int(5, "  DOL trend lookback (bars)", minval = 2, maxval = 50, tooltip = "How many bars back to compare current conviction against for the strengthening/fading read.", group = G_SQ)
+// -- Backtest harness (measure whether the SFP grades actually predict) --
+showBT      = input.bool(true, "Backtest SFP grades (win rate / R)", tooltip = "Objectively measures every graded sweep+reversal over the loaded history: opens a virtual trade at the signal, places a stop beyond the sweep wick and a target, then records the outcome. Results are broken down by grade (A+/B/C) so you can SEE whether higher grades actually win more. This is the reality check - trust the numbers, not the heuristics.", group = G_SQ)
+btTargetMode = input.string("Fixed R multiple", "  Target mode", options = ["Fixed R multiple","Next opposing pool"], tooltip = "Fixed R multiple: target = entry +/- (R x risk) - objective and always resolvable. Next opposing pool: target = the DOL magnet on the reversal side (skips trades with no valid pool).", group = G_SQ)
+btRR        = input.float(2.0, "  Target R multiple", minval = 0.5, maxval = 10.0, step = 0.5, tooltip = "For 'Fixed R multiple' mode: the reward:risk target. 2 = risk 1 to make 2.", group = G_SQ)
+btStopPad   = input.float(0.1, "  Stop padding (× ATR)", minval = 0.0, step = 0.05, tooltip = "Extra buffer beyond the sweep wick for the virtual stop.", group = G_SQ)
+btMaxBars   = input.int(200, "  Max bars to resolve a trade", minval = 10, maxval = 1000, tooltip = "If neither stop nor target is hit within this many bars, the trade is closed at market (recorded as its running R).", group = G_SQ)
+btPos       = input.string("Bottom Right", "  Results table position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Left","Middle Right"], tooltip = "Corner for the backtest results table. Default bottom-right to avoid overlapping the ranking (top-left) and stat (bottom-left) panels.", group = G_SQ)
 
 // -----------------------------------------------------------------------------
 // INPUTS — CANDLE VOLUME PROFILE (LTF reconstruction, last closed candle)
@@ -1232,6 +1239,95 @@ if array.size(pendBar) > 0
         else
             pi += 1
 
+// =============================================================================
+// BACKTEST HARNESS — measure whether the SFP GRADES actually predict outcomes.
+// On each graded SFP: open a virtual trade (entry=close, stop beyond the sweep
+// wick, target = fixed R multiple OR next opposing pool). Resolve on later bars:
+// stop hit = -1R, target hit = +targetR, timeout = running R. Tally by grade.
+// Runs EVERY bar so it walks the whole loaded history.
+// =============================================================================
+// per-grade tallies: index 0=A+, 1=A, 2=B, 3=C
+var btN   = array.from(0, 0, 0, 0)          // trade count per grade
+var btWin = array.from(0, 0, 0, 0)          // wins per grade
+var btRsum = array.from(0.0, 0.0, 0.0, 0.0) // sum of R outcomes per grade
+// open virtual trades (parallel arrays)
+var btEntry = array.new<float>()
+var btStop  = array.new<float>()
+var btTgt   = array.new<float>()
+var btDir   = array.new<int>()    // +1 long, -1 short
+var btGi    = array.new<int>()    // grade index 0..3
+var btBar   = array.new<int>()    // bar opened
+
+f_gradeIdx(string g) => g == "A+" ? 0 : g == "A" ? 1 : g == "B" ? 2 : 3
+
+// ---- open a trade on a graded SFP ----
+f_btOpen(bool isLong, float swept, string grade) =>
+    if showBT and not na(swept)
+        float entry = close
+        float stopP = isLong ? (low - btStopPad * nz(atr)) : (high + btStopPad * nz(atr))
+        float risk  = math.abs(entry - stopP)
+        float tgtP  = na
+        if risk > 0
+            if btTargetMode == "Fixed R multiple"
+                tgtP := isLong ? (entry + btRR * risk) : (entry - btRR * risk)
+            else
+                tgtP := isLong ? bslTopPrice : sslTopPrice
+            if not na(tgtP) and ((isLong and tgtP > entry) or ((not isLong) and tgtP < entry))
+                array.push(btEntry, entry)
+                array.push(btStop, stopP)
+                array.push(btTgt, tgtP)
+                array.push(btDir, isLong ? 1 : -1)
+                array.push(btGi, f_gradeIdx(grade))
+                array.push(btBar, bar_index)
+
+if sfpLong
+    f_btOpen(true, sweptLoLvl, sfpLongGrade)
+if sfpShort
+    f_btOpen(false, sweptHiLvl, sfpShortGrade)
+
+// ---- resolve open trades on this bar ----
+if showBT and array.size(btEntry) > 0
+    int ti = 0
+    while ti < array.size(btEntry)
+        float e = array.get(btEntry, ti)
+        float s = array.get(btStop, ti)
+        float t = array.get(btTgt, ti)
+        int   d = array.get(btDir, ti)
+        int   gi = array.get(btGi, ti)
+        int   ob = array.get(btBar, ti)
+        float riskU = math.abs(e - s)
+        bool  hitStop = d > 0 ? (low <= s) : (high >= s)
+        bool  hitTgt  = d > 0 ? (high >= t) : (low <= t)
+        bool  timeout = (bar_index - ob) >= btMaxBars
+        bool  resolved = false
+        float rOut = 0.0
+        if hitStop and hitTgt
+            // both in one bar: assume stop hit first (conservative)
+            rOut := -1.0
+            resolved := true
+        else if hitStop
+            rOut := -1.0
+            resolved := true
+        else if hitTgt
+            rOut := riskU > 0 ? math.abs(t - e) / riskU : 0.0
+            resolved := true
+        else if timeout
+            rOut := riskU > 0 ? (d > 0 ? (close - e) : (e - close)) / riskU : 0.0
+            resolved := true
+        if resolved
+            array.set(btN, gi, array.get(btN, gi) + 1)
+            if rOut > 0
+                array.set(btWin, gi, array.get(btWin, gi) + 1)
+            array.set(btRsum, gi, array.get(btRsum, gi) + rOut)
+            array.remove(btEntry, ti)
+            array.remove(btStop, ti)
+            array.remove(btTgt, ti)
+            array.remove(btDir, ti)
+            array.remove(btGi, ti)
+            array.remove(btBar, ti)
+        else
+            ti += 1
+
 // ---- PER-BAR VISUALS: killzone shading + SFP / BOS / CHoCH markers ----
 // Killzone background shading (feature #4)
 bgcolor(masterOn and showKZ and inKillzone ? kzColor : na, title = "Killzone")
@@ -2035,6 +2131,45 @@ if barstate.islast
         table.cell(statTbl, 0, 0, "SWEEP → REVERSAL", text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
         table.cell(statTbl, 0, 1, "Hit rate  " + str.tostring(math.round(hitRate)) + "%", text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
         table.cell(statTbl, 0, 2, "Sample  " + str.tostring(sweepHit) + "/" + str.tostring(sweepTotal), text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
+
+    // ---- BACKTEST RESULTS by grade (win rate / avg R / expectancy) ----
+    if masterOn and showBT
+        var table btTbl = table.new(position.top_left, 4, 6, border_width = 1)
+        table.set_position(btTbl, f_tablePos(btPos))
+        table.set_frame_color(btTbl, themeBorder)
+        table.set_frame_width(btTbl, themeBW)
+        table.clear(btTbl, 0, 0, 3, 5)
+        // header
+        table.cell(btTbl, 0, 0, "GRADE", text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
+        table.cell(btTbl, 1, 0, "n",     text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
+        table.cell(btTbl, 2, 0, "win%",  text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
+        table.cell(btTbl, 3, 0, "avgR",  text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
+        gLabels = array.from("A+", "A", "B", "C")
+        int totN = 0
+        int totW = 0
+        float totR = 0.0
+        for gi = 0 to 3
+            int   gn = array.get(btN, gi)
+            int   gw = array.get(btWin, gi)
+            float gr = array.get(btRsum, gi)
+            totN := totN + gn
+            totW := totW + gw
+            totR := totR + gr
+            float gWin = gn > 0 ? gw / gn * 100.0 : na
+            float gAvg = gn > 0 ? gr / gn : na
+            color rcol = na(gAvg) ? themeMuted : gAvg > 0 ? themeUpSolid : themeDnSolid
+            table.cell(btTbl, 0, gi + 1, array.get(gLabels, gi), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
+            table.cell(btTbl, 1, gi + 1, str.tostring(gn), text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
+            table.cell(btTbl, 2, gi + 1, gn > 0 ? str.tostring(math.round(gWin)) + "%" : "–", text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
+            table.cell(btTbl, 3, gi + 1, gn > 0 ? str.tostring(gAvg, "#.00") + "R" : "–", text_color = rcol, bgcolor = themeRowBg, text_size = size.small)
+        // totals row
+        float tWin = totN > 0 ? totW / totN * 100.0 : na
+        float tAvg = totN > 0 ? totR / totN : na
+        color tcol = na(tAvg) ? themeMuted : tAvg > 0 ? themeUpSolid : themeDnSolid
+        table.cell(btTbl, 0, 5, "ALL", text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
+        table.cell(btTbl, 1, 5, str.tostring(totN), text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
+        table.cell(btTbl, 2, 5, totN > 0 ? str.tostring(math.round(tWin)) + "%" : "–", text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
+        table.cell(btTbl, 3, 5, totN > 0 ? str.tostring(tAvg, "#.00") + "R" : "–", text_color = tcol, bgcolor = themePanelBg, text_size = size.small)
 
     // ---- MTF LIQUIDITY DASHBOARD (feature #1) ----
     if masterOn and mtfOn
