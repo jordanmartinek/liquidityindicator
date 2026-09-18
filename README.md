@@ -29,7 +29,7 @@ All swing / equal / previous-period levels are removed once price sweeps them.
 Per-level "time-to-reach" estimate based on price velocity (clock time or bars), optionally direction-aware.
 
 ### ⑤ Clustering & Confluence
-Nearby levels merge into a single **strength-rated zone**, color-coded by side — **BSL** (buy-side, above price) vs **SSL** (sell-side, below price) — with tiered strength emojis and a min-strength filter. Each zone gets a **confluence score (0–100)** rolling up stacked levels + order-block overlap + round-number proximity, and the zone shades from its side color toward hot amber as the score climbs.
+Nearby levels merge into a single **strength-rated zone**, color-coded by side — **BSL** (buy-side, above price) vs **SSL** (sell-side, below price) — with tiered strength emojis and a min-strength filter. Each zone gets a **confluence score (0–100)** rolling up stacked levels + order-block overlap + **OTE-fib proximity + premium/discount extreme** (computed from the live dealing range internally — not drawn on the chart) + round-number proximity, and the zone shades from its side color toward hot amber as the score climbs.
 
 ### ⑥ Draw-on-Liquidity Gauge
 A corner banner showing the side price is most likely being drawn toward. Each level's pull is scored by `distance × type × age × confluence`, blended with a momentum tilt. The banner shows direction, conviction %, a conviction meter, an optional **tug-of-war bar** (BSL vs SSL balance), and an optional primary-magnet **target** row (price + distance in ATR / %).

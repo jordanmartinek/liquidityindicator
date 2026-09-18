@@ -111,7 +111,7 @@ outlineTags  = input.bool(true, "Outline level/cluster tags in side color", grou
 tieredEmoji  = input.bool(true, "Fun tiered strength emojis (💧⚡🔥💎🐋)", group = G_CLUST)
 bigStrongLbl = input.bool(true, "Enlarge label for strong zones", group = G_CLUST)
 // --- Confluence score ---
-showConf    = input.bool(true, "Confluence score on zones (0-100)", tooltip = "Rolls up stacked levels, order-block overlap, and round-number proximity into a 0-100 'how loaded is this zone' score on the label.", group = G_CLUST)
+showConf    = input.bool(true, "Confluence score on zones (0-100)", tooltip = "Rolls up stacked levels + order-block overlap + OTE-fib proximity + premium/discount extreme + round-number proximity into a 0-100 'how loaded is this zone' score. The OTE/premium-discount factors are computed from the live dealing range internally (not drawn on the chart).", group = G_CLUST)
 confMin     = input.int(0, "  Hide zones below score", minval = 0, maxval = 100, tooltip = "Only show cluster zones scoring at least this. 0 = show all.", group = G_CLUST)
 confRound   = input.float(0.0, "  Round-number step (price)", minval = 0.0, tooltip = "Adds confluence when a zone sits near a round-number multiple of this step (e.g. 50/100 indices, 1000 BTC). 0 = disable.", group = G_CLUST)
 
@@ -337,13 +337,36 @@ htfPLchg = not na(htfPL) and (na(htfPL[1]) or htfPL != htfPL[1])
 var float lastPH = na
 var float lastPL = na
 var int rangeDir = 0
-if showSwing or showEQ
+if showSwing or showEQ or showConf
     if not na(ph)
         lastPH := ph
         rangeDir := -1
     if not na(pl)
         lastPL := pl
         rangeDir := 1
+
+// LIVE dealing range (for the confluence OTE / premium-discount factor).
+// Computed internally whenever the confluence score is on; NOT drawn on the chart.
+// One end anchors to the freshest opposing swing; the other tracks the running
+// extreme, so the OTE levels re-measure as price continues in the leg's direction.
+var float rngHi = na
+var float rngLo = na
+if showConf
+    if not na(pl)
+        rngLo := pl
+        rngHi := math.max(nz(rngHi, high), high)
+    if not na(ph)
+        rngHi := ph
+        rngLo := math.min(nz(rngLo, low), low)
+    if rangeDir >= 0
+        rngHi := math.max(nz(rngHi, high), high)
+    else
+        rngLo := math.min(nz(rngLo, low), low)
+
+// OTE retracement ratios used by the confluence score (internal; never drawn)
+var float pdFib1 = 0.705
+var float pdFib2 = 0.788
+var float pdFib3 = 0.886
 
 // historical swing storage
 var swHi   = array.new<float>()
@@ -667,6 +690,22 @@ f_confScore(float mid, float loB, float hiB, int members) =>
     if obHit
         score := score + 22.0
         parts := parts + "OB "
+    // OTE fib proximity + premium/discount extreme (from the live dealing range).
+    // Computed internally for scoring only - the P/D fibs are NOT drawn on chart.
+    if not na(rngHi) and not na(rngLo) and rngHi > rngLo
+        float rng = rngHi - rngLo
+        bool bullLeg = rangeDir >= 0
+        f1 = bullLeg ? (rngHi - pdFib1 * rng) : (rngLo + pdFib1 * rng)
+        f2 = bullLeg ? (rngHi - pdFib2 * rng) : (rngLo + pdFib2 * rng)
+        f3 = bullLeg ? (rngHi - pdFib3 * rng) : (rngLo + pdFib3 * rng)
+        bool fibHit = (math.abs(mid - f1) <= tol) or (math.abs(mid - f2) <= tol) or (math.abs(mid - f3) <= tol)
+        if fibHit
+            score := score + 18.0
+            parts := parts + "OTE "
+        float pos = (mid - rngLo) / rng
+        if pos >= 0.75 or pos <= 0.25
+            score := score + 8.0
+            parts := parts + (pos >= 0.75 ? "prem " : "disc ")
     if confRound > 0
         float nearest = math.round(mid / confRound) * confRound
         if math.abs(mid - nearest) <= tol
