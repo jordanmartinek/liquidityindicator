@@ -348,8 +348,12 @@ f_tablePos(string p) =>
 // limit for line/box coordinates (a stale void/OB/ghost start bar would otherwise
 // throw a runtime error). Falls back to a safe recent bar when na or too old.
 f_clampBar(int b) =>
-    int safe = bar_index - 4900
-    na(b) ? safe : math.max(b, safe)
+    // never below 0 (charts with < 4900 bars would otherwise yield a negative
+    // bar index, which line.new/box.new reject at runtime) and never older than
+    // ~4900 bars back (TradingView's ~10k coordinate limit).
+    int safe = math.max(bar_index - 4900, 0)
+    int r = na(b) ? safe : math.max(b, safe)
+    math.max(r, 0)
 
 // bias text from a fast/slow EMA pair
 f_biasTxt(float ef, float es) =>
