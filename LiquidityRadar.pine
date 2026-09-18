@@ -71,7 +71,7 @@ removeSwept = input.bool(true, "Remove swept levels (swings, EQ, prev-period)", 
 showEQ     = input.bool(true,  "Equal Highs/Lows (EQH/EQL)",   group = G_STRUCT)
 eqTol      = input.float(0.35, "  EQ tolerance (× ATR)", minval = 0.0, step = 0.05, tooltip = "Two swing pivots count as an Equal High/Low if they are within this many ATRs of each other. Larger = catches more equal levels.", group = G_STRUCT)
 eqLookback = input.int(6, "  EQ lookback (pivots)", minval = 1, maxval = 30, tooltip = "How many recent same-type pivots to compare a new pivot against when hunting for equal highs/lows. Higher = catches equals that form NON-consecutively (e.g. equal to a high from several swings ago), which the old 1-pivot check missed.", group = G_STRUCT)
-showPD     = input.bool(true,  "Premium / Discount (master)", tooltip = "Master switch for the whole P/D system. Sub-elements below can each be toggled independently.", group = G_STRUCT)
+showPD     = input.bool(false, "Premium / Discount (master)", tooltip = "Master switch for drawing the P/D system (fibs, equilibrium, range boundaries). OFF by default. Note: hiding it does NOT change the confluence score - the dealing range and OTE factors are still computed internally.", group = G_STRUCT)
 showFibs   = input.bool(true,  "  Show OTE fib level lines", tooltip = "The 0.705 / 0.788 / 0.886 retracement lines. Turn off to remove just the fib levels while keeping equilibrium / range boundaries.", group = G_STRUCT)
 showEqm    = input.bool(true,  "  Show equilibrium (0.5) line", group = G_STRUCT)
 showRangeBounds = input.bool(true, "  Show range boundary lines", tooltip = "The thin dotted lines at the dealing-range high and low.", group = G_STRUCT)
@@ -227,7 +227,7 @@ corrLen     = input.int(9, "  Correlation lookback (bars)", minval = 2, maxval =
 // INPUTS — CANDLE VOLUME PROFILE (LTF reconstruction, last closed candle)
 // -----------------------------------------------------------------------------
 var string G_VP = "⑧b Candle Volume Profile"
-showVP    = input.bool(true, "Show candle volume profile", tooltip = "Reconstructs a real intrabar volume profile for the LAST CLOSED candle using lower-timeframe data, drawn as a horizontal histogram. Works for recent candles only (LTF data is limited).", group = G_VP)
+showVP    = input.bool(false, "Show candle volume profile", tooltip = "Reconstructs a real intrabar volume profile for the LAST CLOSED candle using lower-timeframe data, drawn as a horizontal histogram. OFF by default. Works for recent candles only (LTF data is limited).", group = G_VP)
 vpLTF     = input.timeframe("1", "Intrabar timeframe", tooltip = "Lower timeframe used to reconstruct the profile (e.g. 1 = 1-minute intrabars). Must be lower than the chart timeframe.", group = G_VP)
 vpRows    = input.int(24, "Profile rows (price bins)", minval = 5, maxval = 100, tooltip = "How many horizontal price buckets to split the candle's range into. More = finer profile.", group = G_VP)
 vpWidth   = input.int(40, "Histogram width (bars)", minval = 5, maxval = 200, tooltip = "How many bars wide the widest volume row extends to the right of the candle.", group = G_VP)
@@ -714,9 +714,11 @@ discStreak := sweptThisBar ? 0 : discStreak + 1
 // One end is ANCHORED to the freshest opposing swing; the other end TRACKS the
 // running extreme so the fibs update as price continues in the leg's direction.
 // A new swing (re)anchors the range; a break beyond the moving end flips it.
+// Computed whenever the P/D drawings OR the confluence score OR the coach need it,
+// so hiding the P/D drawings never changes the confluence score.
 var float rngHi = na
 var float rngLo = na
-if showPD
+if showPD or showConf or showCoach
     // (re)anchor whenever a fresh confirmed pivot appears
     if not na(pl)                       // fresh swing low => bullish leg, anchor the low
         rngLo := pl
@@ -1298,7 +1300,7 @@ f_confScore(float mid, float loB, float hiB, int members) =>
         score := score + 12.0
         parts := parts + "void "
     // OTE fib proximity (from the live dealing range): +18
-    if showPD and not na(rngHi) and not na(rngLo) and rngHi > rngLo
+    if not na(rngHi) and not na(rngLo) and rngHi > rngLo
         float rng = rngHi - rngLo
         bool bullLeg = rangeDir >= 0
         f1 = bullLeg ? (rngHi - pdFib1 * rng) : (rngLo + pdFib1 * rng)
