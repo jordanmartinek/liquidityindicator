@@ -189,7 +189,7 @@ showRank   = input.bool(true, "Top-3 draw ranking table", tooltip = "A compact t
 rankPos    = input.string("Top Left", "  Ranking table position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Left"], group = G_EXTRA)
 showRR     = input.bool(true, "Auto R:R projection on SFP", tooltip = "When a sweep+reversal fires, project a suggested stop (beyond the sweep wick) and a target (the next opposing liquidity pool) and label the reward:risk.", group = G_EXTRA)
 rrTargetPad = input.float(0.1, "  Stop padding (× ATR)", minval = 0.0, step = 0.05, tooltip = "Extra buffer beyond the sweep wick for the stop.", group = G_EXTRA)
-showStats  = input.bool(true, "Backtest stat panel (sweep→reversal)", tooltip = "Tracks, over the visible history, how often a swept level reversed vs continued - a rough hit-rate feedback loop.", group = G_EXTRA)
+showStats  = input.bool(false, "Sweep→reversal hit-rate panel (legacy)", tooltip = "A rough single hit-rate over history. OFF by default - the ⑯ Backtest harness (win rate + avg R by grade) supersedes it. Re-enable if you want the simple version; move it off Bottom Left to avoid overlapping the backtest table.", group = G_EXTRA)
 statsPos   = input.string("Bottom Left", "  Stat panel position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Left"], group = G_EXTRA)
 statsWin   = input.int(10, "  Reversal confirm window (bars)", minval = 2, maxval = 50, tooltip = "After a sweep, how many bars to wait to judge whether price reversed back through the level (a successful grab) or continued.", group = G_EXTRA)
 
@@ -255,7 +255,7 @@ btTargetMode = input.string("Fixed R multiple", "  Target mode", options = ["Fix
 btRR        = input.float(2.0, "  Target R multiple", minval = 0.5, maxval = 10.0, step = 0.5, tooltip = "For 'Fixed R multiple' mode: the reward:risk target. 2 = risk 1 to make 2.", group = G_SQ)
 btStopPad   = input.float(0.1, "  Stop padding (× ATR)", minval = 0.0, step = 0.05, tooltip = "Extra buffer beyond the sweep wick for the virtual stop.", group = G_SQ)
 btMaxBars   = input.int(200, "  Max bars to resolve a trade", minval = 10, maxval = 1000, tooltip = "If neither stop nor target is hit within this many bars, the trade is closed at market (recorded as its running R).", group = G_SQ)
-btPos       = input.string("Bottom Right", "  Results table position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Left","Middle Right"], tooltip = "Corner for the backtest results table. Default bottom-right to avoid overlapping the ranking (top-left) and stat (bottom-left) panels.", group = G_SQ)
+btPos       = input.string("Bottom Left", "  Results table position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Left","Middle Right"], tooltip = "Corner for the backtest results table. Default bottom-left. If a panel is hidden, it's because two share a corner - move one here. Occupied by default: DOL=top-right, ranking=top-left, alignment=middle-left, MTF dashboard=middle-right, coach=bottom-right.", group = G_SQ)
 
 // -----------------------------------------------------------------------------
 // INPUTS — CANDLE VOLUME PROFILE (LTF reconstruction, last closed candle)
