@@ -86,7 +86,12 @@ When a level is **swept** (price trades through it), it leaves behind a faint **
 - **MTF alignment meter (0–100)** — a single score for how much the dashboard timeframes agree on direction (100 = all point the same way), shown in a compact panel and folded into the setup grade.
 - **Setup grade (A+/B/C)** — grades each sweep+reversal by combining killzone timing, volume, rejection-wick strength, and MTF alignment into one letter shown on the SFP marker.
 - **JSON alert payloads** — optional `alert()` on each graded SFP with a machine-readable JSON message (symbol, tf, side, grade, price, swept level, rvol, alignment, time) for webhooks / auto-trading bots.
-- **Liquidity path projection** — a faint dotted route from current price through the strongest ranked magnets in order — the likely path to collect liquidity.
+- **Liquidity path projection** — a dotted route from current price through the strongest ranked magnets. *Draw Model v2:* optionally follows the DOL direction only (same-side pools) and walks them **nearest-first** so the route reads like a realistic liquidity run instead of zig-zagging; leg thickness scales with magnet strength.
+
+### Draw Model v2 (DOL + path, unified)
+The DOL gauge and the liquidity path now share one direction decision, so they always tell the same story. The DOL banner adds:
+- **Tug-of-war bar** — shows both sides' aggregate pull (`SSL 38 ▮▮▮▮▯▯▯▯▯▯ 62 BSL`) so you see how lopsided the draw is (and when it's near-balanced / low conviction), not just the winner.
+- **Trend read** — whether the draw is 📈 strengthening, 📉 fading, or ➖ steady over a configurable lookback.
 
 ---
 
