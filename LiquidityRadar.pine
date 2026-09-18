@@ -344,6 +344,13 @@ volOK  = (not sfpUseVol) or (rvol >= rvolMult)
 f_tablePos(string p) =>
     p == "Top Right" ? position.top_right : p == "Top Left" ? position.top_left : p == "Bottom Right" ? position.bottom_right : p == "Bottom Left" ? position.bottom_left : p == "Middle Left" ? position.middle_left : position.middle_right
 
+// clamp a drawing's start bar_index so it never exceeds TradingView's ~10k-bar
+// limit for line/box coordinates (a stale void/OB/ghost start bar would otherwise
+// throw a runtime error). Falls back to a safe recent bar when na or too old.
+f_clampBar(int b) =>
+    int safe = bar_index - 4900
+    na(b) ? safe : math.max(b, safe)
+
 // bias text from a fast/slow EMA pair
 f_biasTxt(float ef, float es) =>
     na(ef) or na(es) ? "–" : ef > es ? "▲ up" : ef < es ? "▼ dn" : "→ flat"
@@ -1665,7 +1672,7 @@ if barstate.islast
             int transp = int(math.min(100, ghostOpacity + (100 - ghostOpacity) * fade))
             color gc = color.new(ghostCol, transp)
             // draw from where it was swept to a little past the current bar
-            line gl = line.new(gb, gp, bar_index + 3, gp, color = gc, width = 1, style = line.style_dotted)
+            line gl = line.new(f_clampBar(gb), gp, bar_index + 3, gp, color = gc, width = 1, style = line.style_dotted)
             array.push(ghost_lines, gl)
 
     // ---- Power-of-three daily-bias tag (feature #7) ----
@@ -1687,7 +1694,7 @@ if barstate.islast
             bool bull = array.get(obBull, oi)
             color oc  = bull ? obColBull : obColBear
             int   ob0 = array.get(obBirth, oi)
-            box obx = box.new(ob0, array.get(obTop, oi), bar_index + extendR, array.get(obBot, oi), border_color = color.new(bull ? obColBull : obColBear, 20), border_width = 1, bgcolor = oc)
+            box obx = box.new(f_clampBar(ob0), array.get(obTop, oi), bar_index + extendR, array.get(obBot, oi), border_color = color.new(bull ? obColBull : obColBear, 20), border_width = 1, bgcolor = oc)
             array.push(xtra_boxes, obx)
             label olb = label.new(bar_index + extendR, (array.get(obTop, oi) + array.get(obBot, oi)) / 2.0, bull ? "OB▲ demand" : "OB▼ supply", style = label.style_label_left, color = color.new(bull ? obColBull : obColBear, 30), textcolor = color.white, size = size.tiny)
             array.push(xtra_labels, olb)
@@ -1697,7 +1704,7 @@ if barstate.islast
         for vi = 0 to array.size(voidMid) - 1
             float vm = array.get(voidMid, vi)
             int   vb = array.get(voidBirth, vi)
-            line vln = line.new(vb, vm, bar_index + extendR, vm, color = color.new(voidCol, 20), width = 1, style = line.style_dotted)
+            line vln = line.new(f_clampBar(vb), vm, bar_index + extendR, vm, color = color.new(voidCol, 20), width = 1, style = line.style_dotted)
             array.push(xtra_lines, vln)
             label vlb = label.new(bar_index + extendR, vm, "◫ void", style = label.style_label_left, color = color.new(voidCol, 40), textcolor = color.white, size = size.tiny)
             array.push(xtra_labels, vlb)
@@ -1705,7 +1712,7 @@ if barstate.islast
     // ---- Asian range box (feature #4) ----
     if masterOn and showAsiaBox and not na(asiaH) and not na(asiaL) and b_ah <= bar_index
         int aStart = math.min(nz(b_ah, bar_index), nz(b_al, bar_index))
-        box abx = box.new(aStart, asiaH, bar_index + extendR, asiaL, border_color = color.new(#ffb300, 40), border_width = 1, bgcolor = asiaBoxCol)
+        box abx = box.new(f_clampBar(aStart), asiaH, bar_index + extendR, asiaL, border_color = color.new(#ffb300, 40), border_width = 1, bgcolor = asiaBoxCol)
         array.push(xtra_boxes, abx)
         label albl = label.new(bar_index + extendR, asiaH, "Asian range", style = label.style_label_left, color = color.new(#ffb300, 60), textcolor = color.white, size = size.tiny)
         array.push(xtra_labels, albl)
