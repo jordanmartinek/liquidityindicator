@@ -240,9 +240,15 @@ gradeAlignMin = input.int(65, "  Alignment counts as aligned above", minval = 0,
 // -- alert() JSON payloads (feature #24) --
 alertJson   = input.bool(false, "Emit JSON alert payloads (webhooks/bots)", tooltip = "When ON, fires an alert() on each graded SFP with a machine-readable JSON message (side, price, grade, level, R:R-ready fields) for webhooks / auto-trading. Create the alert in TradingView with condition = this indicator, 'Any alert() function call'.", group = G_SQ)
 // -- Liquidity path projection (feature #32) --
-showPath    = input.bool(true, "Liquidity path projection", tooltip = "Draws a faint dotted route from current price through the strongest ranked liquidity magnets in order - the likely path price takes to collect liquidity.", group = G_SQ)
+showPath    = input.bool(true, "Liquidity path projection", tooltip = "Draws a dotted route from current price through the strongest ranked liquidity magnets - the likely path price takes to collect liquidity.", group = G_SQ)
 pathN       = input.int(3, "  Magnets in the path", minval = 2, maxval = 6, tooltip = "How many of the top-ranked magnets to connect into the projected path.", group = G_SQ)
 pathCol     = input.color(color.new(#ffb300, 30), "  Path color", group = G_SQ)
+pathDirect  = input.bool(true, "  Follow DOL direction only", tooltip = "Draw Model v2: route only through magnets on the side the Draw-on-Liquidity gauge points to (e.g. only buy-side pools above when DOL says UP), ordered nearest-first so the path reads like a realistic liquidity run - instead of zig-zagging by raw score.", group = G_SQ)
+pathScaleConf = input.bool(true, "  Scale leg thickness by strength", tooltip = "Stronger magnets draw as bolder path legs; weaker ones fainter.", group = G_SQ)
+// -- Draw Model v2: DOL enhancements --
+dolTugBar   = input.bool(true, "DOL tug-of-war bar (BSL vs SSL)", tooltip = "Show both sides' aggregate pull as a balance bar in the DOL banner, not just the winner - so you see HOW lopsided (and when it's near-balanced / low conviction).", group = G_SQ)
+dolTrendOn  = input.bool(true, "DOL trend (strengthening / fading)", tooltip = "Track the DOL conviction over recent bars and show whether the draw is building or weakening.", group = G_SQ)
+dolTrendLen = input.int(5, "  DOL trend lookback (bars)", minval = 2, maxval = 50, tooltip = "How many bars back to compare current conviction against for the strengthening/fading read.", group = G_SQ)
 
 // -----------------------------------------------------------------------------
 // INPUTS — CANDLE VOLUME PROFILE (LTF reconstruction, last closed candle)
@@ -354,6 +360,12 @@ dolTrend  = (dolEmaF - dolEmaS) / math.max(nz(atr), syminfo.mintick)   // ATRs o
 dolRoc    = ta.roc(close, 9) / 100.0                                    // fractional 9-bar change
 dolMomRaw = 0.6 * dolTrend + 0.4 * (dolRoc * 20.0)                      // scale ROC into a comparable range
 dolMom    = math.max(-1.0, math.min(1.0, dolMomRaw))                    // clamp to -1..+1 (up vs down)
+
+// Draw Model v2 (feature #8): a per-bar conviction proxy with REAL history, so the
+// DOL banner can report whether the draw is strengthening or fading. (The full DOL
+// gravity tally only runs on the last bar, so we track the momentum-magnitude here,
+// which is the component that actually evolves bar-to-bar.) 0..100.
+dolConvBar = math.round(math.abs(dolMom) * 100.0)
 
 // [Feature #5] Relative volume: current volume vs its own moving average.
 // Used to confirm that a sweep printed on real participation, not thin noise.
@@ -1513,6 +1525,14 @@ if barstate.islast
                             cnt := cnt + 1
                     sslStrength := sslStrength * (1.0 + (cnt - 1) * 0.25 * sensK)
 
+    // ---- Draw Model v2: shared direction decision (used by BOTH the DOL banner
+    //      and the liquidity path so the two features tell one coherent story) ----
+    float dm_totalG = bslStrength + sslStrength
+    float dm_liqBias = dm_totalG > 0 ? (bslStrength - sslStrength) / dm_totalG : 0.0
+    float dm_bias = (1.0 - dolMomWt / 100.0) * dm_liqBias + (dolMomWt / 100.0) * dolMom
+    bool  dolDrawUp = dm_bias >= 0
+    float dolTgt = dolDrawUp ? bslTopPrice : sslTopPrice
+
     int n = array.size(lv_price)
     if n > 0
         // ---- sort candidate indices by price (simple insertion sort on an index array) ----
@@ -1678,19 +1698,18 @@ if barstate.islast
     // price => arrow UP toward it; heavier SSL below price => arrow DOWN.
     if masterOn and showDOL and (bslStrength > 0 or sslStrength > 0)
         float atrU2 = math.max(nz(atr), syminfo.mintick)
-        // --- blend the static liquidity gravity with live directional momentum ---
-        // Convert each into a signed -1..+1 "up bias", then weight by dolMomWt.
-        float totalG = bslStrength + sslStrength
-        float liqBias = totalG > 0 ? (bslStrength - sslStrength) / totalG : 0.0   // +1 = all BSL(up)
-        float mw = dolMomWt / 100.0
-        float bias = (1.0 - mw) * liqBias + mw * dolMom                            // final signed up-bias
-        bool drawUp = bias >= 0
+        // Draw Model v2: reuse the SHARED direction decision (computed above) so the
+        // banner and the liquidity path always agree.
+        float totalG = dm_totalG
+        float liqBias = dm_liqBias
+        float bias = dm_bias
+        bool drawUp = dolDrawUp
 
         string arrow = drawUp ? dolBull : dolBear
         // conviction 0..100 from the magnitude of the blended bias
         float conv = math.round(math.min(1.0, math.abs(bias)) * 100)
         // the primary magnet on the chosen side
-        float tgtPrice = drawUp ? bslTopPrice : sslTopPrice
+        float tgtPrice = dolTgt
 
         // distance to that magnet in ATRs and %
         string distTxt = ""
@@ -1716,6 +1735,25 @@ if barstate.islast
         // target row text (the specific magnet price price is being pulled toward)
         string tgtTxt = na(tgtPrice) ? "" : ("🎯 target" + distTxt)
 
+        // --- Draw Model v2 [feature #6]: tug-of-war bar (SSL vs BSL shares) ---
+        string tugTxt = ""
+        if dolTugBar and totalG > 0
+            int bslPct = int(math.round(bslStrength / totalG * 100.0))
+            int sslPct = 100 - bslPct
+            // 10-segment bar; filled from the left in proportion to SSL share
+            int sslSeg = int(math.round(sslPct / 10.0))
+            string bar = ""
+            for sg = 1 to 10
+                bar := bar + (sg <= sslSeg ? "▮" : "▯")
+            tugTxt := "SSL " + str.tostring(sslPct) + " " + bar + " " + str.tostring(bslPct) + " BSL"
+
+        // --- Draw Model v2 [feature #8]: is the draw strengthening or fading? ---
+        string trendTxt = ""
+        if dolTrendOn
+            float convPrev = nz(dolConvBar[dolTrendLen], dolConvBar)
+            float dConv = dolConvBar - convPrev
+            trendTxt := dConv > 5 ? "📈 strengthening" : dConv < -5 ? "📉 fading" : "➖ steady"
+
         // refined direction accent: softened green (up) / red (down) from the theme
         color dirAccent = drawUp ? themeUpSolid : themeDnSolid
 
@@ -1723,16 +1761,25 @@ if barstate.islast
         // Refined look: muted panel background, direction shown via the TEXT color
         // and a slim accent border that gently pulses (not a blaring fill).
         bool showTgtRow = dolTgtLine and not na(tgtPrice)
+        bool showTugRow = dolTugBar and totalG > 0
+        bool showTrendRow = dolTrendOn
         // gentle pulse: small transparency wobble on the border only
         int pulseT = dolPulse ? (bar_index % 2 == 0 ? 15 : 45) : 25
         color borderC = color.new(dirAccent, pulseT)
         dolSzB = dolSize == "Huge" ? size.large : dolSize == "Large" ? size.normal : size.small
-        var table dolTbl = table.new(position.top_right, 1, 2, border_width = 1)
+        var table dolTbl = table.new(position.top_right, 1, 4, border_width = 1)
         table.set_position(dolTbl, f_tablePos(dolBanPos))
-        table.clear(dolTbl, 0, 0, 0, 1)
+        table.clear(dolTbl, 0, 0, 0, 3)
         table.cell(dolTbl, 0, 0, dolTxt, text_color = dirAccent, bgcolor = themePanelBg, text_size = dolSzB)
+        int rowN = 1
+        if showTugRow
+            table.cell(dolTbl, 0, rowN, tugTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
+            rowN := rowN + 1
+        if showTrendRow
+            table.cell(dolTbl, 0, rowN, trendTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
+            rowN := rowN + 1
         if showTgtRow
-            table.cell(dolTbl, 0, 1, tgtTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
+            table.cell(dolTbl, 0, rowN, tgtTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
         // slim accent frame that gently pulses
         table.set_frame_color(dolTbl, borderC)
         table.set_frame_width(dolTbl, themeBW)
@@ -1912,30 +1959,57 @@ if barstate.islast
                 aW2 := 1.0 + math.min(1.0, math.log(1.0 + math.max(0.0, bar_index - bk2)) / 6.0)
             array.push(pScore, dW2 * tW2 * aW2)
             array.push(pPrice, pk2)
+        // Draw Model v2: pick the strongest magnets, then order them into a REALISTIC
+        // route. If following DOL direction, keep only same-side pools (above when
+        // DOL=UP, below when DOWN) and walk them NEAREST-FIRST so the path reads like
+        // a real liquidity run instead of zig-zagging by raw score.
         int pTake = math.min(pathN, array.size(pScore))
-        // pick top magnets by score into an ordered price list
         picked = array.new<float>()
+        pickScr = array.new<float>()
         for r = 0 to pTake - 1
             float bS = -1.0
             int   bJ = -1
             for j = 0 to array.size(pScore) - 1
-                if array.get(pScore, j) > bS
+                float pp = array.get(pPrice, j)
+                // directional filter only when we have a real DOL reading; otherwise
+                // fall back to non-directional (all sides) so the path still draws.
+                bool dirActive = pathDirect and dm_totalG > 0
+                bool sideOk = (not dirActive) or (dolDrawUp ? pp >= close : pp < close)
+                if sideOk and array.get(pScore, j) > bS
                     bS := array.get(pScore, j)
                     bJ := j
             if bJ >= 0
                 array.push(picked, array.get(pPrice, bJ))
+                array.push(pickScr, array.get(pScore, bJ))
                 array.set(pScore, bJ, -2.0)
-        // draw the route: from current price/bar through each picked magnet in
-        // ascending future-bar steps so the path reads left-to-right.
-        if array.size(picked) > 0
+        // order the picked magnets nearest-first (ascending distance from price)
+        int pn = array.size(picked)
+        if pn > 1
+            for a = 0 to pn - 2
+                for b2 = 0 to pn - 2 - a
+                    if math.abs(array.get(picked, b2) - close) > math.abs(array.get(picked, b2 + 1) - close)
+                        float tp = array.get(picked, b2)
+                        array.set(picked, b2, array.get(picked, b2 + 1))
+                        array.set(picked, b2 + 1, tp)
+                        float tsc = array.get(pickScr, b2)
+                        array.set(pickScr, b2, array.get(pickScr, b2 + 1))
+                        array.set(pickScr, b2 + 1, tsc)
+        // max score for leg-thickness scaling
+        float pMax = 0.0
+        if pn > 0
+            for a = 0 to pn - 1
+                pMax := math.max(pMax, array.get(pickScr, a))
+        // draw the route left-to-right into small bounded future steps
+        if pn > 0
             float prevY = close
             int   prevX = bar_index
             int   stepN = math.max(1, int(extendR / math.max(pTake, 1)) + 2)
-            for pi2 = 0 to array.size(picked) - 1
+            for pi2 = 0 to pn - 1
                 float ny = array.get(picked, pi2)
                 int   nx = bar_index + (pi2 + 1) * stepN
                 if not na(ny)
-                    line pl2 = line.new(prevX, prevY, nx, ny, color = pathCol, width = 1, style = line.style_dotted)
+                    int lw = pathScaleConf and pMax > 0 ? math.max(1, int(math.round(array.get(pickScr, pi2) / pMax * 3.0))) : 1
+                    line pl2 = line.new(prevX, prevY, nx, ny, color = pathCol, width = lw, style = line.style_dotted)
                     array.push(xtra_lines, pl2)
                     prevY := ny
                     prevX := nx
