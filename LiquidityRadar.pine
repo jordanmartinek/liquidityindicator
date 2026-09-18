@@ -1261,7 +1261,9 @@ var btBar   = array.new<int>()    // bar opened
 f_gradeIdx(string g) => g == "A+" ? 0 : g == "A" ? 1 : g == "B" ? 2 : 3
 
 // ---- open a trade on a graded SFP ----
-f_btOpen(bool isLong, float swept, string grade) =>
+// poolTgt = the "next opposing pool" price (computed at the call site from the
+// per-bar level set); passed in so this function references no out-of-scope vars.
+f_btOpen(bool isLong, float swept, string grade, float poolTgt) =>
     if showBT and not na(swept)
         float entry = close
         float stopP = isLong ? (low - btStopPad * nz(atr)) : (high + btStopPad * nz(atr))
@@ -1271,7 +1273,7 @@ f_btOpen(bool isLong, float swept, string grade) =>
             if btTargetMode == "Fixed R multiple"
                 tgtP := isLong ? (entry + btRR * risk) : (entry - btRR * risk)
             else
-                tgtP := isLong ? bslTopPrice : sslTopPrice
+                tgtP := poolTgt
             if not na(tgtP) and ((isLong and tgtP > entry) or ((not isLong) and tgtP < entry))
                 array.push(btEntry, entry)
                 array.push(btStop, stopP)
@@ -1280,10 +1282,29 @@ f_btOpen(bool isLong, float swept, string grade) =>
                 array.push(btGi, f_gradeIdx(grade))
                 array.push(btBar, bar_index)
 
+// nearest opposing pool for a target: for a long, the closest buy-side level ABOVE
+// price; for a short, the closest sell-side level BELOW price (from the per-bar set).
+f_nextPoolUp() =>
+    float best = na
+    if array.size(lvHiNow) > 0
+        for i = 0 to array.size(lvHiNow) - 1
+            float lv = array.get(lvHiNow, i)
+            if lv > close and (na(best) or lv < best)
+                best := lv
+    best
+f_nextPoolDn() =>
+    float best = na
+    if array.size(lvLoNow) > 0
+        for i = 0 to array.size(lvLoNow) - 1
+            float lv = array.get(lvLoNow, i)
+            if lv < close and (na(best) or lv > best)
+                best := lv
+    best
+
 if sfpLong
-    f_btOpen(true, sweptLoLvl, sfpLongGrade)
+    f_btOpen(true, sweptLoLvl, sfpLongGrade, f_nextPoolUp())
 if sfpShort
-    f_btOpen(false, sweptHiLvl, sfpShortGrade)
+    f_btOpen(false, sweptHiLvl, sfpShortGrade, f_nextPoolDn())
 
 // ---- resolve open trades on this bar ----
 if showBT and array.size(btEntry) > 0
