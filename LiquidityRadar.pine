@@ -6,7 +6,7 @@
 // automatic CLUSTERING: nearby levels merge into a single strength-rated zone
 // so labels never pile up on top of each other.
 // =============================================================================
-indicator("Liquidity Radar", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+indicator("Liquidity Radar", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 1000)
 
 // Anchor plot so the compiler always sees at least one drawing output at the
 // top level (all real drawing happens on the last bar).
@@ -348,12 +348,14 @@ f_tablePos(string p) =>
 // limit for line/box coordinates (a stale void/OB/ghost start bar would otherwise
 // throw a runtime error). Falls back to a safe recent bar when na or too old.
 f_clampBar(int b) =>
-    // never below 0 (charts with < 4900 bars would otherwise yield a negative
-    // bar index, which line.new/box.new reject at runtime) and never older than
-    // ~4900 bars back (TradingView's ~10k coordinate limit).
-    int safe = math.max(bar_index - 4900, 0)
-    int r = na(b) ? safe : math.max(b, safe)
-    math.max(r, 0)
+    // Clamp a drawing's start bar to a window that is guaranteed to be inside the
+    // available history buffer. Using an absolute old bar_index as a line/box x can
+    // trigger "historical offset beyond buffer limit" on charts with limited loaded
+    // history, so cap how many bars back we ever anchor. Never below 0.
+    int back = math.min(bar_index, 300)
+    int floorBar = bar_index - back
+    int r = na(b) ? floorBar : math.max(b, floorBar)
+    math.max(math.min(r, bar_index), 0)
 
 // bias text from a fast/slow EMA pair
 f_biasTxt(float ef, float es) =>
@@ -1726,8 +1728,12 @@ if barstate.islast
         for vi = 0 to array.size(voidMid) - 1
             float vm = array.get(voidMid, vi)
             int   vb = array.get(voidBirth, vi)
-            if not na(vm)
-                line vln = line.new(f_clampBar(vb), vm, bar_index + extendR, vm, color = color.new(voidCol, 20), width = 1, style = line.style_dotted)
+            // draw only if the price is valid AND the start bar sits within a safe
+            // window; anchor the LEFT end at a clamped, guaranteed-valid bar and the
+            // right end at the current bar (both always within TradingView's limits).
+            int vStart = f_clampBar(vb)
+            if not na(vm) and vStart >= 0 and vStart <= bar_index
+                line vln = line.new(vStart, vm, bar_index + extendR, vm, color = color.new(voidCol, 20), width = 1, style = line.style_dotted)
                 array.push(xtra_lines, vln)
                 label vlb = label.new(bar_index + extendR, vm, "◫ void", style = label.style_label_left, color = color.new(voidCol, 40), textcolor = color.white, size = size.tiny)
                 array.push(xtra_labels, vlb)
