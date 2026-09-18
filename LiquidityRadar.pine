@@ -1169,27 +1169,37 @@ if array.size(pendBar) > 0
 // Killzone background shading (feature #4)
 bgcolor(masterOn and showKZ and inKillzone ? kzColor : na, title = "Killzone")
 
+// Signal markers (SFP / BOS / CHoCH / SMT) are historical and permanent, so they
+// accumulate over time. Cap them in a rolling pool so they never exhaust the
+// 500-label budget (which would make ALL later drawings, e.g. voids, fail).
+var mk_labels = array.new<label>()
+f_mark(int x, float y, string txt, string yl, string stl, color col, color tcol, string sz) =>
+    label lb = label.new(x, y, txt, yloc = yl, style = stl, color = col, textcolor = tcol, size = sz)
+    array.push(mk_labels, lb)
+    while array.size(mk_labels) > 120
+        label.delete(array.shift(mk_labels))
+
 // SFP markers (feature #1). A grab inside a killzone gets a 🔥 emphasis.
 if masterOn and sfpLong
     string ktag = inKillzone ? " 🔥KZ" : ""
     string wtag = sfpWick ? " " + f_wickGrade(dnWickFrac) : ""
-    label.new(bar_index, low, "🎯 SFP▲" + (sfpUseVol ? " " + str.tostring(rvol, "#.0") + "x" : "") + wtag + ktag, yloc = yloc.belowbar, style = label.style_label_up, color = sfpColLong, textcolor = color.white, size = size.small)
+    f_mark(bar_index, low, "🎯 SFP▲" + (sfpUseVol ? " " + str.tostring(rvol, "#.0") + "x" : "") + wtag + ktag, yloc.belowbar, label.style_label_up, sfpColLong, color.white, size.small)
 if masterOn and sfpShort
     string ktag = inKillzone ? " 🔥KZ" : ""
     string wtag = sfpWick ? " " + f_wickGrade(upWickFrac) : ""
-    label.new(bar_index, high, "🎯 SFP▼" + (sfpUseVol ? " " + str.tostring(rvol, "#.0") + "x" : "") + wtag + ktag, yloc = yloc.abovebar, style = label.style_label_down, color = sfpColShort, textcolor = color.white, size = size.small)
+    f_mark(bar_index, high, "🎯 SFP▼" + (sfpUseVol ? " " + str.tostring(rvol, "#.0") + "x" : "") + wtag + ktag, yloc.abovebar, label.style_label_down, sfpColShort, color.white, size.small)
 
 // BOS / CHoCH markers (feature #9)
 if masterOn and showBOS and bosUp
-    label.new(bar_index, high, chochUp ? "CHoCH▲" : "BOS▲", yloc = yloc.abovebar, style = label.style_label_down, color = color.new(bosColBull, 20), textcolor = color.white, size = size.tiny)
+    f_mark(bar_index, high, chochUp ? "CHoCH▲" : "BOS▲", yloc.abovebar, label.style_label_down, color.new(bosColBull, 20), color.white, size.tiny)
 if masterOn and showBOS and bosDn
-    label.new(bar_index, low, chochDn ? "CHoCH▼" : "BOS▼", yloc = yloc.belowbar, style = label.style_label_up, color = color.new(bosColBear, 20), textcolor = color.white, size = size.tiny)
+    f_mark(bar_index, low, chochDn ? "CHoCH▼" : "BOS▼", yloc.belowbar, label.style_label_up, color.new(bosColBear, 20), color.white, size.tiny)
 
 // SMT divergence markers (feature #4). Pivot is confirmed smtLen bars back.
 if masterOn and bearSMT
-    label.new(bar_index - smtLen, high[smtLen], "SMT▼", yloc = yloc.abovebar, style = label.style_label_down, color = color.new(smtColBear, 10), textcolor = color.white, size = size.small)
+    f_mark(bar_index - smtLen, high[smtLen], "SMT▼", yloc.abovebar, label.style_label_down, color.new(smtColBear, 10), color.white, size.small)
 if masterOn and bullSMT
-    label.new(bar_index - smtLen, low[smtLen], "SMT▲", yloc = yloc.belowbar, style = label.style_label_up, color = color.new(smtColBull, 10), textcolor = color.white, size = size.small)
+    f_mark(bar_index - smtLen, low[smtLen], "SMT▲", yloc.belowbar, label.style_label_up, color.new(smtColBull, 10), color.white, size.small)
 
 // -----------------------------------------------------------------------------
 // COLLECT → CLUSTER → RENDER  (runs only on the last bar)
