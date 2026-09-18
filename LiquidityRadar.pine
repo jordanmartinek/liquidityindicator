@@ -1656,20 +1656,24 @@ if barstate.islast
         idx = array.new<int>()
         for i = 0 to n - 1
             array.push(idx, i)
-        for i = 1 to n - 1
-            int keyIdx = array.get(idx, i)
-            float keyVal = array.get(lv_price, keyIdx)
-            int j = i - 1
-            while j >= 0 and array.get(lv_price, array.get(idx, j)) > keyVal
-                array.set(idx, j + 1, array.get(idx, j))
-                j := j - 1
-            array.set(idx, j + 1, keyIdx)
+        // bound the sort by the ACTUAL idx size (never the captured n) so a
+        // mismatch can never cause an out-of-bounds array.get.
+        int idxN = array.size(idx)
+        if idxN > 1
+            for i = 1 to idxN - 1
+                int keyIdx = array.get(idx, i)
+                float keyVal = array.get(lv_price, keyIdx)
+                int j = i - 1
+                while j >= 0 and array.get(lv_price, array.get(idx, j)) > keyVal
+                    array.set(idx, j + 1, array.get(idx, j))
+                    j := j - 1
+                array.set(idx, j + 1, keyIdx)
 
         float mergeDist = nz(atr) * clustDist
 
         // ---- walk sorted levels, grouping neighbours within mergeDist ----
         int gi = 0
-        while gi < n
+        while gi < idxN
             // start a new group
             int startI = gi
             float sumP = array.get(lv_price, array.get(idx, gi))
@@ -1681,7 +1685,7 @@ if barstate.islast
             int oldestBirth = array.get(lv_birth, array.get(idx, gi))
             int sideSum = array.get(lv_side, array.get(idx, gi))   // sum of member sides => dominant side
             // extend group while next level is within mergeDist of the last one
-            while clusterOn and gi + 1 < n and (array.get(lv_price, array.get(idx, gi + 1)) - array.get(lv_price, array.get(idx, gi))) <= mergeDist
+            while clusterOn and gi + 1 < idxN and (array.get(lv_price, array.get(idx, gi + 1)) - array.get(lv_price, array.get(idx, gi))) <= mergeDist
                 gi := gi + 1
                 float p = array.get(lv_price, array.get(idx, gi))
                 sumP := sumP + p
