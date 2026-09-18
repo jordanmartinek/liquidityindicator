@@ -82,11 +82,17 @@ London/NY killzone background shading (sweeps inside a killzone get a 🔥 empha
 ### ⑮ Ghost Levels
 When a level is **swept** (price trades through it), it leaves behind a faint **ghost** — a very light dotted line marking where liquidity was recently taken. Ghosts fade from the set opacity toward invisible over their lifetime, then disappear. Adjustable **opacity**, **lifetime (bars)**, **color**, and max kept; fully toggleable. Covers swept swing highs/lows, equal highs/lows, and previous-period levels.
 
+### ⑯ Signal Quality & Alerts
+- **MTF alignment meter (0–100)** — a single score for how much the dashboard timeframes agree on direction (100 = all point the same way), shown in a compact panel and folded into the setup grade.
+- **Setup grade (A+/B/C)** — grades each sweep+reversal by combining killzone timing, volume, rejection-wick strength, and MTF alignment into one letter shown on the SFP marker.
+- **JSON alert payloads** — optional `alert()` on each graded SFP with a machine-readable JSON message (symbol, tf, side, grade, price, swept level, rvol, alignment, time) for webhooks / auto-trading bots.
+- **Liquidity path projection** — a faint dotted route from current price through the strongest ranked magnets in order — the likely path to collect liquidity.
+
 ---
 
 ## Alerts
 
-`SFP fired`, `SFP long`, `SFP short`, `Order block entered`, `BOS`, `CHoCH`, `DOL flipped`, `SMT divergence`, plus previous-day / session / liquidity-sweep touches.
+`SFP fired`, `SFP long`, `SFP short`, `Order block entered`, `BOS`, `CHoCH`, `DOL flipped`, `SMT divergence`, plus previous-day / session / liquidity-sweep touches — and optional **JSON `alert()` payloads** on graded SFPs (feature ⑯, for webhooks/bots).
 
 ---
 

@@ -224,6 +224,27 @@ corrInverse = input.bool(true, "  Driver is inversely correlated", tooltip = "ON
 corrLen     = input.int(9, "  Correlation lookback (bars)", minval = 2, maxval = 100, tooltip = "Bars used to read the driver's short-term direction (rate of change).", group = G_CTX)
 
 // -----------------------------------------------------------------------------
+// INPUTS — SIGNAL QUALITY & ALERTS (grade, MTF alignment, JSON alerts, path)
+// -----------------------------------------------------------------------------
+var string G_SQ = "⑯ Signal Quality & Alerts"
+// -- MTF alignment meter (feature #12) --
+showAlign   = input.bool(true, "MTF alignment meter (0-100)", tooltip = "A single score for how much the timeframes in the MTF dashboard AGREE on direction. 100 = all timeframes point the same way; ~50 = mixed. Shown in a compact panel and folded into the setup grade.", group = G_SQ)
+alignPos    = input.string("Middle Left", "  Alignment panel position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Left","Middle Right"], group = G_SQ)
+// -- A+/B/C setup grade (feature #10) --
+showGrade   = input.bool(true, "Grade SFP setups (A+/B/C)", tooltip = "Combines confluence factors on a sweep+reversal into one letter grade: killzone timing, volume, rejection-wick strength, and MTF alignment. A+ = all aligned; C = minimal. Shown on the SFP marker.", group = G_SQ)
+gradeUseKZ  = input.bool(true, "  Weight killzone timing", group = G_SQ)
+gradeUseVol = input.bool(true, "  Weight volume", group = G_SQ)
+gradeUseWick = input.bool(true, "  Weight rejection wick", group = G_SQ)
+gradeUseAlign = input.bool(true, "  Weight MTF alignment", group = G_SQ)
+gradeAlignMin = input.int(65, "  Alignment counts as aligned above", minval = 0, maxval = 100, tooltip = "MTF alignment at or above this counts as a confluence point for the grade.", group = G_SQ)
+// -- alert() JSON payloads (feature #24) --
+alertJson   = input.bool(false, "Emit JSON alert payloads (webhooks/bots)", tooltip = "When ON, fires an alert() on each graded SFP with a machine-readable JSON message (side, price, grade, level, R:R-ready fields) for webhooks / auto-trading. Create the alert in TradingView with condition = this indicator, 'Any alert() function call'.", group = G_SQ)
+// -- Liquidity path projection (feature #32) --
+showPath    = input.bool(true, "Liquidity path projection", tooltip = "Draws a faint dotted route from current price through the strongest ranked liquidity magnets in order - the likely path price takes to collect liquidity.", group = G_SQ)
+pathN       = input.int(3, "  Magnets in the path", minval = 2, maxval = 6, tooltip = "How many of the top-ranked magnets to connect into the projected path.", group = G_SQ)
+pathCol     = input.color(color.new(#ffb300, 30), "  Path color", group = G_SQ)
+
+// -----------------------------------------------------------------------------
 // INPUTS — CANDLE VOLUME PROFILE (LTF reconstruction, last closed candle)
 // -----------------------------------------------------------------------------
 var string G_VP = "⑧b Candle Volume Profile"
@@ -621,6 +642,15 @@ mtfR4 = mtfOn ? mtfTF4 : timeframe.period
 [m2Hi, m2Lo, m2Ef, m2Es, m2C] = request.security(syminfo.tickerid, mtfR2, f_mtfBundle(), lookahead = barmerge.lookahead_off)
 [m3Hi, m3Lo, m3Ef, m3Es, m3C] = request.security(syminfo.tickerid, mtfR3, f_mtfBundle(), lookahead = barmerge.lookahead_off)
 [m4Hi, m4Lo, m4Ef, m4Es, m4C] = request.security(syminfo.tickerid, mtfR4, f_mtfBundle(), lookahead = barmerge.lookahead_off)
+
+// ---- MTF ALIGNMENT METER (list feature #12): how much the TFs agree ----
+// Each timeframe votes up (+1) / down (-1) / flat (0) from its EMA pair. Alignment
+// = |net vote| / valid votes, scaled 0..100. Sign gives the agreed direction.
+f_mtfVote(float ef, float es) => (na(ef) or na(es)) ? 0 : (ef > es ? 1 : ef < es ? -1 : 0)
+mtfVoteSum   = f_mtfVote(m1Ef, m1Es) + f_mtfVote(m2Ef, m2Es) + f_mtfVote(m3Ef, m3Es) + f_mtfVote(m4Ef, m4Es)
+mtfVoteCount = (na(m1Ef) ? 0 : 1) + (na(m2Ef) ? 0 : 1) + (na(m3Ef) ? 0 : 1) + (na(m4Ef) ? 0 : 1)
+float alignScore = mtfVoteCount > 0 ? math.abs(mtfVoteSum) / mtfVoteCount * 100.0 : na
+int   alignDir   = mtfVoteSum > 0 ? 1 : mtfVoteSum < 0 ? -1 : 0
 
 // ---- CORRELATION / DRIVER CONTEXT (feature #12) ----
 // Compare a driver symbol's short-term direction against this symbol's bias.
@@ -1045,6 +1075,27 @@ bool sfpShort = showSFP and not na(sweptHiLvl) and volOK and ((not sfpWick) or u
 // bullish SFP: swept a low (sell-side) then closed back above -> expect up
 bool sfpLong  = showSFP and not na(sweptLoLvl) and volOK and ((not sfpWick) or dnWickFrac >= sfpMinWick)
 
+// ---- SETUP GRADE A+/B/C (feature #10): confluence points on the SFP bar ----
+// Points from: killzone timing, elevated volume, strong rejection wick, and MTF
+// alignment agreeing with the setup's direction. More points => higher grade.
+f_gradeFor(bool isLong) =>
+    int pts = 0
+    if gradeUseKZ and inKillzone
+        pts := pts + 1
+    if gradeUseVol and rvol >= rvolMult
+        pts := pts + 1
+    if gradeUseWick and (isLong ? dnWickFrac : upWickFrac) >= 0.35
+        pts := pts + 1
+    // MTF alignment must be both STRONG and in the setup's direction
+    if gradeUseAlign and not na(alignScore) and alignScore >= gradeAlignMin and ((isLong and alignDir > 0) or ((not isLong) and alignDir < 0))
+        pts := pts + 1
+    // map points -> letter (A+ = 4, A = 3, B = 2, C = <=1)
+    string g = pts >= 4 ? "A+" : pts == 3 ? "A" : pts == 2 ? "B" : "C"
+    [g, pts]
+
+[sfpLongGrade, sfpLongPts]   = f_gradeFor(true)
+[sfpShortGrade, sfpShortPts] = f_gradeFor(false)
+
 // ---- Order block after displacement (feature #2) ----
 // Displacement = a large-bodied candle in the reversal direction right after a grab.
 float bodySize = math.abs(close - open)
@@ -1187,11 +1238,22 @@ f_mark(int x, float y, string txt, string yl, string stl, color col, color tcol,
 if masterOn and sfpLong
     string ktag = inKillzone ? " 🔥KZ" : ""
     string wtag = sfpWick ? " " + f_wickGrade(dnWickFrac) : ""
-    f_mark(bar_index, low, "🎯 SFP▲" + (sfpUseVol ? " " + str.tostring(rvol, "#.0") + "x" : "") + wtag + ktag, yloc.belowbar, label.style_label_up, sfpColLong, color.white, size.small)
+    string gtag = showGrade ? " [" + sfpLongGrade + "]" : ""
+    f_mark(bar_index, low, "🎯 SFP▲" + gtag + (sfpUseVol ? " " + str.tostring(rvol, "#.0") + "x" : "") + wtag + ktag, yloc.belowbar, label.style_label_up, sfpColLong, color.white, size.small)
 if masterOn and sfpShort
     string ktag = inKillzone ? " 🔥KZ" : ""
     string wtag = sfpWick ? " " + f_wickGrade(upWickFrac) : ""
-    f_mark(bar_index, high, "🎯 SFP▼" + (sfpUseVol ? " " + str.tostring(rvol, "#.0") + "x" : "") + wtag + ktag, yloc.abovebar, label.style_label_down, sfpColShort, color.white, size.small)
+    string gtag = showGrade ? " [" + sfpShortGrade + "]" : ""
+    f_mark(bar_index, high, "🎯 SFP▼" + gtag + (sfpUseVol ? " " + str.tostring(rvol, "#.0") + "x" : "") + wtag + ktag, yloc.abovebar, label.style_label_down, sfpColShort, color.white, size.small)
+
+// JSON alert payloads for webhooks / bots (feature #24). One alert() per graded SFP.
+if masterOn and alertJson and (sfpLong or sfpShort)
+    bool jLong = sfpLong
+    float jSwept = jLong ? sweptLoLvl : sweptHiLvl
+    string jGrade = jLong ? sfpLongGrade : sfpShortGrade
+    string jSide = jLong ? "long" : "short"
+    string jMsg = '{"symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","event":"SFP","side":"' + jSide + '","grade":"' + jGrade + '","price":' + str.tostring(close, format.mintick) + ',"swept":' + str.tostring(jSwept, format.mintick) + ',"rvol":' + str.tostring(rvol, "#.00") + ',"align":' + (na(alignScore) ? "null" : str.tostring(math.round(alignScore))) + ',"time":' + str.tostring(time) + '}'
+    alert(jMsg, alert.freq_once_per_bar)
 
 // BOS / CHoCH markers (feature #9)
 if masterOn and showBOS and bosUp
@@ -1820,6 +1882,74 @@ if barstate.islast
                 table.cell(rankTbl, 0, r + 1, str.tostring(r + 1) + ". " + str.tostring(bestS, "#.0"), text_color = pk >= close ? themeDnSolid : themeUpSolid, bgcolor = themeRowBg, text_size = size.small)
                 table.cell(rankTbl, 1, r + 1, sideTag + " " + nm + " " + str.tostring(pk, format.mintick), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
                 array.set(rkScore, bestJ, -2.0)   // exclude from next pick
+
+    // ---- Liquidity path projection (feature #32) ----
+    // Connect the top-N ranked magnets (by the same gravity score) into a dotted
+    // route from current price, showing the likely path to collect liquidity.
+    if masterOn and showPath and array.size(lv_price) > 0
+        float pK = dolSens == "High" ? 2.0 : dolSens == "Low" ? 0.5 : 1.0
+        float pU = math.max(nz(atr), syminfo.mintick)
+        pScore = array.new<float>()
+        pPrice = array.new<float>()
+        for k = 0 to array.size(lv_price) - 1
+            float pk2 = array.get(lv_price, k)
+            string nk2 = array.get(lv_name, k)
+            int   bk2 = array.get(lv_birth, k)
+            float dW2 = 1.0 / (1.0 + pK * (math.abs(pk2 - close) / pU))
+            float tW2 = 1.0
+            if str.contains(nk2, "PMH") or str.contains(nk2, "PML") or str.contains(nk2, "HTF")
+                tW2 := 2.2
+            else if str.contains(nk2, "PWH") or str.contains(nk2, "PWL")
+                tW2 := 1.9
+            else if str.contains(nk2, "PDH") or str.contains(nk2, "PDL")
+                tW2 := 1.6
+            else if str.contains(nk2, "EQ")
+                tW2 := 1.5
+            else if str.contains(nk2, "London") or str.contains(nk2, "NY") or str.contains(nk2, "Asia")
+                tW2 := 1.2
+            float aW2 = 1.0
+            if not na(bk2)
+                aW2 := 1.0 + math.min(1.0, math.log(1.0 + math.max(0.0, bar_index - bk2)) / 6.0)
+            array.push(pScore, dW2 * tW2 * aW2)
+            array.push(pPrice, pk2)
+        int pTake = math.min(pathN, array.size(pScore))
+        // pick top magnets by score into an ordered price list
+        picked = array.new<float>()
+        for r = 0 to pTake - 1
+            float bS = -1.0
+            int   bJ = -1
+            for j = 0 to array.size(pScore) - 1
+                if array.get(pScore, j) > bS
+                    bS := array.get(pScore, j)
+                    bJ := j
+            if bJ >= 0
+                array.push(picked, array.get(pPrice, bJ))
+                array.set(pScore, bJ, -2.0)
+        // draw the route: from current price/bar through each picked magnet in
+        // ascending future-bar steps so the path reads left-to-right.
+        if array.size(picked) > 0
+            float prevY = close
+            int   prevX = bar_index
+            int   stepN = math.max(1, int(extendR / math.max(pTake, 1)) + 2)
+            for pi2 = 0 to array.size(picked) - 1
+                float ny = array.get(picked, pi2)
+                int   nx = bar_index + (pi2 + 1) * stepN
+                if not na(ny)
+                    line pl2 = line.new(prevX, prevY, nx, ny, color = pathCol, width = 1, style = line.style_dotted)
+                    array.push(xtra_lines, pl2)
+                    prevY := ny
+                    prevX := nx
+
+    // ---- MTF alignment meter panel (feature #12) ----
+    if masterOn and showAlign and not na(alignScore)
+        string aTxt = alignDir > 0 ? "▲ up" : alignDir < 0 ? "▼ dn" : "→ mixed"
+        color  aCol = alignDir > 0 ? themeUpSolid : alignDir < 0 ? themeDnSolid : themeMuted
+        var table alignTbl = table.new(position.middle_left, 1, 2, border_width = 1)
+        table.set_position(alignTbl, f_tablePos(alignPos))
+        table.set_frame_color(alignTbl, themeBorder)
+        table.set_frame_width(alignTbl, themeBW)
+        table.cell(alignTbl, 0, 0, "MTF ALIGN", text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
+        table.cell(alignTbl, 0, 1, str.tostring(math.round(alignScore)) + "%  " + aTxt, text_color = aCol, bgcolor = themeRowBg, text_size = size.small)
 
     // ---- Backtest stat panel (feature #11) ----
     if masterOn and showStats
