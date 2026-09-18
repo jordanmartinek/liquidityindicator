@@ -1107,13 +1107,15 @@ if showVoid and upRun == voidRun
     // void spans the run's start-open to current close
     float vHi = close
     float vLo = open[voidRun - 1]
-    array.push(voidMid, (vHi + vLo) / 2.0)
-    array.push(voidBirth, bar_index)
+    if not na(vHi) and not na(vLo)
+        array.push(voidMid, (vHi + vLo) / 2.0)
+        array.push(voidBirth, bar_index)
 if showVoid and dnRun == voidRun
     float vHi = open[voidRun - 1]
     float vLo = close
-    array.push(voidMid, (vHi + vLo) / 2.0)
-    array.push(voidBirth, bar_index)
+    if not na(vHi) and not na(vLo)
+        array.push(voidMid, (vHi + vLo) / 2.0)
+        array.push(voidBirth, bar_index)
 // void fills when price trades back through its midpoint
 if array.size(voidMid) > 0
     int vi = 0
@@ -1672,8 +1674,9 @@ if barstate.islast
             int transp = int(math.min(100, ghostOpacity + (100 - ghostOpacity) * fade))
             color gc = color.new(ghostCol, transp)
             // draw from where it was swept to a little past the current bar
-            line gl = line.new(f_clampBar(gb), gp, bar_index + 3, gp, color = gc, width = 1, style = line.style_dotted)
-            array.push(ghost_lines, gl)
+            if not na(gp)
+                line gl = line.new(f_clampBar(gb), gp, bar_index + 3, gp, color = gc, width = 1, style = line.style_dotted)
+                array.push(ghost_lines, gl)
 
     // ---- Power-of-three daily-bias tag (feature #7) ----
     if masterOn and showPO3 and not na(po3Open)
@@ -1694,20 +1697,24 @@ if barstate.islast
             bool bull = array.get(obBull, oi)
             color oc  = bull ? obColBull : obColBear
             int   ob0 = array.get(obBirth, oi)
-            box obx = box.new(f_clampBar(ob0), array.get(obTop, oi), bar_index + extendR, array.get(obBot, oi), border_color = color.new(bull ? obColBull : obColBear, 20), border_width = 1, bgcolor = oc)
-            array.push(xtra_boxes, obx)
-            label olb = label.new(bar_index + extendR, (array.get(obTop, oi) + array.get(obBot, oi)) / 2.0, bull ? "OB▲ demand" : "OB▼ supply", style = label.style_label_left, color = color.new(bull ? obColBull : obColBear, 30), textcolor = color.white, size = size.tiny)
-            array.push(xtra_labels, olb)
+            float obT = array.get(obTop, oi)
+            float obB = array.get(obBot, oi)
+            if not na(obT) and not na(obB)
+                box obx = box.new(f_clampBar(ob0), obT, bar_index + extendR, obB, border_color = color.new(bull ? obColBull : obColBear, 20), border_width = 1, bgcolor = oc)
+                array.push(xtra_boxes, obx)
+                label olb = label.new(bar_index + extendR, (obT + obB) / 2.0, bull ? "OB▲ demand" : "OB▼ supply", style = label.style_label_left, color = color.new(bull ? obColBull : obColBear, 30), textcolor = color.white, size = size.tiny)
+                array.push(xtra_labels, olb)
 
     // ---- Liquidity voids (feature #6) ----
     if masterOn and showVoid and array.size(voidMid) > 0
         for vi = 0 to array.size(voidMid) - 1
             float vm = array.get(voidMid, vi)
             int   vb = array.get(voidBirth, vi)
-            line vln = line.new(f_clampBar(vb), vm, bar_index + extendR, vm, color = color.new(voidCol, 20), width = 1, style = line.style_dotted)
-            array.push(xtra_lines, vln)
-            label vlb = label.new(bar_index + extendR, vm, "◫ void", style = label.style_label_left, color = color.new(voidCol, 40), textcolor = color.white, size = size.tiny)
-            array.push(xtra_labels, vlb)
+            if not na(vm)
+                line vln = line.new(f_clampBar(vb), vm, bar_index + extendR, vm, color = color.new(voidCol, 20), width = 1, style = line.style_dotted)
+                array.push(xtra_lines, vln)
+                label vlb = label.new(bar_index + extendR, vm, "◫ void", style = label.style_label_left, color = color.new(voidCol, 40), textcolor = color.white, size = size.tiny)
+                array.push(xtra_labels, vlb)
 
     // ---- Asian range box (feature #4) ----
     if masterOn and showAsiaBox and not na(asiaH) and not na(asiaL) and b_ah <= bar_index
