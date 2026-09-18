@@ -1,15 +1,18 @@
 //@version=6
 // =============================================================================
-// Liquidity Radar  (Pine Script v6)
-// Clean, toggleable liquidity/structure levels with emoji importance tags,
-// a per-level "countdown" (time-to-reach based on price velocity), and
-// automatic CLUSTERING: nearby levels merge into a single strength-rated zone
-// so labels never pile up on top of each other.
+// Liquidity Radar  (Pine Script v6) — STREAMLINED CORE
+// Focus: key liquidity levels + their validity.
+//   • Liquidity levels: PDH/PDL, PWH/PWL, PMH/PML, sessions H/L, swings (+HTF),
+//     equal highs/lows — all removed once swept.
+//   • Stacked liquidity: nearby levels merge into strength-rated zones.
+//   • Confluence score (0-100) per zone.
+//   • Draw-on-Liquidity (DOL) bias gauge + conviction.
+//   • Order Blocks and Fair Value Gaps.
+//   • Sweep + reversal (SFP) markers, per-level countdown, age-scaled extension.
 // =============================================================================
 indicator("Liquidity Radar", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 1000)
 
-// Anchor plot so the compiler always sees at least one drawing output at the
-// top level (all real drawing happens on the last bar).
+// Anchor plot so the compiler always sees a top-level drawing output.
 plot(na, "anchor", display = display.none)
 
 // -----------------------------------------------------------------------------
@@ -17,21 +20,12 @@ plot(na, "anchor", display = display.none)
 // -----------------------------------------------------------------------------
 var string G_PREV   = "① Previous-Period Levels"
 var string G_SESS   = "② Sessions"
-var string G_STRUCT = "③ Structure / SMC"
+var string G_STRUCT = "③ Structure (swings · EQ · FVG · OB · SFP)"
 var string G_CD     = "④ Countdown"
-var string G_CLUST  = "⑤ Clustering (anti-clutter)"
-var string G_STYLE  = "⑥ Style & Compact Mode"
-var string G_EMO    = "⑦ Emoji Importance Tags"
-
-// -----------------------------------------------------------------------------
-// INPUTS — APPEARANCE / THEME  (elegant, refined panel styling)
-// -----------------------------------------------------------------------------
-var string G_THEME = "⓪ Appearance & Theme"
-uiTheme    = input.string("Refined Dark", "Panel theme", options = ["Refined Dark","Refined Light","Midnight","Slate","Classic (legacy)"], tooltip = "Controls the look of the on-chart panels (DOL banner, dashboards, coach). 'Refined' themes use a muted, low-contrast palette with soft borders for a cleaner, less garish feel.", group = G_THEME)
-uiPanelOpacity = input.int(16, "Panel background opacity boost", minval = 0, maxval = 60, tooltip = "Extra transparency added to panel backgrounds. Higher = more see-through / subtler panels.", group = G_THEME)
-uiAccentTint = input.int(70, "Accent softness", minval = 0, maxval = 90, tooltip = "How much accent colors (bias green/red, headers) are muted toward the panel background. Higher = softer, more pastel; lower = punchier.", group = G_THEME)
-uiSlimBorders = input.bool(true, "Slim panel borders", tooltip = "Use thin 1px borders instead of thick frames for a more refined look.", group = G_THEME)
-perfMode   = input.bool(false, "⚡ Performance mode (disable heavy modules)", tooltip = "For low-end machines / faster loading: turns OFF the heaviest modules that use lower-timeframe or multi-symbol data - the Candle Volume Profile, the MTF Liquidity Dashboard, and SMT Divergence. All the on-chart level/zone drawing stays on.", group = G_THEME)
+var string G_CLUST  = "⑤ Clustering & Confluence"
+var string G_DOL    = "⑥ Draw-on-Liquidity Gauge"
+var string G_STYLE  = "⑦ Style"
+var string G_EMO    = "⑧ Emoji Tags"
 
 // -----------------------------------------------------------------------------
 // INPUTS — PREVIOUS-PERIOD LEVELS
@@ -53,42 +47,38 @@ showNY    = input.bool(true,  "New York Session H/L", group = G_SESS)
 nySess    = input.session("1300-2100", "  New York time", group = G_SESS)
 sessResetDaily = input.bool(true, "Reset session H/L each new day", tooltip = "At the start of a new trading day, clear the previous day's session highs/lows so stale levels don't linger.", group = G_SESS)
 sessRemoveSwept = input.bool(true, "Remove session level once swept", tooltip = "If price trades through a session high/low, drop it (the liquidity has been taken).", group = G_SESS)
-sessReclassify = input.bool(true, "Reclassify unswept session H/L as swings", tooltip = "A session high/low that survives into the next day (never swept) gets relabeled from e.g. 'Asia H' to 'Asia H (swing)' since it now acts as untapped swing liquidity rather than a live session extreme.", group = G_SESS)
+sessReclassify = input.bool(true, "Reclassify unswept session H/L as swings", tooltip = "A session high/low that survives into the next day (never swept) gets relabeled e.g. 'Asia H (swing)'.", group = G_SESS)
 
 // -----------------------------------------------------------------------------
-// INPUTS — STRUCTURE / SMC
+// INPUTS — STRUCTURE
 // -----------------------------------------------------------------------------
-showFVG    = input.bool(true,  "Fair Value Gaps (FVG)",        group = G_STRUCT)
-hideMitFVG = input.bool(true,  "  Remove invalidated FVGs",    group = G_STRUCT)
-fvgFillMode = input.string("Body close through", "  FVG invalidation", options = ["Body close through","Wick touch (50%)","Full fill (wick)"], tooltip = "Body close through: gap disappears once a candle CLOSES beyond it (recommended). Wick touch: removed when price wicks halfway into it. Full fill: removed only when a wick fully engulfs it.", group = G_STRUCT)
 showSwing  = input.bool(true,  "Swing Highs/Lows (liquidity)", group = G_STRUCT)
 swingLen   = input.int(10, "  Swing pivot length", minval = 2, group = G_STRUCT)
-swingHist  = input.int(40, "  Historical swings kept (per side)", minval = 1, maxval = 200, tooltip = "How many UNSWEPT swing highs and lows to keep on the chart. Higher = more levels going back days/weeks. Old untapped swings persist until price sweeps them.", group = G_STRUCT)
-htfSwingOn = input.bool(true, "  Add higher-timeframe swings", tooltip = "Also pull swing highs/lows from a higher timeframe so MAJOR structural levels from far back are captured even on a low-timeframe chart. This is the fix for 'no SSL below price at a major low' - it reaches much further back.", group = G_STRUCT)
+swingHist  = input.int(40, "  Historical swings kept (per side)", minval = 1, maxval = 200, tooltip = "How many UNSWEPT swing highs/lows to keep. Higher = more levels going back. Old untapped swings persist until swept.", group = G_STRUCT)
+htfSwingOn = input.bool(true, "  Add higher-timeframe swings", tooltip = "Also pull swing highs/lows from a higher timeframe so major structural levels far back are captured on a low-TF chart.", group = G_STRUCT)
 htfTF      = input.timeframe("240", "  HTF timeframe", tooltip = "Timeframe for the extra structural swings (e.g. 240 = 4h, D = daily).", group = G_STRUCT)
 htfLen     = input.int(5, "  HTF swing pivot length", minval = 2, group = G_STRUCT)
-removeSwept = input.bool(true, "Remove swept levels (swings, EQ, prev-period)", tooltip = "Once price trades through a level (a HIGH is taken when price prints above it, a LOW when price prints below it), remove it - the liquidity has been taken. Applies to swing H/L, Equal H/L, and previous-period levels.", group = G_STRUCT)
+removeSwept = input.bool(true, "Remove swept levels (swings, EQ, prev-period)", tooltip = "Once price trades through a level, remove it - the liquidity has been taken.", group = G_STRUCT)
 showEQ     = input.bool(true,  "Equal Highs/Lows (EQH/EQL)",   group = G_STRUCT)
-eqTol      = input.float(0.35, "  EQ tolerance (× ATR)", minval = 0.0, step = 0.05, tooltip = "Two swing pivots count as an Equal High/Low if they are within this many ATRs of each other. Larger = catches more equal levels.", group = G_STRUCT)
-eqLookback = input.int(6, "  EQ lookback (pivots)", minval = 1, maxval = 30, tooltip = "How many recent same-type pivots to compare a new pivot against when hunting for equal highs/lows. Higher = catches equals that form NON-consecutively (e.g. equal to a high from several swings ago), which the old 1-pivot check missed.", group = G_STRUCT)
-showPD     = input.bool(false, "Premium / Discount (master)", tooltip = "Master switch for drawing the P/D system (fibs, equilibrium, range boundaries). OFF by default. Note: hiding it does NOT change the confluence score - the dealing range and OTE factors are still computed internally.", group = G_STRUCT)
-showFibs   = input.bool(true,  "  Show OTE fib level lines", tooltip = "The 0.705 / 0.788 / 0.886 retracement lines. Turn off to remove just the fib levels while keeping equilibrium / range boundaries.", group = G_STRUCT)
-showEqm    = input.bool(true,  "  Show equilibrium (0.5) line", group = G_STRUCT)
-showRangeBounds = input.bool(true, "  Show range boundary lines", tooltip = "The thin dotted lines at the dealing-range high and low.", group = G_STRUCT)
-pdShadeOn  = input.bool(false, "  Shade premium/discount boxes", tooltip = "Off (default): only draw lines, leaving candles fully visible. On: also fill the premium (top) and discount (bottom) areas with translucent boxes.", group = G_STRUCT)
-pdFib1     = input.float(0.705, "  OTE fib 1", step = 0.001, group = G_STRUCT)
-pdFib2     = input.float(0.788, "  OTE fib 2", step = 0.001, group = G_STRUCT)
-pdFib3     = input.float(0.886, "  OTE fib 3", step = 0.001, group = G_STRUCT)
-
-// -----------------------------------------------------------------------------
-// INPUTS — GHOST LEVELS (recently swept levels, faint fading dotted lines)
-// -----------------------------------------------------------------------------
-var string G_GHOST = "⑮ Ghost Levels"
-showGhost   = input.bool(true, "Show ghost levels", tooltip = "When a level is SWEPT (price trades through it), leave behind a faint 'ghost' - a very light dotted line marking where liquidity was recently taken. Ghosts fade out over their lifetime, then disappear.", group = G_GHOST)
-ghostOpacity = input.int(80, "Ghost opacity (0 solid, 100 invisible)", minval = 0, maxval = 100, tooltip = "Starting transparency of a fresh ghost line. Higher = fainter. Ghosts fade further toward invisible as they age.", group = G_GHOST)
-ghostLife   = input.int(80, "Ghost lifetime (bars)", minval = 1, maxval = 2000, tooltip = "How many bars a ghost lingers after the level was swept before it disappears. Over this span it fades from the set opacity toward fully transparent. Increase it if ghosts vanish before you notice them.", group = G_GHOST)
-ghostCol    = input.color(color.new(#b0bec5, 0), "Ghost line color", tooltip = "Base color of the ghost dotted line (opacity is applied on top).", group = G_GHOST)
-ghostKeep   = input.int(40, "Max ghosts kept", minval = 1, maxval = 200, tooltip = "Cap on the number of ghost lines retained at once (oldest dropped first).", group = G_GHOST)
+eqTol      = input.float(0.35, "  EQ tolerance (× ATR)", minval = 0.0, step = 0.05, tooltip = "Two swing pivots count as an Equal High/Low if within this many ATRs of each other.", group = G_STRUCT)
+eqLookback = input.int(6, "  EQ lookback (pivots)", minval = 1, maxval = 30, tooltip = "How many recent same-type pivots to compare against when hunting equal highs/lows.", group = G_STRUCT)
+// --- FVG ---
+showFVG    = input.bool(true,  "Fair Value Gaps (FVG)",        group = G_STRUCT)
+hideMitFVG = input.bool(true,  "  Remove invalidated FVGs",    group = G_STRUCT)
+fvgFillMode = input.string("Body close through", "  FVG invalidation", options = ["Body close through","Wick touch (50%)","Full fill (wick)"], tooltip = "Body close through: gap disappears once a candle CLOSES beyond it. Wick touch: removed at midpoint. Full fill: removed only when a wick fully engulfs it.", group = G_STRUCT)
+// --- SFP (sweep + reversal) ---
+showSFP    = input.bool(true, "Sweep + reversal markers (SFP)", tooltip = "The core validity trigger: a wick pierces a tracked level then the candle CLOSES back on the origin side (a stop-run). Marks 🎯 SFP long/short.", group = G_STRUCT)
+sfpUseVol  = input.bool(true, "  Require volume confirmation", tooltip = "Only flag a sweep as a real grab on elevated relative volume.", group = G_STRUCT)
+rvolLen    = input.int(20, "  Rel-volume lookback", minval = 5, maxval = 200, group = G_STRUCT)
+rvolMult   = input.float(1.5, "  Min rel-volume for grab", minval = 1.0, maxval = 5.0, step = 0.1, group = G_STRUCT)
+sfpColLong  = input.color(color.new(#26a69a, 0), "  Bullish SFP color", group = G_STRUCT)
+sfpColShort = input.color(color.new(#ef5350, 0), "  Bearish SFP color", group = G_STRUCT)
+// --- Order Blocks ---
+showOB     = input.bool(true, "Order blocks after displacement", tooltip = "After a sweep+displacement, mark the last opposing candle as a demand/supply zone until mitigated.", group = G_STRUCT)
+obDisp     = input.float(1.2, "  Displacement size (× ATR)", minval = 0.3, step = 0.1, tooltip = "How large the breakout candle body must be (in ATRs) to leave a valid order block.", group = G_STRUCT)
+obColBull  = input.color(color.new(#26a69a, 80), "  Bullish OB color", group = G_STRUCT)
+obColBear  = input.color(color.new(#ef5350, 80), "  Bearish OB color", group = G_STRUCT)
+obKeep     = input.int(8, "  Max order blocks kept", minval = 1, maxval = 40, group = G_STRUCT)
 
 // -----------------------------------------------------------------------------
 // INPUTS — COUNTDOWN
@@ -99,224 +89,76 @@ cdMode    = input.string("Clock time", "Countdown units", options = ["Clock time
 dirAware  = input.bool(true,  "Only show for levels price is approaching", group = G_CD)
 
 // -----------------------------------------------------------------------------
-// INPUTS — CLUSTERING (anti-clutter)
+// INPUTS — CLUSTERING & CONFLUENCE
 // -----------------------------------------------------------------------------
-masterOn   = input.bool(true, "MASTER: draw everything", tooltip = "Global on/off. Turn this off to hide ALL indicator drawings at once (levels, clusters, zones, FVGs, P/D). Individual element toggles are in their own sections.", group = G_CLUST)
+masterOn   = input.bool(true, "MASTER: draw everything", tooltip = "Global on/off for all drawings.", group = G_CLUST)
 clusterOn  = input.bool(true, "Merge nearby levels into zones", group = G_CLUST)
-clustDist  = input.float(0.5, "Cluster distance (× ATR)", minval = 0.05, step = 0.05, tooltip = "Levels within this many ATRs of each other are merged into one strength-rated zone.", group = G_CLUST)
-minStrength = input.int(1, "Min strength to display", minval = 1, maxval = 8, tooltip = "Only draw levels/zones whose strength (number of stacked levels) is at least this. Set to 1 = show everything. Set to 2+ = hide lone levels and show only confluent zones, cutting chart noise.", group = G_CLUST)
+clustDist  = input.float(0.5, "Cluster distance (× ATR)", minval = 0.05, step = 0.05, tooltip = "Levels within this many ATRs of each other merge into one strength-rated zone.", group = G_CLUST)
+minStrength = input.int(1, "Min strength to display", minval = 1, maxval = 8, tooltip = "Only draw levels/zones whose strength (stacked count) is at least this. 2+ hides lone levels.", group = G_CLUST)
 maxStrength   = input.int(4, "Max strength markers shown", minval = 1, maxval = 6, group = G_CLUST)
 zoneOpacityMin = input.int(85, "Zone fill opacity — weakest", minval = 0, maxval = 100, group = G_CLUST)
 zoneOpacityMax = input.int(55, "Zone fill opacity — strongest", minval = 0, maxval = 100, group = G_CLUST)
-sideColorOn = input.bool(true, "Color-code by side (BSL/SSL)", tooltip = "Clusters and levels ABOVE price = BSL (buy-side liquidity / resistance) use the BSL color; those BELOW price = SSL (sell-side liquidity / support) use the SSL color.", group = G_CLUST)
+sideColorOn = input.bool(true, "Color-code by side (BSL/SSL)", tooltip = "Levels ABOVE price = BSL (resistance) use the BSL color; BELOW price = SSL (support) use the SSL color.", group = G_CLUST)
 colBSL   = input.color(color.new(#ef5350, 0), "  BSL color (above price)", group = G_CLUST)
 colSSL   = input.color(color.new(#26a69a, 0), "  SSL color (below price)", group = G_CLUST)
 emojiBSL = input.string("🔴", "  BSL strength marker", options = ["🔴","🟥","🔺","🛑","⛔","🔻","💢"], group = G_CLUST)
 emojiSSL = input.string("🟢", "  SSL strength marker", options = ["🟢","🟩","🔼","✅","💚","🔽","🌿"], group = G_CLUST)
 strengthEmoji = input.string("🔥", "  Neutral strength marker (side off)", options = ["🔥","⭐","🟥","🟦","🟨","🔶","💠"], group = G_CLUST)
 clustLblTxt = input.color(color.new(#ffffff, 0),  "Cluster label text color", group = G_CLUST)
-showStrengthEmoji = input.bool(true, "Show strength emojis on clusters", tooltip = "The 🔴/🟢 (or 🔥) markers repeated to show how many levels stacked in the zone.", group = G_CLUST)
+showStrengthEmoji = input.bool(true, "Show strength emojis on clusters", group = G_CLUST)
 showSideTag  = input.bool(true, "Show BSL/SSL text tag on clusters", group = G_CLUST)
-outlineTags  = input.bool(true, "Outline level/cluster tags in side color", tooltip = "Level and cluster labels get a solid side-colored tag (BSL = BSL color, SSL = SSL color) with high-contrast text, so the tag itself reads as red/green.", group = G_CLUST)
-tieredEmoji  = input.bool(true, "Fun tiered strength emojis (💧⚡🔥💎🐋)", tooltip = "Prefix each level/cluster with a big emoji that escalates with strength: 1=💧, 2=⚡, 3=🔥, 4=💎, 5+=🐋. Stronger zones also render with a larger label.", group = G_CLUST)
+outlineTags  = input.bool(true, "Outline level/cluster tags in side color", group = G_CLUST)
+tieredEmoji  = input.bool(true, "Fun tiered strength emojis (💧⚡🔥💎🐋)", group = G_CLUST)
 bigStrongLbl = input.bool(true, "Enlarge label for strong zones", group = G_CLUST)
-
-var string G_DOL = "⑧ Draw-on-Liquidity Gauge"
-showDOL   = input.bool(true, "Show draw-on-liquidity gauge", tooltip = "A status gauge showing the side (BSL above vs SSL below) with the greater LIQUIDITY GRAVITY - a multi-factor score of where price is most likely being drawn.", group = G_DOL)
-dolBanPos = input.string("Top Right", "Banner position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], tooltip = "Corner for the status banner. The gauge is ALWAYS a fixed corner panel - it never floats at the price line.", group = G_DOL)
-dolPulse  = input.bool(true, "Pulse the banner outline", tooltip = "Animates the banner's border brightness bar-to-bar - GREEN when price is being drawn UP (buy-side), RED when drawn DOWN (sell-side).", group = G_DOL)
-dolBull   = input.string("🔼", "Bullish draw emoji (BSL-heavy = up)", options = ["🔼","🟢","🚀","📈","👆","🐂"], group = G_DOL)
-dolBear   = input.string("🔽", "Bearish draw emoji (SSL-heavy = down)", options = ["🔽","🔴","🐻","📉","👇","🩸"], group = G_DOL)
-dolSize   = input.string("Huge", "Banner text size", options = ["Normal","Large","Huge"], group = G_DOL)
-// --- Liquidity Gravity model (multi-factor pull) ---
-dolSens   = input.string("Medium", "Gravity sensitivity", options = ["Low","Medium","High"], tooltip = "Master dial that scales how sharply nearby, important, aged and clustered liquidity dominates the pull. High = closest/strongest magnets take over quickly; Low = flatter, more democratic tally.", group = G_DOL)
-dolUseType = input.bool(true, "Weight by level importance (type)", tooltip = "Major levels (PDH/PDL, weekly/monthly, HTF swings) pull harder than minor session highs/lows or local swings.", group = G_DOL)
-dolUseAge  = input.bool(true, "Weight by level age (resting time)", tooltip = "Liquidity that has rested untapped for longer is a stronger magnet. Age weight is log-scaled and capped.", group = G_DOL)
-dolUseConf = input.bool(true, "Reward confluence (clustered levels)", tooltip = "Several levels stacked within a small band pull much harder than a single isolated level.", group = G_DOL)
-dolMomWt   = input.float(30, "Momentum tilt %", minval = 0, maxval = 100, step = 5, tooltip = "How much live directional momentum (trend + rate-of-change) biases the arrow on top of the static liquidity score. 0 = pure liquidity; 100 = momentum dominates. Keeps the arrow dynamic when order flow is clearly one-directional.", group = G_DOL)
-dolTgtLine = input.bool(true, "Show primary-magnet target in banner", tooltip = "Adds a second banner row with the single strongest magnet level - the specific price price is being pulled toward - and its distance. Shown in the corner banner, NOT as a line at the price.", group = G_DOL)
-dolMeter   = input.bool(true, "Show conviction meter in label", tooltip = "Adds a bar-style conviction meter (filled blocks) reflecting how lopsided the pull is.", group = G_DOL)
+// --- Confluence score ---
+showConf    = input.bool(true, "Confluence score on zones (0-100)", tooltip = "Rolls up stacked levels, order-block overlap, and round-number proximity into a 0-100 'how loaded is this zone' score on the label.", group = G_CLUST)
+confMin     = input.int(0, "  Hide zones below score", minval = 0, maxval = 100, tooltip = "Only show cluster zones scoring at least this. 0 = show all.", group = G_CLUST)
+confRound   = input.float(0.0, "  Round-number step (price)", minval = 0.0, tooltip = "Adds confluence when a zone sits near a round-number multiple of this step (e.g. 50/100 indices, 1000 BTC). 0 = disable.", group = G_CLUST)
 
 // -----------------------------------------------------------------------------
-// INPUTS — LIQUIDITY GRAB ENGINE (sweep + reversal / SFP, order blocks, rvol)
+// INPUTS — DRAW-ON-LIQUIDITY GAUGE
 // -----------------------------------------------------------------------------
-var string G_GRAB = "⑩ Liquidity Grab Engine"
-showSFP    = input.bool(true, "Detect sweep + reversal (SFP)", tooltip = "The core entry trigger: a wick pierces a tracked liquidity level then the candle CLOSES back on the origin side (a stop-run / Swing Failure Pattern). Marks 🎯 SFP long/short.", group = G_GRAB)
-sfpUseVol  = input.bool(true, "  Require volume confirmation", tooltip = "Only flag a sweep as a real grab when it prints on elevated relative volume (thin-volume sweeps are usually noise).", group = G_GRAB)
-rvolLen    = input.int(20, "  Rel-volume lookback", minval = 5, maxval = 200, tooltip = "Bars used for the average volume baseline. Relative volume = current volume / average volume.", group = G_GRAB)
-rvolMult   = input.float(1.5, "  Min rel-volume for grab", minval = 1.0, maxval = 5.0, step = 0.1, tooltip = "A sweep must occur on at least this multiple of average volume to count as confirmed.", group = G_GRAB)
-sfpWick    = input.bool(true, "  Rejection wick-strength grade", tooltip = "Grade each sweep by how hard price rejected the level: the rejection wick as a share of the candle's range. Shows ✦ (weak) / ✦✦ (solid) / ✦✦✦ (strong) on the SFP marker.", group = G_GRAB)
-sfpMinWick = input.float(0.0, "  Min wick fraction to flag SFP", minval = 0.0, maxval = 0.9, step = 0.05, tooltip = "Require the rejection wick to be at least this fraction of the candle range for the SFP to count. 0 = don't filter. e.g. 0.5 = only strong rejections.", group = G_GRAB)
-sfpColLong  = input.color(color.new(#26a69a, 0), "  Bullish SFP color", group = G_GRAB)
-sfpColShort = input.color(color.new(#ef5350, 0), "  Bearish SFP color", group = G_GRAB)
-showOB     = input.bool(true, "Mark order blocks after displacement", tooltip = "After a sweep+displacement, mark the last opposing candle (the order block) as a high-probability return zone. Persists until price mitigates it.", group = G_GRAB)
-obDisp     = input.float(1.2, "  Displacement size (× ATR)", minval = 0.3, step = 0.1, tooltip = "How large the breakout candle body must be (in ATRs) to count as displacement that leaves a valid order block.", group = G_GRAB)
-obColBull  = input.color(color.new(#26a69a, 80), "  Bullish OB color", group = G_GRAB)
-obColBear  = input.color(color.new(#ef5350, 80), "  Bearish OB color", group = G_GRAB)
-obKeep     = input.int(8, "  Max order blocks kept", minval = 1, maxval = 40, group = G_GRAB)
+showDOL   = input.bool(true, "Show DOL gauge", tooltip = "A corner banner pointing to the side (BSL above vs SSL below) with the greater LIQUIDITY GRAVITY - a multi-factor score of where price is most likely being drawn.", group = G_DOL)
+dolBanPos = input.string("Top Right", "Banner position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_DOL)
+dolBull   = input.string("🔼", "Bullish draw emoji", options = ["🔼","🟢","🚀","📈","👆","🐂"], group = G_DOL)
+dolBear   = input.string("🔽", "Bearish draw emoji", options = ["🔽","🔴","🐻","📉","👇","🩸"], group = G_DOL)
+dolSize   = input.string("Large", "Banner text size", options = ["Normal","Large","Huge"], group = G_DOL)
+dolSens   = input.string("Medium", "Gravity sensitivity", options = ["Low","Medium","High"], tooltip = "How sharply nearby / important / aged / clustered liquidity dominates the pull.", group = G_DOL)
+dolUseType = input.bool(true, "Weight by level importance (type)", tooltip = "Major levels (PDH/PDL, weekly/monthly, HTF) pull harder than minor session/local levels.", group = G_DOL)
+dolUseAge  = input.bool(true, "Weight by level age (resting time)", group = G_DOL)
+dolUseConf = input.bool(true, "Reward confluence (clustered levels)", group = G_DOL)
+dolMomWt   = input.float(30, "Momentum tilt %", minval = 0, maxval = 100, step = 5, tooltip = "How much live directional momentum biases the arrow on top of the static liquidity score.", group = G_DOL)
+dolTgtLine = input.bool(true, "Show primary-magnet target in banner", tooltip = "Adds a banner row with the strongest magnet price and its distance (ATR / %).", group = G_DOL)
+dolMeter   = input.bool(true, "Show conviction meter", group = G_DOL)
+dolTugBar  = input.bool(true, "Show tug-of-war bar (BSL vs SSL)", group = G_DOL)
 
 // -----------------------------------------------------------------------------
-// INPUTS — MARKET STRUCTURE (BOS / CHoCH) + LIQUIDITY VOIDS
+// INPUTS — STYLE
 // -----------------------------------------------------------------------------
-var string G_STRUCTX = "⑪ Structure Breaks & Voids"
-showBOS    = input.bool(true, "Mark BOS / CHoCH", tooltip = "BOS (Break of Structure) = trend continuation break of the last swing. CHoCH (Change of Character) = the first counter-trend break, an early reversal warning.", group = G_STRUCTX)
-bosColBull = input.color(color.new(#26a69a, 0), "  Bullish break color", group = G_STRUCTX)
-bosColBear = input.color(color.new(#ef5350, 0), "  Bearish break color", group = G_STRUCTX)
-showVoid   = input.bool(true, "Detect liquidity voids (imbalance runs)", tooltip = "A run of consecutive one-directional candles leaves a price void that tends to get rebalanced. Marks the void midpoint as a magnet.", group = G_STRUCTX)
-voidRun    = input.int(3, "  Min consecutive candles", minval = 2, maxval = 8, tooltip = "How many same-direction candles in a row define a void.", group = G_STRUCTX)
-voidCol    = input.color(color.new(#ba68c8, 70), "  Void color", group = G_STRUCTX)
-voidKeep   = input.int(6, "  Max voids kept", minval = 1, maxval = 30, group = G_STRUCTX)
-
-// -----------------------------------------------------------------------------
-// INPUTS — KILLZONES & ASIAN RANGE
-// -----------------------------------------------------------------------------
-var string G_KZ = "⑫ Killzones & Asian Range"
-showKZ     = input.bool(true, "Highlight killzones", tooltip = "Shades the London and New York open windows - when stop-runs / sweeps are statistically most reliable. A sweep inside a killzone is flagged as higher-probability.", group = G_KZ)
-kzLondon   = input.session("0700-1000", "  London killzone", group = G_KZ)
-kzNY       = input.session("1200-1500", "  New York killzone", group = G_KZ)
-kzColor    = input.color(color.new(#42a5f5, 90), "  Killzone shade", group = G_KZ)
-showAsiaBox = input.bool(true, "Draw Asian range box", tooltip = "Boxes the Asian session high/low. London often sweeps one side of the Asian range first (the Judas swing).", group = G_KZ)
-asiaBoxCol = input.color(color.new(#ffb300, 88), "  Asian range fill", group = G_KZ)
-
-// -----------------------------------------------------------------------------
-// INPUTS — HEATMAP, MTF BADGE, RANKING, R:R, STATS
-// -----------------------------------------------------------------------------
-var string G_EXTRA = "⑬ Heatmap · MTF · Ranking · R:R · Stats"
-ageHeatOn  = input.bool(true, "Age heatmap coloring", tooltip = "Fade fresh levels and make old, long-untapped liquidity glow brighter - a visual 'these pools are overdue' cue.", group = G_EXTRA)
-ageHeatMax = input.int(300, "  Bars to full 'glow'", minval = 20, maxval = 3000, tooltip = "A level resting this many bars reaches maximum heat/brightness.", group = G_EXTRA)
-mtfBadgeOn = input.bool(true, "MTF confluence badge (🔱)", tooltip = "Badge clusters whose stacked levels come from more than one timeframe (e.g. an LTF swing lining up with an HTF swing / previous-period level). MTF confluence holds more often.", group = G_EXTRA)
-showRank   = input.bool(true, "Top-3 draw ranking table", tooltip = "A compact table listing the strongest untapped liquidity magnets by gravity score - your ordered target list.", group = G_EXTRA)
-rankPos    = input.string("Top Left", "  Ranking table position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Left"], group = G_EXTRA)
-showRR     = input.bool(true, "Auto R:R projection on SFP", tooltip = "When a sweep+reversal fires, project a suggested stop (beyond the sweep wick) and a target (the next opposing liquidity pool) and label the reward:risk.", group = G_EXTRA)
-rrTargetPad = input.float(0.1, "  Stop padding (× ATR)", minval = 0.0, step = 0.05, tooltip = "Extra buffer beyond the sweep wick for the stop.", group = G_EXTRA)
-showStats  = input.bool(false, "Sweep→reversal hit-rate panel (legacy)", tooltip = "A rough single hit-rate over history. OFF by default - the ⑯ Backtest harness (win rate + avg R by grade) supersedes it. Re-enable if you want the simple version; move it off Bottom Left to avoid overlapping the backtest table.", group = G_EXTRA)
-statsPos   = input.string("Bottom Left", "  Stat panel position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Left"], group = G_EXTRA)
-statsWin   = input.int(10, "  Reversal confirm window (bars)", minval = 2, maxval = 50, tooltip = "After a sweep, how many bars to wait to judge whether price reversed back through the level (a successful grab) or continued.", group = G_EXTRA)
-
-// -----------------------------------------------------------------------------
-// INPUTS — CONFLUENCE & CONTEXT (MTF dashboard, SMT divergence, zone score)
-// -----------------------------------------------------------------------------
-var string G_CTX = "⑭ Confluence & Context"
-// -- MTF liquidity dashboard --
-showMTFdash = input.bool(true, "MTF liquidity dashboard", tooltip = "A compact table pinned to the MIDDLE-RIGHT of the chart showing, per timeframe, the nearest buy-side liquidity above, nearest sell-side below, directional bias, and whether price sits in premium or discount - the whole liquidity picture at a glance.", group = G_CTX)
-mtfTF1      = input.timeframe("15",  "  TF 1", group = G_CTX)
-mtfTF2      = input.timeframe("60",  "  TF 2", group = G_CTX)
-mtfTF3      = input.timeframe("240", "  TF 3", group = G_CTX)
-mtfTF4      = input.timeframe("D",   "  TF 4", group = G_CTX)
-// -- SMT divergence --
-showSMT     = input.bool(true, "SMT divergence", tooltip = "Compares this symbol against a correlated one. When one makes a higher high (or lower low) while the other fails to, a liquidity grab on one side is not confirmed by the other - a Smart-Money-Technique divergence and a strong reversal cue.", group = G_CTX)
-smtSym      = input.symbol("", "  Correlated symbol", tooltip = "Leave blank to auto-pick a sensible correlate is NOT supported; pick e.g. the paired instrument (ES vs NQ, BTCUSD vs ETHUSD). If blank, SMT is skipped.", group = G_CTX)
-smtLen      = input.int(5, "  SMT pivot length", minval = 2, maxval = 50, tooltip = "Swing pivot length used to compare highs/lows across the two symbols.", group = G_CTX)
-smtColBull  = input.color(color.new(#26a69a, 0), "  Bullish SMT color", group = G_CTX)
-smtColBear  = input.color(color.new(#ef5350, 0), "  Bearish SMT color", group = G_CTX)
-// -- Confluence score --
-showConf    = input.bool(true, "Confluence score on zones (0-100)", tooltip = "Rolls up everything overlapping a cluster zone - stacked levels, FVG, order block, OTE fib, volume-profile POC, premium/discount, round number - into one 0-100 'how loaded is this zone' score shown on the label.", group = G_CTX)
-confMin     = input.int(0, "  Hide zones below score", minval = 0, maxval = 100, tooltip = "Only show cluster zones whose confluence score is at least this. 0 = show all.", group = G_CTX)
-confRound   = input.float(0.0, "  Round-number step (price)", minval = 0.0, tooltip = "Adds confluence when a zone sits near a round-number multiple of this step (e.g. 50 or 100 for indices, 1000 for BTC). 0 = disable the round-number factor.", group = G_CTX)
-// -- Power-of-three daily bias (feature #7) --
-showPO3     = input.bool(true, "Power-of-three daily bias", tooltip = "Classifies the current day into Accumulation -> Manipulation -> Distribution around the daily open. The first decisive sweep of the opening range is the 'manipulation' (Judas swing); the expected distribution is the OPPOSITE direction. Shown as a small tag on the daily-open level.", group = G_CTX)
-po3Range    = input.float(0.5, "  Opening-range size (× ATR)", minval = 0.1, step = 0.1, tooltip = "How far beyond the daily open (in ATRs) price must push to count as the manipulation leg / breakout.", group = G_CTX)
-po3Col      = input.color(color.new(#d4b483, 0), "  PO3 tag color", group = G_CTX)
-// -- Correlation / DXY context (feature #12) --
-showCorr    = input.bool(false, "Correlation / driver context", tooltip = "Compares this symbol's short-term direction against a DRIVER symbol (e.g. DXY for FX/indices, or a lead instrument). Shows whether the driver AGREES or CONFLICTS with your bias - a conflict warns that the move may lack support.", group = G_CTX)
-corrSym     = input.symbol("DXY", "  Driver symbol", tooltip = "The driver/benchmark to compare against (e.g. DXY, ES1!, BTCUSD). Its rise/fall is compared to this symbol.", group = G_CTX)
-corrInverse = input.bool(true, "  Driver is inversely correlated", tooltip = "ON: driver up = bearish for this symbol (e.g. DXY vs EURUSD / risk assets). OFF: driver up = bullish for this symbol (positively correlated).", group = G_CTX)
-corrLen     = input.int(9, "  Correlation lookback (bars)", minval = 2, maxval = 100, tooltip = "Bars used to read the driver's short-term direction (rate of change).", group = G_CTX)
-
-// -----------------------------------------------------------------------------
-// INPUTS — SIGNAL QUALITY & ALERTS (grade, MTF alignment, JSON alerts, path)
-// -----------------------------------------------------------------------------
-var string G_SQ = "⑯ Signal Quality & Alerts"
-// -- MTF alignment meter (feature #12) --
-showAlign   = input.bool(true, "MTF alignment meter (0-100)", tooltip = "A single score for how much the timeframes in the MTF dashboard AGREE on direction. 100 = all timeframes point the same way; ~50 = mixed. Shown in a compact panel and folded into the setup grade.", group = G_SQ)
-alignPos    = input.string("Middle Left", "  Alignment panel position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Left","Middle Right"], group = G_SQ)
-// -- A+/B/C setup grade (feature #10) --
-showGrade   = input.bool(true, "Grade SFP setups (A+/B/C)", tooltip = "Combines confluence factors on a sweep+reversal into one letter grade: killzone timing, volume, rejection-wick strength, and MTF alignment. A+ = all aligned; C = minimal. Shown on the SFP marker.", group = G_SQ)
-gradeUseKZ  = input.bool(true, "  Weight killzone timing", group = G_SQ)
-gradeUseVol = input.bool(true, "  Weight volume", group = G_SQ)
-gradeUseWick = input.bool(true, "  Weight rejection wick", group = G_SQ)
-gradeUseAlign = input.bool(true, "  Weight MTF alignment", group = G_SQ)
-gradeAlignMin = input.int(65, "  Alignment counts as aligned above", minval = 0, maxval = 100, tooltip = "MTF alignment at or above this counts as a confluence point for the grade.", group = G_SQ)
-// -- alert() JSON payloads (feature #24) --
-alertJson   = input.bool(false, "Emit JSON alert payloads (webhooks/bots)", tooltip = "When ON, fires an alert() on each graded SFP with a machine-readable JSON message (side, price, grade, level, R:R-ready fields) for webhooks / auto-trading. Create the alert in TradingView with condition = this indicator, 'Any alert() function call'.", group = G_SQ)
-// -- Liquidity path projection (feature #32) --
-showPath    = input.bool(true, "Liquidity path projection", tooltip = "Draws a dotted route from current price through the strongest ranked liquidity magnets - the likely path price takes to collect liquidity.", group = G_SQ)
-pathN       = input.int(3, "  Magnets in the path", minval = 2, maxval = 6, tooltip = "How many of the top-ranked magnets to connect into the projected path.", group = G_SQ)
-pathCol     = input.color(color.new(#ffb300, 30), "  Path color", group = G_SQ)
-pathDirect  = input.bool(true, "  Follow DOL direction only", tooltip = "Draw Model v2: route only through magnets on the side the Draw-on-Liquidity gauge points to (e.g. only buy-side pools above when DOL says UP), ordered nearest-first so the path reads like a realistic liquidity run - instead of zig-zagging by raw score.", group = G_SQ)
-pathScaleConf = input.bool(true, "  Scale leg thickness by strength", tooltip = "Stronger magnets draw as bolder path legs; weaker ones fainter.", group = G_SQ)
-// -- Draw Model v2: DOL enhancements --
-dolTugBar   = input.bool(true, "DOL tug-of-war bar (BSL vs SSL)", tooltip = "Show both sides' aggregate pull as a balance bar in the DOL banner, not just the winner - so you see HOW lopsided (and when it's near-balanced / low conviction).", group = G_SQ)
-dolTrendOn  = input.bool(true, "DOL trend (strengthening / fading)", tooltip = "Track the DOL conviction over recent bars and show whether the draw is building or weakening.", group = G_SQ)
-dolTrendLen = input.int(5, "  DOL trend lookback (bars)", minval = 2, maxval = 50, tooltip = "How many bars back to compare current conviction against for the strengthening/fading read.", group = G_SQ)
-// -- Backtest harness (measure whether the SFP grades actually predict) --
-showBT      = input.bool(true, "Backtest SFP grades (win rate / R)", tooltip = "Objectively measures every graded sweep+reversal over the loaded history: opens a virtual trade at the signal, places a stop beyond the sweep wick and a target, then records the outcome. Results are broken down by grade (A+/B/C) so you can SEE whether higher grades actually win more. This is the reality check - trust the numbers, not the heuristics.", group = G_SQ)
-btTargetMode = input.string("Fixed R multiple", "  Target mode", options = ["Fixed R multiple","Next opposing pool"], tooltip = "Fixed R multiple: target = entry +/- (R x risk) - objective and always resolvable. Next opposing pool: target = the DOL magnet on the reversal side (skips trades with no valid pool).", group = G_SQ)
-btRR        = input.float(2.0, "  Target R multiple", minval = 0.5, maxval = 10.0, step = 0.5, tooltip = "For 'Fixed R multiple' mode: the reward:risk target. 2 = risk 1 to make 2.", group = G_SQ)
-btStopPad   = input.float(0.1, "  Stop padding (× ATR)", minval = 0.0, step = 0.05, tooltip = "Extra buffer beyond the sweep wick for the virtual stop.", group = G_SQ)
-btMaxBars   = input.int(200, "  Max bars to resolve a trade", minval = 10, maxval = 1000, tooltip = "If neither stop nor target is hit within this many bars, the trade is closed at market (recorded as its running R).", group = G_SQ)
-btPos       = input.string("Bottom Left", "  Results table position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Left","Middle Right"], tooltip = "Corner for the backtest results table. Default bottom-left. If a panel is hidden, it's because two share a corner - move one here. Occupied by default: DOL=top-right, ranking=top-left, alignment=middle-left, MTF dashboard=middle-right, coach=bottom-right.", group = G_SQ)
-
-// -----------------------------------------------------------------------------
-// INPUTS — CANDLE VOLUME PROFILE (LTF reconstruction, last closed candle)
-// -----------------------------------------------------------------------------
-var string G_VP = "⑧b Candle Volume Profile"
-showVP    = input.bool(false, "Show candle volume profile", tooltip = "Reconstructs a real intrabar volume profile for the LAST CLOSED candle using lower-timeframe data, drawn as a horizontal histogram. OFF by default. Works for recent candles only (LTF data is limited).", group = G_VP)
-vpLTF     = input.timeframe("1", "Intrabar timeframe", tooltip = "Lower timeframe used to reconstruct the profile (e.g. 1 = 1-minute intrabars). Must be lower than the chart timeframe.", group = G_VP)
-vpRows    = input.int(24, "Profile rows (price bins)", minval = 5, maxval = 100, tooltip = "How many horizontal price buckets to split the candle's range into. More = finer profile.", group = G_VP)
-vpWidth   = input.int(40, "Histogram width (bars)", minval = 5, maxval = 200, tooltip = "How many bars wide the widest volume row extends to the right of the candle.", group = G_VP)
-vpVA      = input.float(70, "Value area %", minval = 30, maxval = 95, step = 5, tooltip = "Percent of volume enclosed by the Value Area (VAH↔VAL). 70 is the classic setting.", group = G_VP)
-vpColUp   = input.color(color.new(#26a69a, 55), "Below-POC row color", group = G_VP)
-vpColDn   = input.color(color.new(#ef5350, 55), "Above-POC row color", group = G_VP)
-vpColPOC  = input.color(color.new(#ffeb3b, 0),  "POC color", group = G_VP)
-vpColVA   = input.color(color.new(#42a5f5, 0),  "VAH / VAL color", group = G_VP)
-vpShowLbls = input.bool(true, "Label POC / VAH / VAL", group = G_VP)
-
-// -----------------------------------------------------------------------------
-// INPUTS — DISCIPLINE COACH (fun motivational nudges)
-// -----------------------------------------------------------------------------
-var string G_COACH = "⑨ Discipline Coach"
-showCoach   = input.bool(true, "Show discipline coach panel", tooltip = "A small motivational panel that keeps you loyal to your levels with context-aware nudges + emojis.", group = G_COACH)
-coachPos    = input.string("Bottom Right", "Panel position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right"], group = G_COACH)
-coachSize   = input.string("Normal", "Panel text size", options = ["Small","Normal","Large"], group = G_COACH)
-coachRotate = input.int(20, "Rotate quote every N bars", minval = 1, maxval = 500, tooltip = "How often the generic motivational quote cycles to a new one.", group = G_COACH)
-coachStreak = input.bool(true, "Show discipline streak (bars since last sweep)", tooltip = "Counts bars since price last swept a level - framed as a patience/discipline stat.", group = G_COACH)
-coachCustom = input.string("Trust your plan.", "Your personal mantra", tooltip = "Your own message, always shown at the bottom of the panel.", group = G_COACH)
-
-// -----------------------------------------------------------------------------
-// INPUTS — STYLE & COMPACT MODE
-// -----------------------------------------------------------------------------
-compact    = input.bool(false, "Compact Mode (hide levels far from price)", tooltip = "OFF (default): show ALL levels including historical ones from days/weeks ago. ON: hide levels beyond the visibility band below (keeps the chart tidy but hides far history).", group = G_STYLE)
-nearN      = input.int(3, "  Nearest N above & below", minval = 1, maxval = 10, group = G_STYLE)
-compactBand = input.float(4.0, "  Compact band (× ATR × N)", minval = 1.0, step = 0.5, tooltip = "How far from price a level can be before Compact Mode hides it. Larger = keeps more distant history visible when Compact is on.", group = G_STYLE)
+uiTheme    = input.string("Refined Dark", "Panel theme", options = ["Refined Dark","Refined Light","Midnight","Slate","Classic (legacy)"], group = G_STYLE)
+uiPanelOpacity = input.int(16, "Panel background opacity boost", minval = 0, maxval = 60, group = G_STYLE)
+uiAccentTint = input.int(70, "Accent softness", minval = 0, maxval = 90, group = G_STYLE)
+uiSlimBorders = input.bool(true, "Slim panel borders", group = G_STYLE)
 lineWidth  = input.int(1, "Line width", minval = 1, maxval = 3, group = G_STYLE)
 lineStyleI = input.string("Solid", "Line style", options = ["Solid","Dashed","Dotted"], group = G_STYLE)
 labelSize  = input.string("Small", "Label size", options = ["Tiny","Small","Normal"], group = G_STYLE)
 extendR    = input.int(10, "Line extend-right (bars)", minval = 0, group = G_STYLE)
-ageExtend  = input.bool(true, "Age-scaled extension (older = longer)", tooltip = "Each level's line grows with how long it has persisted, so mature levels are visibly longer than fresh ones.", group = G_STYLE)
-ageMaxBars = input.int(20, "  Max extra bars from age", minval = 0, maxval = 200, tooltip = "The oldest levels get up to this many bars added on top of the base extend length. Keep it modest so old levels don't run far across the chart.", group = G_STYLE)
-ageScale   = input.float(0.35, "  Age scale (bars added per bar of age)", minval = 0.05, maxval = 1.0, step = 0.05, tooltip = "How gently the line grows with age. 0.35 = an extra bar of length for roughly every 3 bars of age, capped by Max extra bars.", group = G_STYLE)
-
+ageExtend  = input.bool(true, "Age-scaled extension (older = longer)", tooltip = "Each level's line grows with how long it has persisted, so mature levels are visibly longer.", group = G_STYLE)
+ageMaxBars = input.int(20, "  Max extra bars from age", minval = 0, maxval = 200, group = G_STYLE)
+ageScale   = input.float(0.35, "  Age scale (bars added per bar of age)", minval = 0.05, maxval = 1.0, step = 0.05, group = G_STYLE)
+compact    = input.bool(false, "Compact Mode (hide levels far from price)", group = G_STYLE)
+nearN      = input.int(3, "  Nearest N above & below", minval = 1, maxval = 10, group = G_STYLE)
+compactBand = input.float(4.0, "  Compact band (× ATR × N)", minval = 1.0, step = 0.5, group = G_STYLE)
 colBull  = input.color(color.new(#26a69a, 0),  "Bullish / High color", group = G_STYLE)
 colBear  = input.color(color.new(#ef5350, 0),  "Bearish / Low color",  group = G_STYLE)
 colSess  = input.color(color.new(#42a5f5, 0),  "Session color",        group = G_STYLE)
 colZone  = input.color(color.new(#ffb300, 0),  "Cluster zone color",   group = G_STYLE)
-colPremBase = input.color(color.new(#ef5350, 0), "Premium zone color",   group = G_STYLE)
-colDiscBase = input.color(color.new(#26a69a, 0), "Discount zone color",  group = G_STYLE)
-colEqm   = input.color(color.new(#9e9e9e, 0),  "Equilibrium line",     group = G_STYLE)
-colFVGBase = input.color(color.new(#ab47bc, 0), "FVG fill color",        group = G_STYLE)
-
-// -- Zone opacity controls (0 = solid, 100 = invisible) --
-opacityPD  = input.int(88, "Premium/Discount zone opacity", minval = 0, maxval = 100, group = G_STYLE)
+colFVGBase = input.color(color.new(#ab47bc, 0), "FVG fill color",       group = G_STYLE)
 opacityFVG = input.int(80, "FVG zone opacity", minval = 0, maxval = 100, group = G_STYLE)
-
-// derived zone fills (base color + chosen opacity)
-colPrem = color.new(colPremBase, opacityPD)
-colDisc = color.new(colDiscBase, opacityPD)
 colFVG  = color.new(colFVGBase, opacityFVG)
 
 // -----------------------------------------------------------------------------
-// INPUTS — EMOJI IMPORTANCE TAGS
+// INPUTS — EMOJI TAGS
 // -----------------------------------------------------------------------------
 emoPrev = input.string("⭐", "Previous-period tag", options = ["None","🔥","⭐","🟡","🔹","💧","🎯","🧲"], group = G_EMO)
 emoSess = input.string("🟡", "Session tag",         options = ["None","🔥","⭐","🟡","🔹","💧","🎯","🧲"], group = G_EMO)
@@ -331,108 +173,48 @@ f_lineStyle() =>
 f_labelSize() =>
     labelSize == "Tiny" ? size.tiny : labelSize == "Normal" ? size.normal : size.small
 
-// -----------------------------------------------------------------------------
-// THEME PALETTE — one coherent, muted palette drives every panel so the UI
-// looks refined rather than garish. Colors are resolved once here.
-// -----------------------------------------------------------------------------
-// base panel background per theme
-themeBgBase   = uiTheme == "Refined Light" ? color.new(#f5f6fa, 0) : uiTheme == "Midnight" ? color.new(#0d1117, 0) : uiTheme == "Slate" ? color.new(#262b36, 0) : uiTheme == "Classic (legacy)" ? color.new(#1e222d, 0) : color.new(#171a21, 0)
-// primary + secondary text per theme (light theme flips to dark text)
-themeTxt      = uiTheme == "Refined Light" ? color.new(#2b2f3a, 0) : color.new(#e6e9ef, 0)
-themeMuted    = uiTheme == "Refined Light" ? color.new(#6b7280, 0) : color.new(#9aa4b2, 0)
-// header accent — a soft amber/blue depending on theme, muted by uiAccentTint
-themeHdrRaw   = uiTheme == "Refined Light" ? #b45309 : #d4b483
-themeHdr      = color.new(themeHdrRaw, uiAccentTint > 40 ? uiAccentTint - 40 : 0)
-// bias colors (up/down) softened toward pastel via uiAccentTint
-themeUp       = color.new(#4db6ac, math.min(uiAccentTint, 60))
-themeDn       = color.new(#e08d8d, math.min(uiAccentTint, 60))
-themeUpSolid  = color.new(#4db6ac, 0)
-themeDnSolid  = color.new(#e08d8d, 0)
-// final panel background + row background with the opacity boost applied
-themePanelBg  = color.new(themeBgBase, math.min(100, uiPanelOpacity))
-themeRowBg    = color.new(themeBgBase, math.min(100, uiPanelOpacity + 8))
-themeBorder   = color.new(uiTheme == "Refined Light" ? #d0d4dc : #3a4150, uiSlimBorders ? 20 : 0)
-themeBW       = uiSlimBorders ? 1 : 2
+// --- theme palette ---
+themeBgBase  = uiTheme == "Refined Light" ? color.new(#f5f6fa, 0) : uiTheme == "Midnight" ? color.new(#0d1117, 0) : uiTheme == "Slate" ? color.new(#262b36, 0) : uiTheme == "Classic (legacy)" ? color.new(#1e222d, 0) : color.new(#171a21, 0)
+themeTxt     = uiTheme == "Refined Light" ? color.new(#2b2f3a, 0) : color.new(#e6e9ef, 0)
+themeMuted   = uiTheme == "Refined Light" ? color.new(#6b7280, 0) : color.new(#9aa4b2, 0)
+themeHdrRaw  = uiTheme == "Refined Light" ? #b45309 : #d4b483
+themeHdr     = color.new(themeHdrRaw, uiAccentTint > 40 ? uiAccentTint - 40 : 0)
+themeUpSolid = color.new(#4db6ac, 0)
+themeDnSolid = color.new(#e08d8d, 0)
+themePanelBg = color.new(themeBgBase, math.min(100, uiPanelOpacity))
+themeRowBg   = color.new(themeBgBase, math.min(100, uiPanelOpacity + 8))
+themeBorder  = color.new(uiTheme == "Refined Light" ? #d0d4dc : #3a4150, uiSlimBorders ? 20 : 0)
+themeBW      = uiSlimBorders ? 1 : 2
 
-// price velocity = avg absolute change per bar over velLen
+// core series
 velocity  = ta.sma(math.abs(ta.change(close)), velLen)
 secPerBar = timeframe.in_seconds(timeframe.period)
 atr       = ta.atr(14)
 
-// Directional momentum for the DOL momentum tilt, normalised to roughly -1..+1.
-// Blends a trend read (fast vs slow EMA distance in ATRs) with short-term ROC.
+// DOL momentum (per-bar, real history)
 dolEmaF   = ta.ema(close, 21)
 dolEmaS   = ta.ema(close, 55)
-dolTrend  = (dolEmaF - dolEmaS) / math.max(nz(atr), syminfo.mintick)   // ATRs of EMA separation
-dolRoc    = ta.roc(close, 9) / 100.0                                    // fractional 9-bar change
-dolMomRaw = 0.6 * dolTrend + 0.4 * (dolRoc * 20.0)                      // scale ROC into a comparable range
-dolMom    = math.max(-1.0, math.min(1.0, dolMomRaw))                    // clamp to -1..+1 (up vs down)
+dolTrendV = (dolEmaF - dolEmaS) / math.max(nz(atr), syminfo.mintick)
+dolRoc    = ta.roc(close, 9) / 100.0
+dolMomRaw = 0.6 * dolTrendV + 0.4 * (dolRoc * 20.0)
+dolMom    = math.max(-1.0, math.min(1.0, dolMomRaw))
 
-// Draw Model v2 (feature #8): a per-bar conviction proxy with REAL history, so the
-// DOL banner can report whether the draw is strengthening or fading. (The full DOL
-// gravity tally only runs on the last bar, so we track the momentum-magnitude here,
-// which is the component that actually evolves bar-to-bar.) 0..100.
-dolConvBar = math.round(math.abs(dolMom) * 100.0)
-
-// [Feature #5] Relative volume: current volume vs its own moving average.
-// Used to confirm that a sweep printed on real participation, not thin noise.
+// relative volume
 avgVol = ta.sma(volume, rvolLen)
 rvol   = nz(avgVol) > 0 ? volume / avgVol : 0.0
 volOK  = (not sfpUseVol) or (rvol >= rvolMult)
 
-// map a table-position string to a Pine position constant
 f_tablePos(string p) =>
     p == "Top Right" ? position.top_right : p == "Top Left" ? position.top_left : p == "Bottom Right" ? position.bottom_right : p == "Bottom Left" ? position.bottom_left : p == "Middle Left" ? position.middle_left : position.middle_right
 
-// clamp a drawing's start bar_index so it never exceeds TradingView's ~10k-bar
-// limit for line/box coordinates (a stale void/OB/ghost start bar would otherwise
-// throw a runtime error). Falls back to a safe recent bar when na or too old.
+// clamp a drawing's start bar to inside the loaded history buffer (never < 0)
 f_clampBar(int b) =>
-    // Clamp a drawing's start bar to a window that is guaranteed to be inside the
-    // available history buffer. Using an absolute old bar_index as a line/box x can
-    // trigger "historical offset beyond buffer limit" on charts with limited loaded
-    // history, so cap how many bars back we ever anchor. Never below 0.
     int back = math.min(bar_index, 300)
     int floorBar = bar_index - back
     int r = na(b) ? floorBar : math.max(b, floorBar)
     math.max(math.min(r, bar_index), 0)
 
-// bias text from a fast/slow EMA pair
-f_biasTxt(float ef, float es) =>
-    na(ef) or na(es) ? "–" : ef > es ? "▲ up" : ef < es ? "▼ dn" : "→ flat"
-
-// bias CONVICTION %: EMA separation as a share of the recent range (volatility
-// proxy), scaled to 0..100. Wider EMA gap vs range => stronger conviction.
-f_biasConv(float ef, float es, float hi, float lo) =>
-    float rng = hi - lo
-    (na(ef) or na(es) or na(rng) or rng <= 0) ? na : math.min(100.0, math.abs(ef - es) / rng * 100.0 * 4.0)
-
-// premium/discount text from price position within a recent range
-f_pdTxt(float c, float hi, float lo) =>
-    if na(c) or na(hi) or na(lo) or hi <= lo
-        "–"
-    else
-        float pos = (c - lo) / (hi - lo)
-        pos >= 0.7 ? "PREM" : pos <= 0.3 ? "DISC" : "EQ"
-
-// heat color: fade->glow by rest age (feature #7). Older = brighter (less transparent).
-f_heatCol(color base, int birthBar) =>
-    if not ageHeatOn or na(birthBar)
-        base
-    else
-        float age = math.max(0.0, bar_index - birthBar)
-        float t = math.min(age / ageHeatMax, 1.0)   // 0 fresh .. 1 old
-        int transp = int(70 - 70 * t)                // 70 (faint) -> 0 (solid glow)
-        color.new(base, transp)
-
-// MTF confluence test (feature #8): true when a cluster's member names span both
-// a higher-timeframe class (prev day/week/month or HTF swing) and a lower-tf class.
-f_isMTF(string names) =>
-    bool hasHTF = str.contains(names, "PDH") or str.contains(names, "PDL") or str.contains(names, "PWH") or str.contains(names, "PWL") or str.contains(names, "PMH") or str.contains(names, "PML")
-    bool hasLTF = str.contains(names, "BSL") or str.contains(names, "SSL") or str.contains(names, "EQ") or str.contains(names, "Asia") or str.contains(names, "London") or str.contains(names, "NY")
-    hasHTF and hasLTF
-
-// format a countdown string for a given target price
+// countdown-to-level string
 f_countdown(float target) =>
     string outTxt = ""
     if showCD and nz(velocity) > 0 and not na(target)
@@ -454,7 +236,6 @@ f_countdown(float target) =>
                     outTxt := " → ≈ " + str.tostring(math.round(secs / 86400)) + "d"
     outTxt
 
-// repeat an emoji n times (capped)
 f_repeat(string e, int n) =>
     string s = ""
     int cnt = math.min(n, maxStrength)
@@ -462,40 +243,26 @@ f_repeat(string e, int n) =>
         s := s + e
     s
 
-// tiered strength emoji: escalates with the number of stacked levels
 f_tierEmoji(int members) =>
     members <= 1 ? "💧" : members == 2 ? "⚡" : members == 3 ? "🔥" : members == 4 ? "💎" : "🐋"
 
-// larger label size for stronger zones (when enabled)
 f_strongSize(int members) =>
-    if not bigStrongLbl
-        f_labelSize()
-    else
-        members >= 4 ? size.large : members >= 2 ? size.normal : f_labelSize()
+    not bigStrongLbl ? f_labelSize() : (members >= 4 ? size.large : members >= 2 ? size.normal : f_labelSize())
 
-// BSL/SSL is defined by POSITION relative to price, because that's what the
-// terms mean: buy-side liquidity (stops) rests ABOVE price, sell-side BELOW.
-// A level's TYPE only sets its NAME (EQL stays "EQL"); its side tag/color here
-// follows where it sits vs price, so you never see "SSL" above price.
-// (The `side` arg is kept for signature compatibility but no longer drives this.)
+// BSL/SSL by POSITION vs price
 f_sideColI(int side, float lvl, color fallback) =>
     not sideColorOn ? fallback : (lvl >= close ? colBSL : colSSL)
-
 f_sideEmojiI(int side, float lvl) =>
     not sideColorOn ? strengthEmoji : (lvl >= close ? emojiBSL : emojiSSL)
-
 f_sideTagI(int side, float lvl) =>
     lvl >= close ? "BSL" : "SSL"
 
-// session label name: append "(swing)" when the level carried over unswept
 f_sessName(string base, bool carried) =>
     (sessReclassify and carried) ? (base + " (swing)") : base
 
-// compact-mode gate
 f_inCompactRange(float lvl) =>
     not compact or (na(lvl) ? false : math.abs(lvl - close) <= nz(atr) * (nearN * compactBand))
 
-// age → right-extension length. Older levels extend further, but gently and capped.
 f_extLen(int birthBar) =>
     if not ageExtend or na(birthBar)
         extendR
@@ -515,44 +282,12 @@ pmh   = request.security(syminfo.tickerid, "M", high[1], lookahead = barmerge.lo
 pml   = request.security(syminfo.tickerid, "M", low[1],  lookahead = barmerge.lookahead_on)
 dOpen = request.security(syminfo.tickerid, "D", open,    lookahead = barmerge.lookahead_on)
 
-// Lower-timeframe intrabar data for the candle volume profile.
-// Each element is an array of the LTF values that occurred within the chart bar.
-// effective feature flags: performance mode force-disables the heaviest modules
-vpOn      = showVP and not perfMode
-mtfOn     = showMTFdash and not perfMode
-vpLoArr = vpOn ? request.security_lower_tf(syminfo.tickerid, vpLTF, low)    : array.new<float>()
-vpHiArr = vpOn ? request.security_lower_tf(syminfo.tickerid, vpLTF, high)   : array.new<float>()
-vpVoArr = vpOn ? request.security_lower_tf(syminfo.tickerid, vpLTF, volume) : array.new<float>()
-
-// Sessions -------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// SESSIONS
+// -----------------------------------------------------------------------------
 f_inSession(string s) => not na(time(timeframe.period, s, sessTZ))
-
-// new trading day detector (in the chosen session timezone)
 newDay = ta.change(time("D", "0000-0000", sessTZ)) != 0
 
-// ---- POWER-OF-THREE daily bias (feature #7) ----
-// Around the daily open: accumulation (chop near open) -> manipulation (first
-// decisive sweep of the opening range, the Judas leg) -> distribution (expected
-// move in the OPPOSITE direction to the manipulation).
-var float po3Open = na
-var int   po3Manip = 0     // 0 = none yet, +1 = swept UP first, -1 = swept DOWN first
-if newDay
-    po3Open := open
-    po3Manip := 0
-float po3Band = po3Range * nz(atr)
-if showPO3 and po3Manip == 0 and not na(po3Open)
-    if high > po3Open + po3Band
-        po3Manip := 1     // pushed up first => manipulation up => expect distribution DOWN
-    else if low < po3Open - po3Band
-        po3Manip := -1    // pushed down first => expect distribution UP
-// phase + expected distribution direction (opposite of the manipulation leg)
-string po3Phase = po3Manip == 0 ? "Accumulation" : "Distribution"
-int    po3Dist  = po3Manip == 0 ? 0 : -po3Manip   // +1 expect up, -1 expect down
-string po3Txt = po3Manip == 0 ? "PO3: Accumulation (await manipulation)" : ("PO3: " + (po3Manip > 0 ? "Manip↑ → distribute DOWN" : "Manip↓ → distribute UP"))
-
-// Session H/L with: daily reset, sweep-removal, and carry-over reclassification.
-// Returns [high, low, hiCarried, loCarried] where the *Carried flags mark a
-// level that survived unswept into a new day (=> reclassify as swing liquidity).
 f_sessHL(bool active, string sess) =>
     var float hi        = na
     var float lo        = na
@@ -560,17 +295,11 @@ f_sessHL(bool active, string sess) =>
     var bool  hiCarried = false
     var bool  loCarried = false
     bool inS = f_inSession(sess)
-
     if active
-        // ---- daily reset: at a new day, mark any surviving level as carried-over ----
         if sessResetDaily and newDay
-            hiCarried := not na(hi)   // if a level still exists, it survived the day unswept
+            hiCarried := not na(hi)
             loCarried := not na(lo)
-            // note: we keep hi/lo values so they can be reclassified, but a fresh
-            // session below will overwrite them when the session reopens.
-
         if inS and not prevIn
-            // fresh session start => reset to this bar's range, clear carry flags
             hi := high
             lo := low
             hiCarried := false
@@ -578,8 +307,6 @@ f_sessHL(bool active, string sess) =>
         else if inS
             hi := math.max(nz(hi, high), high)
             lo := math.min(nz(lo, low), low)
-
-        // ---- sweep-removal: drop a level once price trades beyond it ----
         if sessRemoveSwept
             if not na(hi) and high > hi
                 hi := na
@@ -594,132 +321,42 @@ f_sessHL(bool active, string sess) =>
 [londH, londL, londHc, londLc] = f_sessHL(showLond, londSess)
 [nyH,   nyL,   nyHc,   nyLc]   = f_sessHL(showNY,   nySess)
 
-// Swings & Equal H/L ---------------------------------------------------------
+// -----------------------------------------------------------------------------
+// SWINGS + HTF SWINGS
+// -----------------------------------------------------------------------------
 ph = ta.pivothigh(high, swingLen, swingLen)
 pl = ta.pivotlow(low, swingLen, swingLen)
 
-// ---- SMT DIVERGENCE (feature #4): compare vs a correlated symbol ----
-// SMT = one symbol takes liquidity (new high/low) while the correlate fails to.
-smtEnabled = showSMT and str.length(smtSym) > 0 and not perfMode
-// use a valid symbol for the request even when disabled (fall back to this chart's
-// own ticker, which yields no divergence) so request.security never gets "".
-smtReqSym = smtEnabled ? smtSym : syminfo.tickerid
-smtHigh = request.security(smtReqSym, timeframe.period, high, lookahead = barmerge.lookahead_off)
-smtLow  = request.security(smtReqSym, timeframe.period, low,  lookahead = barmerge.lookahead_off)
-// confirmed pivots on BOTH series (same pivot length)
-myPH  = ta.pivothigh(high, smtLen, smtLen)
-myPL  = ta.pivotlow(low,  smtLen, smtLen)
-coPH  = smtEnabled ? ta.pivothigh(smtHigh, smtLen, smtLen) : na
-coPL  = smtEnabled ? ta.pivotlow(smtLow,  smtLen, smtLen)  : na
-// remember the previous confirmed pivot on each series to compare "higher/lower"
-var float myPHp = na, var float myPLp = na
-var float coPHp = na, var float coPLp = na
-bool bearSMT = false
-bool bullSMT = false
-if smtEnabled and not na(myPH) and not na(coPH)
-    // bearish SMT: this symbol makes a HIGHER high but the correlate makes a LOWER high
-    if not na(myPHp) and not na(coPHp)
-        bearSMT := (myPH > myPHp) and (coPH < coPHp)
-    myPHp := myPH
-    coPHp := coPH
-if smtEnabled and not na(myPL) and not na(coPL)
-    // bullish SMT: this symbol makes a LOWER low but the correlate makes a HIGHER low
-    if not na(myPLp) and not na(coPLp)
-        bullSMT := (myPL < myPLp) and (coPL > coPLp)
-    myPLp := myPL
-    coPLp := coPL
-
-// higher-timeframe swing pivots (for MAJOR structural levels far back)
 f_htfPH() => ta.pivothigh(high, htfLen, htfLen)
 f_htfPL() => ta.pivotlow(low, htfLen, htfLen)
 htfPH = htfSwingOn ? request.security(syminfo.tickerid, htfTF, f_htfPH(), lookahead = barmerge.lookahead_off) : na
 htfPL = htfSwingOn ? request.security(syminfo.tickerid, htfTF, f_htfPL(), lookahead = barmerge.lookahead_off) : na
-
-// ---- MTF LIQUIDITY DASHBOARD data (feature #1) ----
-// For each timeframe we compute: recent swing high (BSL above), recent swing low
-// (SSL below), a bias from a fast/slow EMA relationship, and the position within
-// the recent range (premium vs discount). Bundled into one security call per TF.
-f_mtfBundle() =>
-    float rHi = ta.highest(high, 20)
-    float rLo = ta.lowest(low, 20)
-    float ef  = ta.ema(close, 21)
-    float es  = ta.ema(close, 55)
-    [rHi, rLo, ef, es, close]
-
-// timeframe comparison in seconds: is the requested TF strictly HIGHER than chart?
-f_tfSec(string tf) => timeframe.in_seconds(tf)
-chartTfSec = timeframe.in_seconds(timeframe.period)
-
-// Under performance mode we request the chart's OWN timeframe (already loaded,
-// effectively free) instead of 4 foreign timeframes; the dashboard isn't rendered
-// then anyway. Otherwise request the configured MTF timeframes.
-mtfR1 = mtfOn ? mtfTF1 : timeframe.period
-mtfR2 = mtfOn ? mtfTF2 : timeframe.period
-mtfR3 = mtfOn ? mtfTF3 : timeframe.period
-mtfR4 = mtfOn ? mtfTF4 : timeframe.period
-[m1Hi, m1Lo, m1Ef, m1Es, m1C] = request.security(syminfo.tickerid, mtfR1, f_mtfBundle(), lookahead = barmerge.lookahead_off)
-[m2Hi, m2Lo, m2Ef, m2Es, m2C] = request.security(syminfo.tickerid, mtfR2, f_mtfBundle(), lookahead = barmerge.lookahead_off)
-[m3Hi, m3Lo, m3Ef, m3Es, m3C] = request.security(syminfo.tickerid, mtfR3, f_mtfBundle(), lookahead = barmerge.lookahead_off)
-[m4Hi, m4Lo, m4Ef, m4Es, m4C] = request.security(syminfo.tickerid, mtfR4, f_mtfBundle(), lookahead = barmerge.lookahead_off)
-
-// ---- MTF ALIGNMENT METER (list feature #12): how much the TFs agree ----
-// Each timeframe votes up (+1) / down (-1) / flat (0) from its EMA pair. Alignment
-// = |net vote| / valid votes, scaled 0..100. Sign gives the agreed direction.
-f_mtfVote(float ef, float es) => (na(ef) or na(es)) ? 0 : (ef > es ? 1 : ef < es ? -1 : 0)
-mtfVoteSum   = f_mtfVote(m1Ef, m1Es) + f_mtfVote(m2Ef, m2Es) + f_mtfVote(m3Ef, m3Es) + f_mtfVote(m4Ef, m4Es)
-mtfVoteCount = (na(m1Ef) ? 0 : 1) + (na(m2Ef) ? 0 : 1) + (na(m3Ef) ? 0 : 1) + (na(m4Ef) ? 0 : 1)
-float alignScore = mtfVoteCount > 0 ? math.abs(mtfVoteSum) / mtfVoteCount * 100.0 : na
-int   alignDir   = mtfVoteSum > 0 ? 1 : mtfVoteSum < 0 ? -1 : 0
-
-// ---- CORRELATION / DRIVER CONTEXT (feature #12) ----
-// Compare a driver symbol's short-term direction against this symbol's bias.
-corrOn     = showCorr and str.length(corrSym) > 0 and not perfMode
-corrReqSym = corrOn ? corrSym : syminfo.tickerid
-corrClose  = request.security(corrReqSym, timeframe.period, close, lookahead = barmerge.lookahead_off)
-float corrRoc = ta.roc(corrClose, corrLen)
-// driver's implied direction for THIS symbol (invert if inversely correlated)
-int  corrDir = na(corrRoc) or corrRoc == 0 ? 0 : ((corrRoc > 0) == (not corrInverse) ? 1 : -1)
-
 htfPHchg = not na(htfPH) and (na(htfPH[1]) or htfPH != htfPH[1])
 htfPLchg = not na(htfPL) and (na(htfPL[1]) or htfPL != htfPL[1])
+
 var float lastPH = na
 var float lastPL = na
-var float prevPH = na   // the pivot high BEFORE the current one (for EQ comparison)
-var float prevPL = na   // the pivot low  BEFORE the current one
-// track range direction: +1 = bullish leg (low then high), -1 = bearish leg (high then low)
 var int rangeDir = 0
-if showSwing or showPD or showEQ
+if showSwing or showEQ
     if not na(ph)
-        prevPH := lastPH   // shift the old value down BEFORE overwriting
         lastPH := ph
-        rangeDir := -1   // a fresh high => most recent move up completed at a high => expect retrace down
+        rangeDir := -1
     if not na(pl)
-        prevPL := lastPL
         lastPL := pl
-        rangeDir := 1    // a fresh low  => most recent move down completed at a low => expect retrace up
+        rangeDir := 1
 
-// HISTORICAL swing storage: keep arrays of UNSWEPT swing highs/lows with their
-// birth bars, so older levels going back days/weeks remain plotted until swept.
+// historical swing storage
 var swHi   = array.new<float>()
 var swHiB  = array.new<int>()
 var swLo   = array.new<float>()
 var swLoB  = array.new<int>()
 
-// ---- GHOST LEVELS store (feature #15): recently-swept levels + when swept ----
-var ghostP    = array.new<float>()   // price of the swept level
-var ghostBar  = array.new<int>()     // bar_index at which it was swept
-var ghostSide = array.new<int>()     // +1 = a swept HIGH (BSL), -1 = a swept LOW (SSL)
-
-// push each newly-confirmed pivot (its bar_index is swingLen bars back)
 if showSwing and not na(ph)
     array.push(swHi, ph)
     array.push(swHiB, bar_index - swingLen)
 if showSwing and not na(pl)
     array.push(swLo, pl)
     array.push(swLoB, bar_index - swingLen)
-
-// push higher-timeframe swings (major structural levels). Birth bar unknown
-// precisely on the LTF chart, so use na (age-extension falls back to base length).
 if showSwing and htfSwingOn and htfPHchg
     array.push(swHi, htfPH)
     array.push(swHiB, na)
@@ -727,8 +364,7 @@ if showSwing and htfSwingOn and htfPLchg
     array.push(swLo, htfPL)
     array.push(swLoB, na)
 
-// sweep-removal from the historical arrays: a swing HIGH is taken when price
-// prints above it; a swing LOW when price prints below it.
+// sweep-removal from swing arrays
 if removeSwept and array.size(swHi) > 0
     int ih = 0
     while ih < array.size(swHi)
@@ -745,8 +381,6 @@ if removeSwept and array.size(swLo) > 0
             array.remove(swLoB, il)
         else
             il += 1
-
-// cap history size (drop the oldest = front of the array)
 while array.size(swHi) > swingHist
     array.shift(swHi)
     array.shift(swHiB)
@@ -754,55 +388,18 @@ while array.size(swLo) > swingHist
     array.shift(swLo)
     array.shift(swLoB)
 
-// DISCIPLINE STREAK: count bars since price last SWEPT a swing level (took liquidity).
-// A sweep = a new bar high above the prior nearest untapped swing high, or a new low
-// below the prior nearest untapped swing low. Framed as a patience stat.
-var int discStreak = 0
-bool sweptThisBar = (not na(lastPH[1]) and high > lastPH[1] and high[1] <= lastPH[1]) or (not na(lastPL[1]) and low < lastPL[1] and low[1] >= lastPL[1])
-discStreak := sweptThisBar ? 0 : discStreak + 1
-
-// LIVE dealing range for Premium/Discount fibs.
-// One end is ANCHORED to the freshest opposing swing; the other end TRACKS the
-// running extreme so the fibs update as price continues in the leg's direction.
-// A new swing (re)anchors the range; a break beyond the moving end flips it.
-// Computed whenever the P/D drawings OR the confluence score OR the coach need it,
-// so hiding the P/D drawings never changes the confluence score.
-var float rngHi = na
-var float rngLo = na
-if showPD or showConf or showCoach
-    // (re)anchor whenever a fresh confirmed pivot appears
-    if not na(pl)                       // fresh swing low => bullish leg, anchor the low
-        rngLo := pl
-        rngHi := math.max(nz(rngHi, high), high)
-    if not na(ph)                       // fresh swing high => bearish leg, anchor the high
-        rngHi := ph
-        rngLo := math.min(nz(rngLo, low), low)
-    // extend the moving end live with the ongoing move
-    if rangeDir >= 0                    // bullish leg: low anchored, high tracks upward
-        rngHi := math.max(nz(rngHi, high), high)
-    else                                // bearish leg: high anchored, low tracks downward
-        rngLo := math.min(nz(rngLo, low), low)
-
 // -----------------------------------------------------------------------------
-// EQUAL HIGHS / LOWS — rolling-buffer detection.
-// When a new pivot forms, scan the last `eqLookback` same-type pivots. If it
-// matches ANY of them within tolerance (not just the immediately previous one),
-// record an equal level. This catches NON-consecutive equals the old check missed.
-// Detected equals are stored in arrays and persist (with birth bar) until swept.
+// EQUAL HIGHS / LOWS — rolling-buffer detection
 // -----------------------------------------------------------------------------
 float eqTolPrice = nz(atr) * eqTol
-
-// raw recent-pivot buffers (independent of the swept swing arrays)
 var pvHi  = array.new<float>()
 var pvLo  = array.new<float>()
-// detected equal-level stores (value + birth bar)
 var eqHiA = array.new<float>()
 var eqHiB = array.new<int>()
 var eqLoA = array.new<float>()
 var eqLoB = array.new<int>()
 
 if showEQ and not na(ph)
-    // scan existing recent highs for a match BEFORE adding the new one
     bool found = false
     float matched = na
     int hs = array.size(pvHi)
@@ -812,7 +409,7 @@ if showEQ and not na(ph)
             float prevH = array.get(pvHi, qi)
             if math.abs(ph - prevH) <= eqTolPrice
                 found := true
-                matched := math.max(ph, prevH)   // the higher of the equal pair
+                matched := math.max(ph, prevH)
     if found
         array.push(eqHiA, matched)
         array.push(eqHiB, bar_index - swingLen)
@@ -830,7 +427,7 @@ if showEQ and not na(pl)
             float prevL = array.get(pvLo, qi)
             if math.abs(pl - prevL) <= eqTolPrice
                 found := true
-                matched := math.min(pl, prevL)   // the lower of the equal pair
+                matched := math.min(pl, prevL)
     if found
         array.push(eqLoA, matched)
         array.push(eqLoB, bar_index - swingLen)
@@ -838,7 +435,6 @@ if showEQ and not na(pl)
     while array.size(pvLo) > 40
         array.shift(pvLo)
 
-// sweep-removal + de-dupe cap for the equal-level stores
 if array.size(eqHiA) > 0
     int i = 0
     while i < array.size(eqHiA)
@@ -863,8 +459,7 @@ while array.size(eqLoA) > swingHist
     array.shift(eqLoB)
 
 // -----------------------------------------------------------------------------
-// BIRTH-BAR TRACKING — record bar_index when each level's value changes,
-// so the renderer can scale line length by how long the level has persisted.
+// BIRTH-BAR TRACKING (for age-scaled extension)
 // -----------------------------------------------------------------------------
 var int b_pdh = na, var int b_pdl = na
 var int b_pwh = na, var int b_pwl = na
@@ -873,7 +468,6 @@ var int b_do  = na
 var int b_ah  = na, var int b_al = na
 var int b_lh  = na, var int b_ll = na
 var int b_nh  = na, var int b_nl = na
-
 b_pdh := (na(b_pdh) or pdh != pdh[1]) ? bar_index : b_pdh
 b_pdl := (na(b_pdl) or pdl != pdl[1]) ? bar_index : b_pdl
 b_pwh := (na(b_pwh) or pwh != pwh[1]) ? bar_index : b_pwh
@@ -888,26 +482,18 @@ b_ll  := (na(b_ll)  or londL != londL[1]) ? bar_index : b_ll
 b_nh  := (na(b_nh)  or nyH != nyH[1]) ? bar_index : b_nh
 b_nl  := (na(b_nl)  or nyL != nyL[1]) ? bar_index : b_nl
 
-
 // -----------------------------------------------------------------------------
-// SWEEP MASKING for previous-period levels (PDH/PDL/PWH/PWL/PMH/PML).
-// Track a "swept" flag per level that RESETS when the underlying value changes
-// (new day/week/month) and SETS once price trades through it. When swept and
-// removeSwept is on, we substitute na so the level drops off the chart.
+// SWEEP MASKING for previous-period levels
 // -----------------------------------------------------------------------------
 var bool sw_pdh = false, var bool sw_pdl = false
 var bool sw_pwh = false, var bool sw_pwl = false
 var bool sw_pmh = false, var bool sw_pml = false
-
-// highs swept when price prints above; lows when price prints below; reset on change
 sw_pdh := (pdh != pdh[1]) ? false : (sw_pdh or (not na(pdh) and high > pdh))
 sw_pdl := (pdl != pdl[1]) ? false : (sw_pdl or (not na(pdl) and low  < pdl))
 sw_pwh := (pwh != pwh[1]) ? false : (sw_pwh or (not na(pwh) and high > pwh))
 sw_pwl := (pwl != pwl[1]) ? false : (sw_pwl or (not na(pwl) and low  < pwl))
 sw_pmh := (pmh != pmh[1]) ? false : (sw_pmh or (not na(pmh) and high > pmh))
 sw_pml := (pml != pml[1]) ? false : (sw_pml or (not na(pml) and low  < pml))
-
-// masked values used for plotting (na => removed when swept)
 pdhM = (removeSwept and sw_pdh) ? na : pdh
 pdlM = (removeSwept and sw_pdl) ? na : pdl
 pwhM = (removeSwept and sw_pwh) ? na : pwh
@@ -915,112 +501,9 @@ pwlM = (removeSwept and sw_pwl) ? na : pwl
 pmhM = (removeSwept and sw_pmh) ? na : pmh
 pmlM = (removeSwept and sw_pml) ? na : pml
 
-// ---- ROBUST GHOST CAPTURE (feature #15, self-contained per-bar detector) ----
-// Independent of removeSwept / showSFP / pivot timing: build the set of currently
-// tracked levels each bar and drop a ghost the instant THIS bar's high/low crosses
-// one (with the prior bar not already beyond it). De-duped so a price only ghosts
-// once while it stays swept. Inlined pushes (no helper) for reliability in Pine v6.
-if showGhost
-    // collect this bar's tracked HIGH-type (buy-side) and LOW-type (sell-side) levels
-    gHiNow = array.new<float>()
-    gLoNow = array.new<float>()
-    if showPDHL and not na(pdh)
-        array.push(gHiNow, pdh)
-    if showPDHL and not na(pdl)
-        array.push(gLoNow, pdl)
-    if showPWHL and not na(pwh)
-        array.push(gHiNow, pwh)
-    if showPWHL and not na(pwl)
-        array.push(gLoNow, pwl)
-    if showPMHL and not na(pmh)
-        array.push(gHiNow, pmh)
-    if showPMHL and not na(pml)
-        array.push(gLoNow, pml)
-    if showAsia and not na(asiaH)
-        array.push(gHiNow, asiaH)
-    if showAsia and not na(asiaL)
-        array.push(gLoNow, asiaL)
-    if showLond and not na(londH)
-        array.push(gHiNow, londH)
-    if showLond and not na(londL)
-        array.push(gLoNow, londL)
-    if showNY and not na(nyH)
-        array.push(gHiNow, nyH)
-    if showNY and not na(nyL)
-        array.push(gLoNow, nyL)
-    if showSwing and array.size(swHi) > 0
-        for gsi = 0 to array.size(swHi) - 1
-            array.push(gHiNow, array.get(swHi, gsi))
-    if showSwing and array.size(swLo) > 0
-        for gsi = 0 to array.size(swLo) - 1
-            array.push(gLoNow, array.get(swLo, gsi))
-    if showEQ and array.size(eqHiA) > 0
-        for gei = 0 to array.size(eqHiA) - 1
-            array.push(gHiNow, array.get(eqHiA, gei))
-    if showEQ and array.size(eqLoA) > 0
-        for gei = 0 to array.size(eqLoA) - 1
-            array.push(gLoNow, array.get(eqLoA, gei))
-
-    float gTol = math.max(nz(atr) * 0.05, syminfo.mintick)
-    // a HIGH is swept when this bar trades above it but the previous bar didn't
-    if array.size(gHiNow) > 0
-        for gi = 0 to array.size(gHiNow) - 1
-            float lv = array.get(gHiNow, gi)
-            if high >= lv and high[1] < lv
-                // de-dupe: skip if we already have a ghost at ~this price
-                bool dup = false
-                if array.size(ghostP) > 0
-                    for dj = 0 to array.size(ghostP) - 1
-                        if math.abs(array.get(ghostP, dj) - lv) <= gTol
-                            dup := true
-                if not dup
-                    array.push(ghostP, lv)
-                    array.push(ghostBar, bar_index)
-                    array.push(ghostSide, 1)
-    // a LOW is swept when this bar trades below it but the previous bar didn't
-    if array.size(gLoNow) > 0
-        for gi = 0 to array.size(gLoNow) - 1
-            float lv = array.get(gLoNow, gi)
-            if low <= lv and low[1] > lv
-                bool dup = false
-                if array.size(ghostP) > 0
-                    for dj = 0 to array.size(ghostP) - 1
-                        if math.abs(array.get(ghostP, dj) - lv) <= gTol
-                            dup := true
-                if not dup
-                    array.push(ghostP, lv)
-                    array.push(ghostBar, bar_index)
-                    array.push(ghostSide, -1)
-
-// ---- GHOST expiry + cap: drop ghosts older than their lifetime, then cap count ----
-if array.size(ghostP) > 0
-    int gj = 0
-    while gj < array.size(ghostP)
-        if bar_index - array.get(ghostBar, gj) > ghostLife
-            array.remove(ghostP, gj)
-            array.remove(ghostBar, gj)
-            array.remove(ghostSide, gj)
-        else
-            gj += 1
-while array.size(ghostP) > ghostKeep
-    array.shift(ghostP)
-    array.shift(ghostBar)
-    array.shift(ghostSide)
-
-// =============================================================================
-// PER-BAR LIQUIDITY ENGINE  (runs every bar, feeds markers/OBs/stats/alerts)
-// =============================================================================
-
-// ---- KILLZONES & ASIAN RANGE (feature #4) ----
-inKZLondon = not na(time(timeframe.period, kzLondon, sessTZ))
-inKZNY     = not na(time(timeframe.period, kzNY, sessTZ))
-inKillzone = (inKZLondon or inKZNY)
-
-// (The Asian range box is drawn from the live asiaH/asiaL session H/L in the
-//  render section; no extra per-bar state needed here.)
-
-// ---- Build the set of active liquidity levels to test for sweeps (this bar) ----
-// Highs = buy-side pools (stops above), Lows = sell-side pools (stops below).
+// -----------------------------------------------------------------------------
+// SFP (sweep + reversal) DETECTION
+// -----------------------------------------------------------------------------
 lvHiNow = array.new<float>()
 lvLoNow = array.new<float>()
 if showSFP
@@ -1048,7 +531,6 @@ if showSFP
         array.push(lvLoNow, londL)
     if not na(nyL)
         array.push(lvLoNow, nyL)
-    // swing + equal stores (values that existed as of the prior bar)
     if array.size(swHi) > 0
         for si = 0 to array.size(swHi) - 1
             array.push(lvHiNow, array.get(swHi, si))
@@ -1062,10 +544,6 @@ if showSFP
         for si = 0 to array.size(eqLoA) - 1
             array.push(lvLoNow, array.get(eqLoA, si))
 
-// ---- SFP (sweep + reversal) detection (feature #1) ----
-// A HIGH is swept+rejected when this bar's wick pierces above a level but the
-// candle CLOSES back below it; a LOW when the wick pierces below but closes above.
-// We pick the level nearest to price (highest pierced high / lowest pierced low).
 float sweptHiLvl = na
 float sweptLoLvl = na
 if showSFP and array.size(lvHiNow) > 0
@@ -1080,52 +558,32 @@ if showSFP and array.size(lvLoNow) > 0
         if low < lv and close > lv
             if na(sweptLoLvl) or lv < sweptLoLvl
                 sweptLoLvl := lv
-// ---- Rejection wick-strength (feature #3): how hard price rejected the level ----
-// Fraction of the candle range taken by the rejection wick on the sweep side.
-float barRange = math.max(high - low, syminfo.mintick)
-float upWickFrac = (high - math.max(open, close)) / barRange   // rejection off a swept HIGH
-float dnWickFrac = (math.min(open, close) - low) / barRange    // rejection off a swept LOW
-// grade -> star string + 0..3 tier
-f_wickGrade(float frac) =>
-    frac >= 0.6 ? "✦✦✦" : frac >= 0.35 ? "✦✦" : "✦"
 
-// bearish SFP: swept a high (buy-side) then closed back below -> expect down
-bool sfpShort = showSFP and not na(sweptHiLvl) and volOK and ((not sfpWick) or upWickFrac >= sfpMinWick)
-// bullish SFP: swept a low (sell-side) then closed back above -> expect up
-bool sfpLong  = showSFP and not na(sweptLoLvl) and volOK and ((not sfpWick) or dnWickFrac >= sfpMinWick)
+bool sfpShort = showSFP and not na(sweptHiLvl) and volOK
+bool sfpLong  = showSFP and not na(sweptLoLvl) and volOK
 
-// ---- SETUP GRADE A+/B/C (feature #10): confluence points on the SFP bar ----
-// Points from: killzone timing, elevated volume, strong rejection wick, and MTF
-// alignment agreeing with the setup's direction. More points => higher grade.
-f_gradeFor(bool isLong) =>
-    int pts = 0
-    if gradeUseKZ and inKillzone
-        pts := pts + 1
-    if gradeUseVol and rvol >= rvolMult
-        pts := pts + 1
-    if gradeUseWick and (isLong ? dnWickFrac : upWickFrac) >= 0.35
-        pts := pts + 1
-    // MTF alignment must be both STRONG and in the setup's direction
-    if gradeUseAlign and not na(alignScore) and alignScore >= gradeAlignMin and ((isLong and alignDir > 0) or ((not isLong) and alignDir < 0))
-        pts := pts + 1
-    // map points -> letter (A+ = 4, A = 3, B = 2, C = <=1)
-    string g = pts >= 4 ? "A+" : pts == 3 ? "A" : pts == 2 ? "B" : "C"
-    [g, pts]
+// signal markers — capped rolling pool so they never exhaust the label budget
+var mk_labels = array.new<label>()
+f_mark(int x, float y, string txt, string yl, string stl, color col, color tcol, string sz) =>
+    label lb = label.new(x, y, txt, yloc = yl, style = stl, color = col, textcolor = tcol, size = sz)
+    array.push(mk_labels, lb)
+    while array.size(mk_labels) > 120
+        label.delete(array.shift(mk_labels))
 
-[sfpLongGrade, sfpLongPts]   = f_gradeFor(true)
-[sfpShortGrade, sfpShortPts] = f_gradeFor(false)
+if masterOn and sfpLong
+    f_mark(bar_index, low, "🎯 SFP▲" + (sfpUseVol ? " " + str.tostring(rvol, "#.0") + "x" : ""), yloc.belowbar, label.style_label_up, sfpColLong, color.white, size.small)
+if masterOn and sfpShort
+    f_mark(bar_index, high, "🎯 SFP▼" + (sfpUseVol ? " " + str.tostring(rvol, "#.0") + "x" : ""), yloc.abovebar, label.style_label_down, sfpColShort, color.white, size.small)
 
-// ---- Order block after displacement (feature #2) ----
-// Displacement = a large-bodied candle in the reversal direction right after a grab.
+// -----------------------------------------------------------------------------
+// ORDER BLOCKS
+// -----------------------------------------------------------------------------
 float bodySize = math.abs(close - open)
 bool  disp     = bodySize >= obDisp * nz(atr)
-// store OB zones: top, bottom, isBull, birthBar
 var obTop  = array.new<float>()
 var obBot  = array.new<float>()
 var obBull = array.new<bool>()
 var obBirth = array.new<int>()
-// A bullish OB (demand) forms on/after a bullish SFP with displacement up: the
-// last down-candle before the up-move. Use the previous bar's range as the OB.
 if showOB and disp and close > open and (sfpLong or (close > high[1]))
     array.push(obTop, high[1])
     array.push(obBot, low[1])
@@ -1136,7 +594,6 @@ if showOB and disp and close < open and (sfpShort or (close < low[1]))
     array.push(obBot, low[1])
     array.push(obBull, false)
     array.push(obBirth, bar_index - 1)
-// mitigate OBs: a bullish OB dies when price closes below its bottom; bearish when above top
 if array.size(obTop) > 0
     int oi = 0
     while oi < array.size(obTop)
@@ -1155,287 +612,20 @@ while array.size(obTop) > obKeep
     array.shift(obBull)
     array.shift(obBirth)
 
-// ---- BOS / CHoCH (feature #9) ----
-// Track the last confirmed swing high/low and the prevailing structural bias.
-var float structHi = na
-var float structLo = na
-var int   structBias = 0   // +1 bullish, -1 bearish
-if not na(ph)
-    structHi := ph
-if not na(pl)
-    structLo := pl
-bool bosUp   = showBOS and not na(structHi) and close > structHi and close[1] <= structHi
-bool bosDn   = showBOS and not na(structLo) and close < structLo and close[1] >= structLo
-bool chochUp = bosUp and structBias < 0    // first up-break while bearish = bullish CHoCH
-bool chochDn = bosDn and structBias > 0    // first down-break while bullish = bearish CHoCH
-if bosUp
-    structBias := 1
-if bosDn
-    structBias := -1
-
-// ---- Liquidity voids (feature #6) ----
-// A run of >= voidRun consecutive same-direction candles leaves an imbalance.
-var voidMid = array.new<float>()
-var voidBirth = array.new<int>()
-var int upRun = 0
-var int dnRun = 0
-upRun := close > open ? upRun + 1 : 0
-dnRun := close < open ? dnRun + 1 : 0
-if showVoid and upRun == voidRun
-    // void spans the run's start-open to current close
-    float vHi = close
-    float vLo = open[voidRun - 1]
-    if not na(vHi) and not na(vLo)
-        array.push(voidMid, (vHi + vLo) / 2.0)
-        array.push(voidBirth, bar_index)
-if showVoid and dnRun == voidRun
-    float vHi = open[voidRun - 1]
-    float vLo = close
-    if not na(vHi) and not na(vLo)
-        array.push(voidMid, (vHi + vLo) / 2.0)
-        array.push(voidBirth, bar_index)
-// void fills when price trades back through its midpoint
-if array.size(voidMid) > 0
-    int vi = 0
-    while vi < array.size(voidMid)
-        float vm = array.get(voidMid, vi)
-        if high >= vm and low <= vm
-            array.remove(voidMid, vi)
-            array.remove(voidBirth, vi)
-        else
-            vi += 1
-while array.size(voidMid) > voidKeep
-    array.shift(voidMid)
-    array.shift(voidBirth)
-
-// ---- Backtest stats: sweep -> reversal hit rate (feature #11) ----
-// When an SFP fires, register it; after statsWin bars, judge success = price
-// closed back beyond the level in the reversal direction.
-var int  sweepTotal = 0
-var int  sweepHit   = 0
-var pendLvl  = array.new<float>()
-var pendDir  = array.new<int>()     // +1 expect up (bull SFP), -1 expect down
-var pendBar  = array.new<int>()
-if sfpLong
-    array.push(pendLvl, sweptLoLvl)
-    array.push(pendDir, 1)
-    array.push(pendBar, bar_index)
-if sfpShort
-    array.push(pendLvl, sweptHiLvl)
-    array.push(pendDir, -1)
-    array.push(pendBar, bar_index)
-if array.size(pendBar) > 0
-    int pi = 0
-    while pi < array.size(pendBar)
-        if bar_index - array.get(pendBar, pi) >= statsWin
-            float lv = array.get(pendLvl, pi)
-            int   dr = array.get(pendDir, pi)
-            bool hit = dr > 0 ? (close > lv) : (close < lv)   // reversed away from swept level
-            sweepTotal := sweepTotal + 1
-            sweepHit := sweepHit + (hit ? 1 : 0)
-            array.remove(pendLvl, pi)
-            array.remove(pendDir, pi)
-            array.remove(pendBar, pi)
-        else
-            pi += 1
-
-// =============================================================================
-// BACKTEST HARNESS — measure whether the SFP GRADES actually predict outcomes.
-// On each graded SFP: open a virtual trade (entry=close, stop beyond the sweep
-// wick, target = fixed R multiple OR next opposing pool). Resolve on later bars:
-// stop hit = -1R, target hit = +targetR, timeout = running R. Tally by grade.
-// Runs EVERY bar so it walks the whole loaded history.
-// =============================================================================
-// per-grade tallies: index 0=A+, 1=A, 2=B, 3=C
-var btN   = array.from(0, 0, 0, 0)          // trade count per grade
-var btWin = array.from(0, 0, 0, 0)          // wins per grade
-var btRsum = array.from(0.0, 0.0, 0.0, 0.0) // sum of R outcomes per grade
-// open virtual trades (parallel arrays)
-var btEntry = array.new<float>()
-var btStop  = array.new<float>()
-var btTgt   = array.new<float>()
-var btDir   = array.new<int>()    // +1 long, -1 short
-var btGi    = array.new<int>()    // grade index 0..3
-var btBar   = array.new<int>()    // bar opened
-
-f_gradeIdx(string g) => g == "A+" ? 0 : g == "A" ? 1 : g == "B" ? 2 : 3
-
-// ---- open a trade on a graded SFP ----
-// poolTgt = the "next opposing pool" price (computed at the call site from the
-// per-bar level set); passed in so this function references no out-of-scope vars.
-f_btOpen(bool isLong, float swept, string grade, float poolTgt) =>
-    if showBT and not na(swept)
-        float entry = close
-        float stopP = isLong ? (low - btStopPad * nz(atr)) : (high + btStopPad * nz(atr))
-        float risk  = math.abs(entry - stopP)
-        float tgtP  = na
-        if risk > 0
-            if btTargetMode == "Fixed R multiple"
-                tgtP := isLong ? (entry + btRR * risk) : (entry - btRR * risk)
-            else
-                tgtP := poolTgt
-            if not na(tgtP) and ((isLong and tgtP > entry) or ((not isLong) and tgtP < entry))
-                array.push(btEntry, entry)
-                array.push(btStop, stopP)
-                array.push(btTgt, tgtP)
-                array.push(btDir, isLong ? 1 : -1)
-                array.push(btGi, f_gradeIdx(grade))
-                array.push(btBar, bar_index)
-
-// nearest opposing pool for a target: for a long, the closest buy-side level ABOVE
-// price; for a short, the closest sell-side level BELOW price (from the per-bar set).
-f_nextPoolUp() =>
-    float best = na
-    if array.size(lvHiNow) > 0
-        for i = 0 to array.size(lvHiNow) - 1
-            float lv = array.get(lvHiNow, i)
-            if lv > close and (na(best) or lv < best)
-                best := lv
-    best
-f_nextPoolDn() =>
-    float best = na
-    if array.size(lvLoNow) > 0
-        for i = 0 to array.size(lvLoNow) - 1
-            float lv = array.get(lvLoNow, i)
-            if lv < close and (na(best) or lv > best)
-                best := lv
-    best
-
-if sfpLong
-    f_btOpen(true, sweptLoLvl, sfpLongGrade, f_nextPoolUp())
-if sfpShort
-    f_btOpen(false, sweptHiLvl, sfpShortGrade, f_nextPoolDn())
-
-// ---- resolve open trades on this bar ----
-if showBT and array.size(btEntry) > 0
-    int ti = 0
-    while ti < array.size(btEntry)
-        float e = array.get(btEntry, ti)
-        float s = array.get(btStop, ti)
-        float t = array.get(btTgt, ti)
-        int   d = array.get(btDir, ti)
-        int   gi = array.get(btGi, ti)
-        int   ob = array.get(btBar, ti)
-        float riskU = math.abs(e - s)
-        bool  hitStop = d > 0 ? (low <= s) : (high >= s)
-        bool  hitTgt  = d > 0 ? (high >= t) : (low <= t)
-        bool  timeout = (bar_index - ob) >= btMaxBars
-        bool  resolved = false
-        float rOut = 0.0
-        if hitStop and hitTgt
-            // both in one bar: assume stop hit first (conservative)
-            rOut := -1.0
-            resolved := true
-        else if hitStop
-            rOut := -1.0
-            resolved := true
-        else if hitTgt
-            rOut := riskU > 0 ? math.abs(t - e) / riskU : 0.0
-            resolved := true
-        else if timeout
-            rOut := riskU > 0 ? (d > 0 ? (close - e) : (e - close)) / riskU : 0.0
-            resolved := true
-        if resolved
-            array.set(btN, gi, array.get(btN, gi) + 1)
-            if rOut > 0
-                array.set(btWin, gi, array.get(btWin, gi) + 1)
-            array.set(btRsum, gi, array.get(btRsum, gi) + rOut)
-            array.remove(btEntry, ti)
-            array.remove(btStop, ti)
-            array.remove(btTgt, ti)
-            array.remove(btDir, ti)
-            array.remove(btGi, ti)
-            array.remove(btBar, ti)
-        else
-            ti += 1
-
-// ---- PER-BAR VISUALS: killzone shading + SFP / BOS / CHoCH markers ----
-// Killzone background shading (feature #4)
-bgcolor(masterOn and showKZ and inKillzone ? kzColor : na, title = "Killzone")
-
-// Signal markers (SFP / BOS / CHoCH / SMT) are historical and permanent, so they
-// accumulate over time. Cap them in a rolling pool so they never exhaust the
-// 500-label budget (which would make ALL later drawings, e.g. voids, fail).
-var mk_labels = array.new<label>()
-f_mark(int x, float y, string txt, string yl, string stl, color col, color tcol, string sz) =>
-    label lb = label.new(x, y, txt, yloc = yl, style = stl, color = col, textcolor = tcol, size = sz)
-    array.push(mk_labels, lb)
-    while array.size(mk_labels) > 120
-        label.delete(array.shift(mk_labels))
-
-// SFP markers (feature #1). A grab inside a killzone gets a 🔥 emphasis.
-if masterOn and sfpLong
-    string ktag = inKillzone ? " 🔥KZ" : ""
-    string wtag = sfpWick ? " " + f_wickGrade(dnWickFrac) : ""
-    string gtag = showGrade ? " [" + sfpLongGrade + "]" : ""
-    f_mark(bar_index, low, "🎯 SFP▲" + gtag + (sfpUseVol ? " " + str.tostring(rvol, "#.0") + "x" : "") + wtag + ktag, yloc.belowbar, label.style_label_up, sfpColLong, color.white, size.small)
-if masterOn and sfpShort
-    string ktag = inKillzone ? " 🔥KZ" : ""
-    string wtag = sfpWick ? " " + f_wickGrade(upWickFrac) : ""
-    string gtag = showGrade ? " [" + sfpShortGrade + "]" : ""
-    f_mark(bar_index, high, "🎯 SFP▼" + gtag + (sfpUseVol ? " " + str.tostring(rvol, "#.0") + "x" : "") + wtag + ktag, yloc.abovebar, label.style_label_down, sfpColShort, color.white, size.small)
-
-// JSON alert payloads for webhooks / bots (feature #24). One alert() per graded SFP.
-if masterOn and alertJson and (sfpLong or sfpShort)
-    bool jLong = sfpLong
-    float jSwept = jLong ? sweptLoLvl : sweptHiLvl
-    string jGrade = jLong ? sfpLongGrade : sfpShortGrade
-    string jSide = jLong ? "long" : "short"
-    string jMsg = '{"symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","event":"SFP","side":"' + jSide + '","grade":"' + jGrade + '","price":' + str.tostring(close, format.mintick) + ',"swept":' + str.tostring(jSwept, format.mintick) + ',"rvol":' + str.tostring(rvol, "#.00") + ',"align":' + (na(alignScore) ? "null" : str.tostring(math.round(alignScore))) + ',"time":' + str.tostring(time) + '}'
-    alert(jMsg, alert.freq_once_per_bar)
-
-// BOS / CHoCH markers (feature #9)
-if masterOn and showBOS and bosUp
-    f_mark(bar_index, high, chochUp ? "CHoCH▲" : "BOS▲", yloc.abovebar, label.style_label_down, color.new(bosColBull, 20), color.white, size.tiny)
-if masterOn and showBOS and bosDn
-    f_mark(bar_index, low, chochDn ? "CHoCH▼" : "BOS▼", yloc.belowbar, label.style_label_up, color.new(bosColBear, 20), color.white, size.tiny)
-
-// SMT divergence markers (feature #4). Pivot is confirmed smtLen bars back.
-if masterOn and bearSMT
-    f_mark(bar_index - smtLen, high[smtLen], "SMT▼", yloc.abovebar, label.style_label_down, color.new(smtColBear, 10), color.white, size.small)
-if masterOn and bullSMT
-    f_mark(bar_index - smtLen, low[smtLen], "SMT▲", yloc.belowbar, label.style_label_up, color.new(smtColBull, 10), color.white, size.small)
-
 // -----------------------------------------------------------------------------
-// COLLECT → CLUSTER → RENDER  (runs only on the last bar)
-// Persistent drawing pools are fully cleared and rebuilt each time.
+// COLLECT → CLUSTER → RENDER  (last bar only)
 // -----------------------------------------------------------------------------
 var pool_lines = array.new<line>()
 var pool_labels = array.new<label>()
 var pool_boxes = array.new<box>()
-
-// dedicated pool for the candle volume profile (cleared/rebuilt each last-bar pass)
-var vp_boxes  = array.new<box>()
-var vp_lines  = array.new<line>()
-var vp_labels = array.new<label>()
-
-// dedicated pools for OB / void / Asian-box / R:R drawings (rebuilt each last bar)
 var xtra_boxes  = array.new<box>()
-var xtra_lines  = array.new<line>()
 var xtra_labels = array.new<label>()
-
-// dedicated pool for ghost levels (rebuilt each last-bar pass)
-var ghost_lines = array.new<line>()
-f_clearGhost() =>
-    while array.size(ghost_lines) > 0
-        line.delete(array.pop(ghost_lines))
 
 f_clearXtra() =>
     while array.size(xtra_boxes) > 0
         box.delete(array.pop(xtra_boxes))
-    while array.size(xtra_lines) > 0
-        line.delete(array.pop(xtra_lines))
     while array.size(xtra_labels) > 0
         label.delete(array.pop(xtra_labels))
-
-f_clearVP() =>
-    while array.size(vp_boxes) > 0
-        box.delete(array.pop(vp_boxes))
-    while array.size(vp_lines) > 0
-        line.delete(array.pop(vp_lines))
-    while array.size(vp_labels) > 0
-        label.delete(array.pop(vp_labels))
-
 f_clearPools() =>
     while array.size(pool_lines) > 0
         line.delete(array.pop(pool_lines))
@@ -1444,15 +634,14 @@ f_clearPools() =>
     while array.size(pool_boxes) > 0
         box.delete(array.pop(pool_boxes))
 
-// candidate level arrays (built fresh each last-bar pass)
+// candidate level arrays (rebuilt each last-bar pass)
 var lv_price = array.new<float>()
 var lv_name = array.new<string>()
 var lv_col = array.new<color>()
 var lv_emo = array.new<string>()
 var lv_birth = array.new<int>()
-var lv_side = array.new<int>()   // intrinsic side: +1 = buy-side (a HIGH), -1 = sell-side (a LOW)
+var lv_side = array.new<int>()
 
-// side param: +1 for HIGH-type levels (BSL), -1 for LOW-type levels (SSL)
 f_addLevel(bool active, float price, string name, color col, string emo, int birthBar, int side) =>
     if masterOn and active and not na(price) and f_inCompactRange(price)
         array.push(lv_price, price)
@@ -1462,63 +651,32 @@ f_addLevel(bool active, float price, string name, color col, string emo, int bir
         array.push(lv_birth, birthBar)
         array.push(lv_side, side)
 
-// ---- CONFLUENCE SCORE (feature #6): 0-100 for a price band [lo..hi] ----
-// Rolls up everything overlapping the zone: stacked levels, order block, void,
-// OTE fib, premium/discount extreme, and round-number proximity.
+// confluence score for a price band [loB..hiB]
 f_confScore(float mid, float loB, float hiB, int members) =>
     float score = 0.0
     string parts = ""
     float tol = math.max(nz(atr) * 0.25, syminfo.mintick)
-    // stacked levels (the base): up to 35 pts
-    score := score + math.min(members, 5) * 7.0
+    score := score + math.min(members, 5) * 12.0
     if members >= 2
         parts := parts + "stack "
-    // order-block overlap: +20
     bool obHit = false
     if array.size(obTop) > 0
         for oi = 0 to array.size(obTop) - 1
             if hiB >= array.get(obBot, oi) and loB <= array.get(obTop, oi)
                 obHit := true
     if obHit
-        score := score + 20.0
+        score := score + 22.0
         parts := parts + "OB "
-    // liquidity-void overlap: +12
-    bool vHit = false
-    if array.size(voidMid) > 0
-        for vi = 0 to array.size(voidMid) - 1
-            float vm = array.get(voidMid, vi)
-            if vm >= loB - tol and vm <= hiB + tol
-                vHit := true
-    if vHit
-        score := score + 12.0
-        parts := parts + "void "
-    // OTE fib proximity (from the live dealing range): +18
-    if not na(rngHi) and not na(rngLo) and rngHi > rngLo
-        float rng = rngHi - rngLo
-        bool bullLeg = rangeDir >= 0
-        f1 = bullLeg ? (rngHi - pdFib1 * rng) : (rngLo + pdFib1 * rng)
-        f2 = bullLeg ? (rngHi - pdFib2 * rng) : (rngLo + pdFib2 * rng)
-        f3 = bullLeg ? (rngHi - pdFib3 * rng) : (rngLo + pdFib3 * rng)
-        bool fibHit = (math.abs(mid - f1) <= tol) or (math.abs(mid - f2) <= tol) or (math.abs(mid - f3) <= tol)
-        if fibHit
-            score := score + 18.0
-            parts := parts + "OTE "
-        // premium/discount extreme: +8 when in the outer quarter of the range
-        float pos = (mid - rngLo) / rng
-        if pos >= 0.75 or pos <= 0.25
-            score := score + 8.0
-            parts := parts + (pos >= 0.75 ? "prem " : "disc ")
-    // round-number proximity: +7
     if confRound > 0
         float nearest = math.round(mid / confRound) * confRound
         if math.abs(mid - nearest) <= tol
-            score := score + 7.0
+            score := score + 10.0
             parts := parts + "round "
     int s = int(math.min(math.round(score), 100))
     [s, parts]
 
+// ---- DOL gravity tally + shared direction (last bar) ----
 if barstate.islast
-    // ---- clear previous frame ----
     f_clearPools()
     array.clear(lv_price)
     array.clear(lv_name)
@@ -1527,8 +685,6 @@ if barstate.islast
     array.clear(lv_birth)
     array.clear(lv_side)
 
-    // ---- collect all enabled levels ----
-    // side: +1 = HIGH (buy-side liquidity), -1 = LOW (sell-side liquidity)
     f_addLevel(showPDHL, pdhM,   "PDH",     colBull, emoPrev, b_pdh,  1)
     f_addLevel(showPDHL, pdlM,   "PDL",     colBear, emoPrev, b_pdl, -1)
     f_addLevel(showPWHL, pwhM,   "PWH",     colBull, emoPrev, b_pwh,  1)
@@ -1542,122 +698,93 @@ if barstate.islast
     f_addLevel(showLond, londL,  f_sessName("London L", londLc), colSess, emoSess, b_ll,  -1)
     f_addLevel(showNY,   nyH,    f_sessName("NY H", nyHc),       colSess, emoSess, b_nh,   1)
     f_addLevel(showNY,   nyL,    f_sessName("NY L", nyLc),       colSess, emoSess, b_nl,  -1)
-    // historical swing highs/lows (each with its own birth bar for age-scaling)
     if showSwing
-        int shN = array.size(swHi)
-        int slN = array.size(swLo)
-        if shN > 0
-            for si = 0 to shN - 1
+        if array.size(swHi) > 0
+            for si = 0 to array.size(swHi) - 1
                 f_addLevel(true, array.get(swHi, si), "BSL", colBull, emoLiq, array.get(swHiB, si), 1)
-        if slN > 0
-            for si = 0 to slN - 1
+        if array.size(swLo) > 0
+            for si = 0 to array.size(swLo) - 1
                 f_addLevel(true, array.get(swLo, si), "SSL", colBear, emoLiq, array.get(swLoB, si), -1)
-    // equal highs/lows (rolling-buffer detection; each with its own birth bar)
     if showEQ
-        int ehN = array.size(eqHiA)
-        int elN = array.size(eqLoA)
-        if ehN > 0
-            for ei = 0 to ehN - 1
+        if array.size(eqHiA) > 0
+            for ei = 0 to array.size(eqHiA) - 1
                 f_addLevel(true, array.get(eqHiA, ei), "EQH", colBull, emoLiq, array.get(eqHiB, ei), 1)
-        if elN > 0
-            for ei = 0 to elN - 1
+        if array.size(eqLoA) > 0
+            for ei = 0 to array.size(eqLoA) - 1
                 f_addLevel(true, array.get(eqLoA, ei), "EQL", colBear, emoLiq, array.get(eqLoB, ei), -1)
 
-    // ---- DRAW-ON-LIQUIDITY tally: weight each level by proximity to price ----
-    // LIQUIDITY GRAVITY: each level's pull = distance x type x age x confluence.
-    // BSL = liquidity above price, SSL = below. We also track the single
-    // strongest magnet on each side (for the target line / label).
+    // ---- DOL gravity: pull = distance x type x age, per side ----
     float bslStrength = 0.0
     float sslStrength = 0.0
-    float bslTopPull  = 0.0    // strongest single BSL magnet pull
-    float sslTopPull  = 0.0    // strongest single SSL magnet pull
-    float bslTopPrice = na     // its price
+    float bslTopPull  = 0.0
+    float sslTopPull  = 0.0
+    float bslTopPrice = na
     float sslTopPrice = na
-    if masterOn and showDOL
-        int nl = array.size(lv_price)
-        if nl > 0
-            // sensitivity sharpens the distance falloff and factor influence
-            float sensK = dolSens == "High" ? 2.0 : dolSens == "Low" ? 0.5 : 1.0
-            float atrU  = math.max(nz(atr), syminfo.mintick)
-            for k = 0 to nl - 1
-                float pk = array.get(lv_price, k)
-                string nk = array.get(lv_name, k)
-                int   bk = array.get(lv_birth, k)
-                float dist = math.abs(pk - close)
+    int nl = array.size(lv_price)
+    if showDOL and nl > 0
+        float sensK = dolSens == "High" ? 2.0 : dolSens == "Low" ? 0.5 : 1.0
+        float atrU  = math.max(nz(atr), syminfo.mintick)
+        for k = 0 to nl - 1
+            float pk = array.get(lv_price, k)
+            string nk = array.get(lv_name, k)
+            int   bk = array.get(lv_birth, k)
+            float dist = math.abs(pk - close)
+            float distW = 1.0 / (1.0 + sensK * (dist / atrU))
+            float typeW = 1.0
+            if dolUseType
+                if str.contains(nk, "PMH") or str.contains(nk, "PML")
+                    typeW := 2.2
+                else if str.contains(nk, "PWH") or str.contains(nk, "PWL")
+                    typeW := 1.9
+                else if str.contains(nk, "PDH") or str.contains(nk, "PDL")
+                    typeW := 1.6
+                else if str.contains(nk, "EQ")
+                    typeW := 1.5
+                else if str.contains(nk, "London") or str.contains(nk, "NY") or str.contains(nk, "Asia")
+                    typeW := 1.2
+                typeW := 1.0 + (typeW - 1.0) * sensK
+            float ageW = 1.0
+            if dolUseAge and not na(bk)
+                float ageBars = math.max(0.0, bar_index - bk)
+                ageW := 1.0 + math.min(1.0, math.log(1.0 + ageBars) / 6.0) * sensK
+            float pull = distW * typeW * ageW
+            if pk >= close
+                bslStrength := bslStrength + pull
+                if pull > bslTopPull
+                    bslTopPull  := pull
+                    bslTopPrice := pk
+            else
+                sslStrength := sslStrength + pull
+                if pull > sslTopPull
+                    sslTopPull  := pull
+                    sslTopPrice := pk
+        if dolUseConf
+            float band = 0.5 * atrU
+            if not na(bslTopPrice)
+                int cnt = 0
+                for k = 0 to nl - 1
+                    if array.get(lv_price, k) >= close and math.abs(array.get(lv_price, k) - bslTopPrice) <= band
+                        cnt := cnt + 1
+                bslStrength := bslStrength * (1.0 + (cnt - 1) * 0.25 * sensK)
+            if not na(sslTopPrice)
+                int cnt = 0
+                for k = 0 to nl - 1
+                    if array.get(lv_price, k) < close and math.abs(array.get(lv_price, k) - sslTopPrice) <= band
+                        cnt := cnt + 1
+                sslStrength := sslStrength * (1.0 + (cnt - 1) * 0.25 * sensK)
 
-                // [1] DISTANCE — inverse-distance in ATRs; sharper when sensitivity high
-                float distW = 1.0 / (1.0 + sensK * (dist / atrU))
-
-                // [2] TYPE — major structural liquidity pulls harder than minor
-                float typeW = 1.0
-                if dolUseType
-                    if str.contains(nk, "PMH") or str.contains(nk, "PML") or str.contains(nk, "HTF")
-                        typeW := 2.2                                   // monthly / higher-TF swings
-                    else if str.contains(nk, "PWH") or str.contains(nk, "PWL")
-                        typeW := 1.9                                   // previous week
-                    else if str.contains(nk, "PDH") or str.contains(nk, "PDL")
-                        typeW := 1.6                                   // previous day
-                    else if str.contains(nk, "EQ")
-                        typeW := 1.5                                   // equal highs/lows (engineered liq)
-                    else if str.contains(nk, "London") or str.contains(nk, "NY") or str.contains(nk, "Asia")
-                        typeW := 1.2                                   // session H/L
-                    else
-                        typeW := 1.0                                   // local swings / other
-                    // amplify/soften the spread around 1.0 by sensitivity
-                    typeW := 1.0 + (typeW - 1.0) * sensK
-
-                // [3] AGE — resting liquidity is a stronger magnet, log-scaled and capped
-                float ageW = 1.0
-                if dolUseAge and not na(bk)
-                    float ageBars = math.max(0.0, bar_index - bk)
-                    ageW := 1.0 + math.min(1.0, math.log(1.0 + ageBars) / 6.0) * sensK
-
-                float pull = distW * typeW * ageW
-                bool isBSL = pk >= close
-                if isBSL
-                    bslStrength := bslStrength + pull
-                    if pull > bslTopPull
-                        bslTopPull  := pull
-                        bslTopPrice := pk
-                else
-                    sslStrength := sslStrength + pull
-                    if pull > sslTopPull
-                        sslTopPull  := pull
-                        sslTopPrice := pk
-
-            // [4] CONFLUENCE — reward stacked liquidity: count near-neighbours of the
-            //     top magnet on each side within 0.5 ATR and boost that side.
-            if dolUseConf
-                float band = 0.5 * atrU
-                if not na(bslTopPrice)
-                    int cnt = 0
-                    for k = 0 to nl - 1
-                        if array.get(lv_price, k) >= close and math.abs(array.get(lv_price, k) - bslTopPrice) <= band
-                            cnt := cnt + 1
-                    bslStrength := bslStrength * (1.0 + (cnt - 1) * 0.25 * sensK)
-                if not na(sslTopPrice)
-                    int cnt = 0
-                    for k = 0 to nl - 1
-                        if array.get(lv_price, k) < close and math.abs(array.get(lv_price, k) - sslTopPrice) <= band
-                            cnt := cnt + 1
-                    sslStrength := sslStrength * (1.0 + (cnt - 1) * 0.25 * sensK)
-
-    // ---- Draw Model v2: shared direction decision (used by BOTH the DOL banner
-    //      and the liquidity path so the two features tell one coherent story) ----
     float dm_totalG = bslStrength + sslStrength
     float dm_liqBias = dm_totalG > 0 ? (bslStrength - sslStrength) / dm_totalG : 0.0
     float dm_bias = (1.0 - dolMomWt / 100.0) * dm_liqBias + (dolMomWt / 100.0) * dolMom
     bool  dolDrawUp = dm_bias >= 0
     float dolTgt = dolDrawUp ? bslTopPrice : sslTopPrice
 
+    // ---- sort + cluster + render ----
     int n = array.size(lv_price)
     if n > 0
-        // ---- sort candidate indices by price (simple insertion sort on an index array) ----
         idx = array.new<int>()
         for i = 0 to n - 1
             array.push(idx, i)
-        // bound the sort by the ACTUAL idx size (never the captured n) so a
-        // mismatch can never cause an out-of-bounds array.get.
         int idxN = array.size(idx)
         if idxN > 1
             for i = 1 to idxN - 1
@@ -1670,21 +797,16 @@ if barstate.islast
                 array.set(idx, j + 1, keyIdx)
 
         float mergeDist = nz(atr) * clustDist
-
-        // ---- walk sorted levels, grouping neighbours within mergeDist ----
         int gi = 0
         while gi < idxN
-            // start a new group
             int startI = gi
             float sumP = array.get(lv_price, array.get(idx, gi))
             float minP = sumP
             float maxP = sumP
             int members = 1
             string names = array.get(lv_name, array.get(idx, gi))
-            color gcol   = array.get(lv_col, array.get(idx, gi))
             int oldestBirth = array.get(lv_birth, array.get(idx, gi))
-            int sideSum = array.get(lv_side, array.get(idx, gi))   // sum of member sides => dominant side
-            // extend group while next level is within mergeDist of the last one
+            int sideSum = array.get(lv_side, array.get(idx, gi))
             while clusterOn and gi + 1 < idxN and (array.get(lv_price, array.get(idx, gi + 1)) - array.get(lv_price, array.get(idx, gi))) <= mergeDist
                 gi := gi + 1
                 float p = array.get(lv_price, array.get(idx, gi))
@@ -1694,252 +816,52 @@ if barstate.islast
                 members := members + 1
                 names := names + "·" + array.get(lv_name, array.get(idx, gi))
                 int mb = array.get(lv_birth, array.get(idx, gi))
-                // oldest = smallest birth bar_index
                 oldestBirth := na(oldestBirth) ? mb : (na(mb) ? oldestBirth : math.min(oldestBirth, mb))
                 sideSum := sideSum + array.get(lv_side, array.get(idx, gi))
 
             int ext = f_extLen(oldestBirth)
-            bool drawGroup = members >= minStrength   // strength filter
+            bool drawGroup = members >= minStrength
             if drawGroup and members == 1
-                // ---- SOLO LEVEL: clean single line + label ----
                 float p = array.get(lv_price, array.get(idx, startI))
                 int  sd = array.get(lv_side, array.get(idx, startI))
-                // side color by the level's INTRINSIC side (a LOW is always sell-side, etc.)
                 color c = f_sideColI(sd, p, array.get(lv_col, array.get(idx, startI)))
                 string emo = sideColorOn ? f_sideEmojiI(sd, p) : array.get(lv_emo, array.get(idx, startI))
                 string tier = tieredEmoji ? (f_tierEmoji(1) + " ") : ""
                 string full = tier + (emo == "None" ? "" : emo + " ") + array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick) + f_countdown(p)
-                // age heatmap: fade fresh, brighten old (feature #7)
-                color cHeat = f_heatCol(c, array.get(lv_birth, array.get(idx, startI)))
-                line ln = line.new(bar_index, p, bar_index + ext, p, color = cHeat, width = lineWidth, style = f_lineStyle())
-                // outlined tag: solid side-colored background + contrasting text
+                line ln = line.new(bar_index, p, bar_index + ext, p, color = c, width = lineWidth, style = f_lineStyle())
                 color soloBg  = outlineTags ? c : color.new(c, 85)
                 color soloTxt = outlineTags ? clustLblTxt : c
                 label lb = label.new(bar_index + ext, p, full, style = label.style_label_left, color = soloBg, textcolor = soloTxt, size = f_labelSize())
                 array.push(pool_lines, ln)
                 array.push(pool_labels, lb)
             else if drawGroup
-                // ---- CLUSTER ZONE: one box + one strength-rated label ----
                 float mid = sumP / members
-                // strength → opacity interpolation (more members = more opaque)
                 float t = math.min((members - 1) / 4.0, 1.0)
                 int op = int(zoneOpacityMin + (zoneOpacityMax - zoneOpacityMin) * t)
-                // pad thin zones so they're visible
                 float pad = math.max(maxP - minP, nz(atr) * 0.08) / 2.0
-                // color-code the zone by the DOMINANT intrinsic side of its members
                 int domSide = sideSum > 0 ? 1 : sideSum < 0 ? -1 : 0
                 color zbase = f_sideColI(domSide, mid, colZone)
                 string sideTag = (showSideTag and sideColorOn) ? f_sideTagI(domSide, mid) : ""
-                // confluence score (feature #6) — computed before drawing so it can gate
                 [confS, confParts] = f_confScore(mid, minP, maxP, members)
-                // hide zones below the confluence threshold when scoring is on
                 if not showConf or confS >= confMin
-                    // confluence HEAT gradient (feature #11): blend the zone fill from
-                    // its side color toward a hot amber as the score climbs, and make
-                    // high-confluence zones more opaque (stronger presence).
                     float heatT = showConf ? math.min(confS / 100.0, 1.0) : 0.0
                     color zoneFillBase = color.from_gradient(heatT, 0.0, 1.0, zbase, color.new(#ffb300, 0))
-                    int   heatOp = int(op - (op) * 0.45 * heatT)   // hotter => less transparent
+                    int   heatOp = int(op - op * 0.45 * heatT)
                     color zoneFill = color.new(zoneFillBase, math.max(heatOp, 0))
                     color zoneBorder = color.from_gradient(heatT, 0.0, 1.0, color.new(zbase, 25), color.new(#ffb300, 10))
                     box bx = box.new(bar_index, mid + pad, bar_index + ext, mid - pad, border_color = zoneBorder, border_width = lineWidth, bgcolor = zoneFill)
-                    // strength emojis (repeated) — restored and toggleable
                     string strength = showStrengthEmoji ? (f_repeat(f_sideEmojiI(domSide, mid), members) + " x" + str.tostring(members)) : ("x" + str.tostring(members))
-                    // fun tiered emoji prefix that escalates with strength
                     string tier = tieredEmoji ? (f_tierEmoji(members) + " ") : ""
-                    // MTF confluence badge (feature #8)
-                    string mtfBadge = (mtfBadgeOn and f_isMTF(names)) ? "🔱 " : ""
-                    // confluence score badge (feature #6)
                     string confTag = showConf ? ("  ⭐" + str.tostring(confS) + (confParts == "" ? "" : " [" + confParts + "]")) : ""
-                    string full = mtfBadge + tier + strength + (sideTag == "" ? "" : " " + sideTag) + "  " + names + "  " + str.tostring(mid, format.mintick) + confTag + f_countdown(mid)
-                    // outlined tag: solid side-colored background + contrasting text so the
-                    // whole tag reads as red (BSL) / green (SSL); else neutral dark bg.
+                    string full = tier + strength + (sideTag == "" ? "" : " " + sideTag) + "  " + names + "  " + str.tostring(mid, format.mintick) + confTag + f_countdown(mid)
                     color lblBg  = outlineTags ? zbase : color.new(#1e222d, 10)
                     label lb = label.new(bar_index + ext, mid, full, style = label.style_label_left, color = lblBg, textcolor = clustLblTxt, size = f_strongSize(members))
                     array.push(pool_boxes, bx)
                     array.push(pool_labels, lb)
-
             gi := gi + 1
 
-    // ---- PREMIUM / DISCOUNT ZONES (fib, live dealing range) ----
-    // Uses the live-updating range: the anchored end is the freshest opposing
-    // swing; the moving end tracks the running extreme, so fibs re-measure as
-    // price continues in the leg's direction.
-    if masterOn and showPD and not na(rngHi) and not na(rngLo) and rngHi > rngLo
-        float rHi  = rngHi
-        float rLo  = rngLo
-        float rng  = rHi - rLo
-        float eqm  = (rHi + rLo) / 2.0
-
-        // premium (top half) & discount (bottom half) shaded zones — optional,
-        // off by default so the boxes don't cover candle wicks
-        if pdShadeOn
-            box pbx = box.new(bar_index, rHi, bar_index + extendR, eqm, border_color = color.new(colPremBase, 50), border_width = 1, bgcolor = colPrem)
-            box dbx = box.new(bar_index, eqm, bar_index + extendR, rLo, border_color = color.new(colDiscBase, 50), border_width = 1, bgcolor = colDisc)
-            array.push(pool_boxes, pbx)
-            array.push(pool_boxes, dbx)
-
-        // range boundary lines (thin, no fill) so the P/D extremes are visible
-        // without a box covering candle wicks
-        if showRangeBounds
-            line rhl = line.new(bar_index, rHi, bar_index + extendR, rHi, color = color.new(colPremBase, 30), width = 1, style = line.style_dotted)
-            line rll = line.new(bar_index, rLo, bar_index + extendR, rLo, color = color.new(colDiscBase, 30), width = 1, style = line.style_dotted)
-            array.push(pool_lines, rhl)
-            array.push(pool_lines, rll)
-
-        // equilibrium line + label
-        if showEqm
-            line eqln = line.new(bar_index, eqm, bar_index + extendR, eqm, color = colEqm, width = lineWidth, style = line.style_dashed)
-            label eqlb = label.new(bar_index + extendR, eqm, "⚖ EQ 0.5 " + str.tostring(eqm, format.mintick), style = label.style_label_left, color = color.new(colEqm, 85), textcolor = colEqm, size = f_labelSize())
-            array.push(pool_lines, eqln)
-            array.push(pool_labels, eqlb)
-
-        // OTE fib levels — directional.
-        // Bullish leg (rangeDir >= 0): OTE is a DISCOUNT retrace measured from the high downward.
-        // Bearish leg (rangeDir <  0): OTE is a PREMIUM  retrace measured from the low upward.
-        bool bullLeg = rangeDir >= 0
-        color oteCol = color.new(bullLeg ? #26a69a : #ef5350, 0)
-        string oteZone = bullLeg ? "DISC" : "PREM"
-
-        if showFibs
-            fibArr = array.new<float>()
-            array.push(fibArr, pdFib1)
-            array.push(fibArr, pdFib2)
-            array.push(fibArr, pdFib3)
-            for fi = 0 to array.size(fibArr) - 1
-                float f   = array.get(fibArr, fi)
-                float lvl = bullLeg ? (rHi - f * rng) : (rLo + f * rng)
-                line fl = line.new(bar_index, lvl, bar_index + extendR, lvl, color = oteCol, width = lineWidth, style = line.style_dotted)
-                label flb = label.new(bar_index + extendR, lvl, "🎯 OTE " + str.tostring(f, "#.###") + " (" + oteZone + ") " + str.tostring(lvl, format.mintick) + f_countdown(lvl), style = label.style_label_left, color = color.new(oteCol, 85), textcolor = oteCol, size = f_labelSize())
-                array.push(pool_lines, fl)
-                array.push(pool_labels, flb)
-
-    // ---- DRAW-ON-LIQUIDITY ARROW (big, off to the side) ----
-    // Price is drawn TOWARD the heavier resting liquidity. Heavier BSL above
-    // price => arrow UP toward it; heavier SSL below price => arrow DOWN.
-    if masterOn and showDOL and (bslStrength > 0 or sslStrength > 0)
-        float atrU2 = math.max(nz(atr), syminfo.mintick)
-        // Draw Model v2: reuse the SHARED direction decision (computed above) so the
-        // banner and the liquidity path always agree.
-        float totalG = dm_totalG
-        float liqBias = dm_liqBias
-        float bias = dm_bias
-        bool drawUp = dolDrawUp
-
-        string arrow = drawUp ? dolBull : dolBear
-        // conviction 0..100 from the magnitude of the blended bias
-        float conv = math.round(math.min(1.0, math.abs(bias)) * 100)
-        // the primary magnet on the chosen side
-        float tgtPrice = dolTgt
-
-        // distance to that magnet in ATRs and %
-        string distTxt = ""
-        if not na(tgtPrice)
-            float dATR = math.abs(tgtPrice - close) / atrU2
-            float dPct = math.abs(tgtPrice - close) / math.max(close, syminfo.mintick) * 100.0
-            distTxt := " · " + str.tostring(tgtPrice, format.mintick) + " (" + str.tostring(dATR, "#.0") + " ATR / " + str.tostring(dPct, "#.0#") + "%)"
-
-        // conviction meter (filled/empty blocks) — 5 segments
-        string meter = ""
-        if dolMeter
-            int filled = math.max(0, math.min(5, int(math.round(conv / 20.0))))
-            string mtr = ""
-            for seg = 1 to 5
-                mtr := mtr + (seg <= filled ? "▰" : "▱")
-            meter := " " + mtr
-
-        // momentum agreement flag: does live momentum agree with the liquidity pull?
-        string agree = (dolMom >= 0) == (liqBias >= 0) ? " ✅" : " 🚩divergent"
-
-        // main banner line (compact - target detail goes on its own row)
-        string dolTxt = arrow + " DOL " + (drawUp ? "UP" : "DOWN") + " " + str.tostring(math.round(conv)) + "%" + meter + agree
-        // target row text (the specific magnet price price is being pulled toward)
-        string tgtTxt = na(tgtPrice) ? "" : ("🎯 target" + distTxt)
-
-        // --- Draw Model v2 [feature #6]: tug-of-war bar (SSL vs BSL shares) ---
-        string tugTxt = ""
-        if dolTugBar and totalG > 0
-            int bslPct = int(math.round(bslStrength / totalG * 100.0))
-            int sslPct = 100 - bslPct
-            // 10-segment bar; filled from the left in proportion to SSL share
-            int sslSeg = int(math.round(sslPct / 10.0))
-            string bar = ""
-            for sg = 1 to 10
-                bar := bar + (sg <= sslSeg ? "▮" : "▯")
-            tugTxt := "SSL " + str.tostring(sslPct) + " " + bar + " " + str.tostring(bslPct) + " BSL"
-
-        // --- Draw Model v2 [feature #8]: is the draw strengthening or fading? ---
-        string trendTxt = ""
-        if dolTrendOn
-            float convPrev = nz(dolConvBar[dolTrendLen], dolConvBar)
-            float dConv = dolConvBar - convPrev
-            trendTxt := dConv > 5 ? "📈 strengthening" : dConv < -5 ? "📉 fading" : "➖ steady"
-
-        // refined direction accent: softened green (up) / red (down) from the theme
-        color dirAccent = drawUp ? themeUpSolid : themeDnSolid
-
-        // ---- STATUS BANNER pinned to a chart corner (never floats at price) ----
-        // Refined look: muted panel background, direction shown via the TEXT color
-        // and a slim accent border that gently pulses (not a blaring fill).
-        bool showTgtRow = dolTgtLine and not na(tgtPrice)
-        bool showTugRow = dolTugBar and totalG > 0
-        bool showTrendRow = dolTrendOn
-        // gentle pulse: small transparency wobble on the border only
-        int pulseT = dolPulse ? (bar_index % 2 == 0 ? 15 : 45) : 25
-        color borderC = color.new(dirAccent, pulseT)
-        dolSzB = dolSize == "Huge" ? size.large : dolSize == "Large" ? size.normal : size.small
-        var table dolTbl = table.new(position.top_right, 1, 4, border_width = 1)
-        table.set_position(dolTbl, f_tablePos(dolBanPos))
-        table.clear(dolTbl, 0, 0, 0, 3)
-        table.cell(dolTbl, 0, 0, dolTxt, text_color = dirAccent, bgcolor = themePanelBg, text_size = dolSzB)
-        int rowN = 1
-        if showTugRow
-            table.cell(dolTbl, 0, rowN, tugTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
-            rowN := rowN + 1
-        if showTrendRow
-            table.cell(dolTbl, 0, rowN, trendTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
-            rowN := rowN + 1
-        if showTgtRow
-            table.cell(dolTbl, 0, rowN, tgtTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
-        // slim accent frame that gently pulses
-        table.set_frame_color(dolTbl, borderC)
-        table.set_frame_width(dolTbl, themeBW)
-
-    // =========================================================================
-    // EXTRA MODULES RENDER (order blocks, voids, Asian box, ranking, R:R)
-    // =========================================================================
+    // ---- Order block boxes (last bar) ----
     f_clearXtra()
-
-    // ---- Ghost levels (feature #15): faint dotted lines that fade with age ----
-    f_clearGhost()
-    if masterOn and showGhost and array.size(ghostP) > 0
-        for gk = 0 to array.size(ghostP) - 1
-            float gp = array.get(ghostP, gk)
-            int   gb = array.get(ghostBar, gk)
-            int   age = math.max(0, bar_index - gb)
-            // fade from ghostOpacity toward 100 (invisible) across the lifetime
-            float fade = ghostLife > 0 ? (age / ghostLife) : 1.0
-            int transp = int(math.min(100, ghostOpacity + (100 - ghostOpacity) * fade))
-            color gc = color.new(ghostCol, transp)
-            // draw from where it was swept to a little past the current bar
-            if not na(gp)
-                line gl = line.new(f_clampBar(gb), gp, bar_index + 3, gp, color = gc, width = 1, style = line.style_dotted)
-                array.push(ghost_lines, gl)
-
-    // ---- Power-of-three daily-bias tag (feature #7) ----
-    if masterOn and showPO3 and not na(po3Open)
-        string po3Emoji = po3Manip == 0 ? "⏳" : (po3Dist > 0 ? "▲" : "▼")
-        label po3lb = label.new(bar_index + 3, po3Open, po3Emoji + " " + po3Txt, style = label.style_label_left, color = themePanelBg, textcolor = po3Col, size = f_labelSize())
-        array.push(xtra_labels, po3lb)
-
-    // ---- Correlation / driver context tag (feature #12) ----
-    if masterOn and corrOn and corrDir != 0
-        string cAgree = corrDir > 0 ? "▲ driver supports UP" : "▼ driver supports DOWN"
-        color  cCol = corrDir > 0 ? themeUpSolid : themeDnSolid
-        label corrLb = label.new(bar_index + 3, na(m1Lo) ? low : m1Lo, "🧭 " + corrSym + ": " + cAgree, style = label.style_label_left, color = themePanelBg, textcolor = cCol, size = f_labelSize())
-        array.push(xtra_labels, corrLb)
-
-    // ---- Order blocks (feature #2) ----
     if masterOn and showOB and array.size(obTop) > 0
         for oi = 0 to array.size(obTop) - 1
             bool bull = array.get(obBull, oi)
@@ -1953,465 +875,64 @@ if barstate.islast
                 label olb = label.new(bar_index + extendR, (obT + obB) / 2.0, bull ? "OB▲ demand" : "OB▼ supply", style = label.style_label_left, color = color.new(bull ? obColBull : obColBear, 30), textcolor = color.white, size = size.tiny)
                 array.push(xtra_labels, olb)
 
-    // ---- Liquidity voids (feature #6) ----
-    if masterOn and showVoid and array.size(voidMid) > 0
-        for vi = 0 to array.size(voidMid) - 1
-            float vm = array.get(voidMid, vi)
-            int   vb = array.get(voidBirth, vi)
-            // draw only if the price is valid AND the start bar sits within a safe
-            // window; anchor the LEFT end at a clamped, guaranteed-valid bar and the
-            // right end at the current bar (both always within TradingView's limits).
-            int vStart = f_clampBar(vb)
-            if not na(vm) and vStart >= 0 and vStart <= bar_index
-                line vln = line.new(vStart, vm, bar_index + extendR, vm, color = color.new(voidCol, 20), width = 1, style = line.style_dotted)
-                array.push(xtra_lines, vln)
-                label vlb = label.new(bar_index + extendR, vm, "◫ void", style = label.style_label_left, color = color.new(voidCol, 40), textcolor = color.white, size = size.tiny)
-                array.push(xtra_labels, vlb)
+    // ---- DOL banner ----
+    if masterOn and showDOL and (bslStrength > 0 or sslStrength > 0)
+        float atrU2 = math.max(nz(atr), syminfo.mintick)
+        float totalG = dm_totalG
+        bool drawUp = dolDrawUp
+        string arrow = drawUp ? dolBull : dolBear
+        float conv = math.round(math.min(1.0, math.abs(dm_bias)) * 100)
+        float tgtPrice = dolTgt
+        string distTxt = ""
+        if not na(tgtPrice)
+            float dATR = math.abs(tgtPrice - close) / atrU2
+            float dPct = math.abs(tgtPrice - close) / math.max(close, syminfo.mintick) * 100.0
+            distTxt := " · " + str.tostring(tgtPrice, format.mintick) + " (" + str.tostring(dATR, "#.0") + " ATR / " + str.tostring(dPct, "#.0#") + "%)"
+        string meter = ""
+        if dolMeter
+            int filled = math.max(0, math.min(5, int(math.round(conv / 20.0))))
+            string mtr = ""
+            for seg = 1 to 5
+                mtr := mtr + (seg <= filled ? "▰" : "▱")
+            meter := " " + mtr
+        string dolTxt = arrow + " DOL " + (drawUp ? "UP" : "DOWN") + " " + str.tostring(math.round(conv)) + "%" + meter
+        string tgtTxt = na(tgtPrice) ? "" : ("🎯 target" + distTxt)
+        string tugTxt = ""
+        if dolTugBar and totalG > 0
+            int bslPct = int(math.round(bslStrength / totalG * 100.0))
+            int sslPct = 100 - bslPct
+            int sslSeg = int(math.round(sslPct / 10.0))
+            string bar = ""
+            for sg = 1 to 10
+                bar := bar + (sg <= sslSeg ? "▮" : "▯")
+            tugTxt := "SSL " + str.tostring(sslPct) + " " + bar + " " + str.tostring(bslPct) + " BSL"
+        color dirAccent = drawUp ? themeUpSolid : themeDnSolid
+        bool showTgtRow = dolTgtLine and not na(tgtPrice)
+        bool showTugRow = dolTugBar and totalG > 0
+        dolSzB = dolSize == "Huge" ? size.large : dolSize == "Large" ? size.normal : size.small
+        var table dolTbl = table.new(position.top_right, 1, 3, border_width = 1)
+        table.set_position(dolTbl, f_tablePos(dolBanPos))
+        table.clear(dolTbl, 0, 0, 0, 2)
+        table.cell(dolTbl, 0, 0, dolTxt, text_color = dirAccent, bgcolor = themePanelBg, text_size = dolSzB)
+        int rowN = 1
+        if showTugRow
+            table.cell(dolTbl, 0, rowN, tugTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
+            rowN := rowN + 1
+        if showTgtRow
+            table.cell(dolTbl, 0, rowN, tgtTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
+        table.set_frame_color(dolTbl, color.new(dirAccent, 35))
+        table.set_frame_width(dolTbl, themeBW)
 
-    // ---- Asian range box (feature #4) ----
-    if masterOn and showAsiaBox and not na(asiaH) and not na(asiaL) and b_ah <= bar_index
-        int aStart = math.min(nz(b_ah, bar_index), nz(b_al, bar_index))
-        box abx = box.new(f_clampBar(aStart), asiaH, bar_index + extendR, asiaL, border_color = color.new(#ffb300, 40), border_width = 1, bgcolor = asiaBoxCol)
-        array.push(xtra_boxes, abx)
-        label albl = label.new(bar_index + extendR, asiaH, "Asian range", style = label.style_label_left, color = color.new(#ffb300, 60), textcolor = color.white, size = size.tiny)
-        array.push(xtra_labels, albl)
-
-    // ---- Auto R:R projection on the most recent SFP (feature #12) ----
-    if masterOn and showRR and (sfpLong or sfpShort)
-        bool rrUp   = sfpLong
-        float entry = close
-        float swept = rrUp ? sweptLoLvl : sweptHiLvl
-        float stop  = rrUp ? (low - rrTargetPad * nz(atr)) : (high + rrTargetPad * nz(atr))
-        // target = next opposing pool from the DOL magnet on the reversal side
-        float tgt   = rrUp ? bslTopPrice : sslTopPrice
-        if not na(tgt) and not na(stop) and math.abs(entry - stop) > 0
-            float risk = math.abs(entry - stop)
-            float rew  = math.abs(tgt - entry)
-            float rr   = rew / risk
-            color rrC  = rrUp ? sfpColLong : sfpColShort
-            line eL = line.new(bar_index, entry, bar_index + extendR, entry, color = color.new(rrC, 0), width = 1, style = line.style_solid)
-            line sL = line.new(bar_index, stop,  bar_index + extendR, stop,  color = color.new(color.red, 0), width = 1, style = line.style_dashed)
-            line tL = line.new(bar_index, tgt,   bar_index + extendR, tgt,   color = color.new(color.green, 0), width = 1, style = line.style_dashed)
-            array.push(xtra_lines, eL)
-            array.push(xtra_lines, sL)
-            array.push(xtra_lines, tL)
-            label rrLb = label.new(bar_index + extendR, tgt, "🎯 TP · R:R " + str.tostring(rr, "#.0"), style = label.style_label_left, color = color.new(rrC, 20), textcolor = color.white, size = f_labelSize())
-            array.push(xtra_labels, rrLb)
-
-    // ---- Top-3 draw ranking table (feature #3) ----
-    if masterOn and showRank and array.size(lv_price) > 0
-        // score every collected level with the same gravity factors, then pick top 3
-        float sK = dolSens == "High" ? 2.0 : dolSens == "Low" ? 0.5 : 1.0
-        float aU = math.max(nz(atr), syminfo.mintick)
-        rkScore = array.new<float>()
-        rkIdx   = array.new<int>()
-        for k = 0 to array.size(lv_price) - 1
-            float pk = array.get(lv_price, k)
-            string nk = array.get(lv_name, k)
-            int   bk = array.get(lv_birth, k)
-            float dW = 1.0 / (1.0 + sK * (math.abs(pk - close) / aU))
-            float tW = 1.0
-            if str.contains(nk, "PMH") or str.contains(nk, "PML") or str.contains(nk, "HTF")
-                tW := 2.2
-            else if str.contains(nk, "PWH") or str.contains(nk, "PWL")
-                tW := 1.9
-            else if str.contains(nk, "PDH") or str.contains(nk, "PDL")
-                tW := 1.6
-            else if str.contains(nk, "EQ")
-                tW := 1.5
-            else if str.contains(nk, "London") or str.contains(nk, "NY") or str.contains(nk, "Asia")
-                tW := 1.2
-            float aW = 1.0
-            if not na(bk)
-                aW := 1.0 + math.min(1.0, math.log(1.0 + math.max(0.0, bar_index - bk)) / 6.0)
-            array.push(rkScore, dW * tW * aW)
-            array.push(rkIdx, k)
-        // selection sort for the top 3 by score (descending)
-        int topN = math.min(3, array.size(rkScore))
-        var table rankTbl = table.new(position.top_left, 2, 4, border_width = 1)
-        table.set_position(rankTbl, f_tablePos(rankPos))
-        table.clear(rankTbl, 0, 0, 1, 3)
-        table.set_frame_color(rankTbl, themeBorder)
-        table.set_frame_width(rankTbl, themeBW)
-        table.cell(rankTbl, 0, 0, "DRAW", text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
-        table.cell(rankTbl, 1, 0, "level", text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
-        for r = 0 to topN - 1
-            float bestS = -1.0
-            int   bestJ = -1
-            for j = 0 to array.size(rkScore) - 1
-                if array.get(rkScore, j) > bestS
-                    bestS := array.get(rkScore, j)
-                    bestJ := j
-            if bestJ >= 0
-                int li = array.get(rkIdx, bestJ)
-                float pk = array.get(lv_price, li)
-                string nm = array.get(lv_name, li)
-                string sideTag = pk >= close ? "▲" : "▼"
-                table.cell(rankTbl, 0, r + 1, str.tostring(r + 1) + ". " + str.tostring(bestS, "#.0"), text_color = pk >= close ? themeDnSolid : themeUpSolid, bgcolor = themeRowBg, text_size = size.small)
-                table.cell(rankTbl, 1, r + 1, sideTag + " " + nm + " " + str.tostring(pk, format.mintick), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
-                array.set(rkScore, bestJ, -2.0)   // exclude from next pick
-
-    // ---- Liquidity path projection (feature #32) ----
-    // Connect the top-N ranked magnets (by the same gravity score) into a dotted
-    // route from current price, showing the likely path to collect liquidity.
-    if masterOn and showPath and array.size(lv_price) > 0
-        float pK = dolSens == "High" ? 2.0 : dolSens == "Low" ? 0.5 : 1.0
-        float pU = math.max(nz(atr), syminfo.mintick)
-        pScore = array.new<float>()
-        pPrice = array.new<float>()
-        for k = 0 to array.size(lv_price) - 1
-            float pk2 = array.get(lv_price, k)
-            string nk2 = array.get(lv_name, k)
-            int   bk2 = array.get(lv_birth, k)
-            float dW2 = 1.0 / (1.0 + pK * (math.abs(pk2 - close) / pU))
-            float tW2 = 1.0
-            if str.contains(nk2, "PMH") or str.contains(nk2, "PML") or str.contains(nk2, "HTF")
-                tW2 := 2.2
-            else if str.contains(nk2, "PWH") or str.contains(nk2, "PWL")
-                tW2 := 1.9
-            else if str.contains(nk2, "PDH") or str.contains(nk2, "PDL")
-                tW2 := 1.6
-            else if str.contains(nk2, "EQ")
-                tW2 := 1.5
-            else if str.contains(nk2, "London") or str.contains(nk2, "NY") or str.contains(nk2, "Asia")
-                tW2 := 1.2
-            float aW2 = 1.0
-            if not na(bk2)
-                aW2 := 1.0 + math.min(1.0, math.log(1.0 + math.max(0.0, bar_index - bk2)) / 6.0)
-            array.push(pScore, dW2 * tW2 * aW2)
-            array.push(pPrice, pk2)
-        // Draw Model v2: pick the strongest magnets, then order them into a REALISTIC
-        // route. If following DOL direction, keep only same-side pools (above when
-        // DOL=UP, below when DOWN) and walk them NEAREST-FIRST so the path reads like
-        // a real liquidity run instead of zig-zagging by raw score.
-        int pTake = math.min(pathN, array.size(pScore))
-        picked = array.new<float>()
-        pickScr = array.new<float>()
-        for r = 0 to pTake - 1
-            float bS = -1.0
-            int   bJ = -1
-            for j = 0 to array.size(pScore) - 1
-                float pp = array.get(pPrice, j)
-                // directional filter only when we have a real DOL reading; otherwise
-                // fall back to non-directional (all sides) so the path still draws.
-                bool dirActive = pathDirect and dm_totalG > 0
-                bool sideOk = (not dirActive) or (dolDrawUp ? pp >= close : pp < close)
-                if sideOk and array.get(pScore, j) > bS
-                    bS := array.get(pScore, j)
-                    bJ := j
-            if bJ >= 0
-                array.push(picked, array.get(pPrice, bJ))
-                array.push(pickScr, array.get(pScore, bJ))
-                array.set(pScore, bJ, -2.0)
-        // order the picked magnets nearest-first (ascending distance from price)
-        int pn = array.size(picked)
-        if pn > 1
-            for a = 0 to pn - 2
-                for b2 = 0 to pn - 2 - a
-                    if math.abs(array.get(picked, b2) - close) > math.abs(array.get(picked, b2 + 1) - close)
-                        float tp = array.get(picked, b2)
-                        array.set(picked, b2, array.get(picked, b2 + 1))
-                        array.set(picked, b2 + 1, tp)
-                        float tsc = array.get(pickScr, b2)
-                        array.set(pickScr, b2, array.get(pickScr, b2 + 1))
-                        array.set(pickScr, b2 + 1, tsc)
-        // max score for leg-thickness scaling
-        float pMax = 0.0
-        if pn > 0
-            for a = 0 to pn - 1
-                pMax := math.max(pMax, array.get(pickScr, a))
-        // draw the route left-to-right into small bounded future steps
-        if pn > 0
-            float prevY = close
-            int   prevX = bar_index
-            int   stepN = math.max(1, int(extendR / math.max(pTake, 1)) + 2)
-            for pi2 = 0 to pn - 1
-                float ny = array.get(picked, pi2)
-                int   nx = bar_index + (pi2 + 1) * stepN
-                if not na(ny)
-                    int lw = pathScaleConf and pMax > 0 ? math.max(1, int(math.round(array.get(pickScr, pi2) / pMax * 3.0))) : 1
-                    line pl2 = line.new(prevX, prevY, nx, ny, color = pathCol, width = lw, style = line.style_dotted)
-                    array.push(xtra_lines, pl2)
-                    prevY := ny
-                    prevX := nx
-
-    // ---- MTF alignment meter panel (feature #12) ----
-    if masterOn and showAlign and not na(alignScore)
-        string aTxt = alignDir > 0 ? "▲ up" : alignDir < 0 ? "▼ dn" : "→ mixed"
-        color  aCol = alignDir > 0 ? themeUpSolid : alignDir < 0 ? themeDnSolid : themeMuted
-        var table alignTbl = table.new(position.middle_left, 1, 2, border_width = 1)
-        table.set_position(alignTbl, f_tablePos(alignPos))
-        table.set_frame_color(alignTbl, themeBorder)
-        table.set_frame_width(alignTbl, themeBW)
-        table.cell(alignTbl, 0, 0, "MTF ALIGN", text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
-        table.cell(alignTbl, 0, 1, str.tostring(math.round(alignScore)) + "%  " + aTxt, text_color = aCol, bgcolor = themeRowBg, text_size = size.small)
-
-    // ---- Backtest stat panel (feature #11) ----
-    if masterOn and showStats
-        float hitRate = sweepTotal > 0 ? (sweepHit / sweepTotal) * 100.0 : 0.0
-        var table statTbl = table.new(position.bottom_left, 1, 3, border_width = 1)
-        table.set_position(statTbl, f_tablePos(statsPos))
-        table.set_frame_color(statTbl, themeBorder)
-        table.set_frame_width(statTbl, themeBW)
-        table.cell(statTbl, 0, 0, "SWEEP → REVERSAL", text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
-        table.cell(statTbl, 0, 1, "Hit rate  " + str.tostring(math.round(hitRate)) + "%", text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
-        table.cell(statTbl, 0, 2, "Sample  " + str.tostring(sweepHit) + "/" + str.tostring(sweepTotal), text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
-
-    // ---- BACKTEST RESULTS by grade (win rate / avg R / expectancy) ----
-    if masterOn and showBT
-        var table btTbl = table.new(position.top_left, 4, 6, border_width = 1)
-        table.set_position(btTbl, f_tablePos(btPos))
-        table.set_frame_color(btTbl, themeBorder)
-        table.set_frame_width(btTbl, themeBW)
-        table.clear(btTbl, 0, 0, 3, 5)
-        // header
-        table.cell(btTbl, 0, 0, "GRADE", text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
-        table.cell(btTbl, 1, 0, "n",     text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
-        table.cell(btTbl, 2, 0, "win%",  text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
-        table.cell(btTbl, 3, 0, "avgR",  text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
-        gLabels = array.from("A+", "A", "B", "C")
-        int totN = 0
-        int totW = 0
-        float totR = 0.0
-        for gi = 0 to 3
-            int   gn = array.get(btN, gi)
-            int   gw = array.get(btWin, gi)
-            float gr = array.get(btRsum, gi)
-            totN := totN + gn
-            totW := totW + gw
-            totR := totR + gr
-            float gWin = gn > 0 ? gw / gn * 100.0 : na
-            float gAvg = gn > 0 ? gr / gn : na
-            color rcol = na(gAvg) ? themeMuted : gAvg > 0 ? themeUpSolid : themeDnSolid
-            table.cell(btTbl, 0, gi + 1, array.get(gLabels, gi), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
-            table.cell(btTbl, 1, gi + 1, str.tostring(gn), text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
-            table.cell(btTbl, 2, gi + 1, gn > 0 ? str.tostring(math.round(gWin)) + "%" : "–", text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
-            table.cell(btTbl, 3, gi + 1, gn > 0 ? str.tostring(gAvg, "#.00") + "R" : "–", text_color = rcol, bgcolor = themeRowBg, text_size = size.small)
-        // totals row
-        float tWin = totN > 0 ? totW / totN * 100.0 : na
-        float tAvg = totN > 0 ? totR / totN : na
-        color tcol = na(tAvg) ? themeMuted : tAvg > 0 ? themeUpSolid : themeDnSolid
-        table.cell(btTbl, 0, 5, "ALL", text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
-        table.cell(btTbl, 1, 5, str.tostring(totN), text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
-        table.cell(btTbl, 2, 5, totN > 0 ? str.tostring(math.round(tWin)) + "%" : "–", text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
-        table.cell(btTbl, 3, 5, totN > 0 ? str.tostring(tAvg, "#.00") + "R" : "–", text_color = tcol, bgcolor = themePanelBg, text_size = size.small)
-
-    // ---- MTF LIQUIDITY DASHBOARD (feature #1) ----
-    if masterOn and mtfOn
-        // hard-pinned to middle-right so the HTF bias scanner never lands in the
-        // crowded top-left corner (its own corner, clear of the other panels).
-        var table mtfTbl = table.new(position.middle_right, 6, 5, border_width = 1)
-        table.set_frame_color(mtfTbl, themeBorder)
-        table.set_frame_width(mtfTbl, themeBW)
-        color hdrBg = themePanelBg
-        color rowBg = themeRowBg
-        table.cell(mtfTbl, 0, 0, "TF",       text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
-        table.cell(mtfTbl, 1, 0, "BSL▲",     text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
-        table.cell(mtfTbl, 2, 0, "SSL▼",     text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
-        table.cell(mtfTbl, 3, 0, "bias · conv", text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
-        table.cell(mtfTbl, 4, 0, "zone",     text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
-        table.cell(mtfTbl, 5, 0, "target",   text_color = themeHdr, bgcolor = hdrBg, text_size = size.small)
-        // pack the 4 TFs into arrays and loop (avoids nested functions / repetition)
-        mtfTFs = array.from(mtfTF1, mtfTF2, mtfTF3, mtfTF4)
-        mtfHis = array.from(m1Hi, m2Hi, m3Hi, m4Hi)
-        mtfLos = array.from(m1Lo, m2Lo, m3Lo, m4Lo)
-        mtfEfs = array.from(m1Ef, m2Ef, m3Ef, m4Ef)
-        mtfEss = array.from(m1Es, m2Es, m3Es, m4Es)
-        mtfCs  = array.from(m1C,  m2C,  m3C,  m4C)
-        for mi = 0 to 3
-            int rowN = mi + 1
-            string tfStr = array.get(mtfTFs, mi)
-            // a row whose timeframe is <= the chart timeframe can't provide a
-            // genuine higher-TF read (security just mirrors the chart), so it would
-            // look "frozen"/duplicated - flag it instead of showing misleading data.
-            bool tooLow = f_tfSec(tfStr) <= chartTfSec
-            float hi = array.get(mtfHis, mi)
-            float lo = array.get(mtfLos, mi)
-            float ef = array.get(mtfEfs, mi)
-            float es = array.get(mtfEss, mi)
-            float c  = array.get(mtfCs, mi)
-            string biasT = f_biasTxt(ef, es)
-            float  biasP = f_biasConv(ef, es, hi, lo)
-            // append conviction % to the bias so higher-TF conviction reads at a glance
-            string biasCell = biasT + (na(biasP) ? "" : "  " + str.tostring(math.round(biasP)) + "%")
-            string pdT   = f_pdTxt(c, hi, lo)
-            color  biasC = na(ef) or na(es) ? themeMuted : ef > es ? themeUpSolid : themeDnSolid
-            color  pdC   = pdT == "PREM" ? themeDnSolid : pdT == "DISC" ? themeUpSolid : themeMuted
-            // target = the liquidity level in the direction of this TF's bias
-            // (bias up => the BSL above; bias down => the SSL below)
-            bool   biasUp = not na(ef) and not na(es) and ef > es
-            bool   biasDn = not na(ef) and not na(es) and ef < es
-            float  tgt    = biasUp ? hi : biasDn ? lo : na
-            color  tgtC   = biasUp ? themeDnSolid : biasDn ? themeUpSolid : themeMuted
-            string tgtCell = na(tgt) ? "–" : (biasUp ? "▲ " : "▼ ") + str.tostring(tgt, format.mintick)
-            // TF label gets a marker: ≤ chart TF (mirrors chart) or a live dot
-            string tfCell = tfStr + (tooLow ? " ≤" : "")
-            table.cell(mtfTbl, 0, rowN, tfCell, text_color = tooLow ? themeMuted : themeTxt, bgcolor = rowBg, text_size = size.small)
-            table.cell(mtfTbl, 1, rowN, tooLow ? "·" : (na(hi) ? "–" : str.tostring(hi, format.mintick)), text_color = tooLow ? themeMuted : themeDnSolid, bgcolor = rowBg, text_size = size.small)
-            table.cell(mtfTbl, 2, rowN, tooLow ? "·" : (na(lo) ? "–" : str.tostring(lo, format.mintick)), text_color = tooLow ? themeMuted : themeUpSolid, bgcolor = rowBg, text_size = size.small)
-            table.cell(mtfTbl, 3, rowN, tooLow ? "use higher TF" : biasCell, text_color = tooLow ? themeMuted : biasC, bgcolor = rowBg, text_size = size.small)
-            table.cell(mtfTbl, 4, rowN, tooLow ? "·" : pdT, text_color = tooLow ? themeMuted : pdC, bgcolor = rowBg, text_size = size.small)
-            table.cell(mtfTbl, 5, rowN, tooLow ? "·" : tgtCell, text_color = tooLow ? themeMuted : tgtC, bgcolor = rowBg, text_size = size.small)
-
-    // ---- DISCIPLINE COACH PANEL ----
-    if masterOn and showCoach
-        // rotating motivational quotes
-        quotes = array.new<string>()
-        array.push(quotes, "🧘 Patience pays. Wait for the level.")
-        array.push(quotes, "🎯 No level, no trade. Simple.")
-        array.push(quotes, "💎 Buy discount, sell premium.")
-        array.push(quotes, "🪝 Let price come to YOU.")
-        array.push(quotes, "🚫 FOMO is the enemy. Sit tight.")
-        array.push(quotes, "📋 Follow the plan, not the candle.")
-        array.push(quotes, "🦈 Sniper, not machine-gunner.")
-        array.push(quotes, "⏳ The setup will come. It always does.")
-        array.push(quotes, "🛡️ Protect capital first, profit second.")
-        array.push(quotes, "🧠 React to levels, don't predict wicks.")
-        array.push(quotes, "🔒 Loyal to the level = loyal to the account.")
-        array.push(quotes, "🌊 Trade the reaction, not the emotion.")
-        int qn = array.size(quotes)
-        int qidx = int(math.floor(bar_index / math.max(coachRotate, 1))) % qn
-        string quote = array.get(quotes, qidx)
-
-        // context-aware nudge based on where price sits in the dealing range
-        string nudge = "🔎 Scanning for levels…"
-        if not na(rngHi) and not na(rngLo) and rngHi > rngLo
-            float eqmC = (rngHi + rngLo) / 2.0
-            float rngC = rngHi - rngLo
-            if close < rngLo + rngC * 0.25
-                nudge := "💎 Deep DISCOUNT — prime long zone. Be patient."
-            else if close < eqmC
-                nudge := "🟢 Discount half — favor longs from support."
-            else if close > rngHi - rngC * 0.25
-                nudge := "🔴 Deep PREMIUM — prime short zone. Don't chase longs."
-            else if close > eqmC
-                nudge := "🟠 Premium half — favor shorts from resistance."
-            else
-                nudge := "⚖️ Equilibrium — no-man's-land. Wait for an edge."
-
-        // discipline streak line
-        string streakTxt = coachStreak ? ("🔥 Discipline streak: " + str.tostring(discStreak) + " bars since last sweep") : ""
-
-        // build panel position
-        string tp = coachPos == "Top Right" ? position.top_right : coachPos == "Top Left" ? position.top_left : coachPos == "Bottom Left" ? position.bottom_left : coachPos == "Middle Right" ? position.middle_right : position.bottom_right
-        txtSz = coachSize == "Large" ? size.large : coachSize == "Small" ? size.small : size.normal
-
-        var table coachTbl = table.new(position.bottom_right, 1, 5, border_width = 1)
-        table.set_position(coachTbl, tp)
-        table.set_frame_color(coachTbl, themeBorder)
-        table.set_frame_width(coachTbl, themeBW)
-        table.cell(coachTbl, 0, 0, "DISCIPLINE COACH", bgcolor = themePanelBg, text_color = themeHdr, text_size = txtSz)
-        table.cell(coachTbl, 0, 1, nudge, bgcolor = themeRowBg, text_color = themeTxt, text_size = txtSz)
-        table.cell(coachTbl, 0, 2, quote, bgcolor = themeRowBg, text_color = themeMuted, text_size = txtSz)
-        table.cell(coachTbl, 0, 3, streakTxt, bgcolor = themeRowBg, text_color = themeMuted, text_size = txtSz)
-        table.cell(coachTbl, 0, 4, "📌 " + coachCustom, bgcolor = themeRowBg, text_color = themeTxt, text_size = txtSz)
-
-    // ---- CANDLE VOLUME PROFILE (LTF reconstruction of the LAST CLOSED candle) ----
-    f_clearVP()
-    if masterOn and vpOn
-        // intrabars of the previous (last CLOSED) chart bar
-        loA = vpLoArr[1]
-        hiA = vpHiArr[1]
-        voA = vpVoArr[1]
-        int m = na(loA) ? 0 : array.size(loA)
-        if m > 0
-            float cHi = high[1]
-            float cLo = low[1]
-            float rng = cHi - cLo
-            if rng > 0 and vpRows > 0
-                // bin volume into rows
-                bins = array.new<float>(vpRows, 0.0)
-                float rowH = rng / vpRows
-                for bi = 0 to m - 1
-                    float ip = (array.get(loA, bi) + array.get(hiA, bi)) / 2.0   // intrabar mid price
-                    float iv = array.get(voA, bi)
-                    if not na(ip) and not na(iv)
-                        int r = int(math.floor((ip - cLo) / rowH))
-                        r := math.max(0, math.min(vpRows - 1, r))
-                        array.set(bins, r, array.get(bins, r) + iv)
-
-                // find POC row + max volume + total
-                float maxV = 0.0
-                int   pocR = 0
-                float totV = 0.0
-                for r = 0 to vpRows - 1
-                    float v = array.get(bins, r)
-                    totV := totV + v
-                    if v > maxV
-                        maxV := v
-                        pocR := r
-
-                // value area: expand from POC until we enclose vpVA% of volume
-                float target = totV * (vpVA / 100.0)
-                float acc = array.get(bins, pocR)
-                int lo_r = pocR
-                int hi_r = pocR
-                while acc < target and (lo_r > 0 or hi_r < vpRows - 1)
-                    float below = lo_r > 0 ? array.get(bins, lo_r - 1) : -1.0
-                    float above = hi_r < vpRows - 1 ? array.get(bins, hi_r + 1) : -1.0
-                    if above >= below
-                        hi_r := hi_r + 1
-                        acc := acc + math.max(above, 0.0)
-                    else
-                        lo_r := lo_r - 1
-                        acc := acc + math.max(below, 0.0)
-
-                // draw the histogram to the RIGHT of the closed candle
-                int xL = bar_index[1]
-                for r = 0 to vpRows - 1
-                    float v = array.get(bins, r)
-                    if v > 0 and maxV > 0
-                        int w = int(math.round((v / maxV) * vpWidth))
-                        w := math.max(w, 1)
-                        float rTop = cLo + rowH * (r + 1)
-                        float rBot = cLo + rowH * r
-                        float rMid = (rTop + rBot) / 2.0
-                        bool isPOC = r == pocR
-                        color rc = isPOC ? vpColPOC : (rMid >= (cHi + cLo) / 2.0 ? vpColDn : vpColUp)
-                        box vb = box.new(xL, rTop, xL + w, rBot, border_color = color.new(rc, 40), border_width = 1, bgcolor = rc)
-                        array.push(vp_boxes, vb)
-
-                // POC / VAH / VAL lines + labels
-                float pocPrice = cLo + rowH * (pocR + 0.5)
-                float vahPrice = cLo + rowH * (hi_r + 1)
-                float valPrice = cLo + rowH * lo_r
-                line pocLn = line.new(xL, pocPrice, xL + vpWidth + 6, pocPrice, color = vpColPOC, width = 2, style = line.style_solid)
-                line vahLn = line.new(xL, vahPrice, xL + vpWidth + 6, vahPrice, color = vpColVA, width = 1, style = line.style_dashed)
-                line valLn = line.new(xL, valPrice, xL + vpWidth + 6, valPrice, color = vpColVA, width = 1, style = line.style_dashed)
-                array.push(vp_lines, pocLn)
-                array.push(vp_lines, vahLn)
-                array.push(vp_lines, valLn)
-                if vpShowLbls
-                    label vpPocLb = label.new(xL + vpWidth + 6, pocPrice, "POC " + str.tostring(pocPrice, format.mintick), style = label.style_label_left, color = color.new(vpColPOC, 80), textcolor = vpColPOC, size = f_labelSize())
-                    label vpVahLb = label.new(xL + vpWidth + 6, vahPrice, "VAH " + str.tostring(vahPrice, format.mintick), style = label.style_label_left, color = color.new(vpColVA, 85), textcolor = vpColVA, size = f_labelSize())
-                    label vpValLb = label.new(xL + vpWidth + 6, valPrice, "VAL " + str.tostring(valPrice, format.mintick), style = label.style_label_left, color = color.new(vpColVA, 85), textcolor = vpColVA, size = f_labelSize())
-                    array.push(vp_labels, vpPocLb)
-                    array.push(vp_labels, vpVahLb)
-                    array.push(vp_labels, vpValLb)
-
-// -----------------------------------------------------------------------------
-// TOGGLE-OFF CLEANUP (global scope, runs every bar)
-// The last-bar render pools (VP + extra modules) are normally cleared/rebuilt
-// inside `if barstate.islast`. But when a feature is switched OFF, that block
-// stops rebuilding it yet the previously drawn objects can linger. Wiping the
-// pools here at global scope guarantees they disappear the instant you toggle
-// the feature (or MASTER) off - mirroring the FVG cleanup pattern below.
-if (not masterOn or not vpOn) and array.size(vp_boxes) + array.size(vp_lines) + array.size(vp_labels) > 0
-    f_clearVP()
-if not masterOn and array.size(xtra_boxes) + array.size(xtra_lines) + array.size(xtra_labels) > 0
+// wipe extra pool when master/OB off
+if (not masterOn or not showOB) and array.size(xtra_boxes) + array.size(xtra_labels) > 0
     f_clearXtra()
 
 // -----------------------------------------------------------------------------
-// FAIR VALUE GAPS (FVG)  — drawn independently as rolling boxes
+// FAIR VALUE GAPS  — rolling boxes
 // -----------------------------------------------------------------------------
 var fvgBoxes  = array.new<box>()
-var fvgIsBull = array.new<bool>()   // parallel: true = bullish (support) gap
+var fvgIsBull = array.new<bool>()
 
-// ghost levels off (or master off): wipe any lingering ghost lines immediately
-if (not masterOn or not showGhost) and array.size(ghost_lines) > 0
-    f_clearGhost()
-
-// master off (or FVG disabled): wipe any existing FVG boxes
 if (not masterOn or not showFVG) and array.size(fvgBoxes) > 0
     while array.size(fvgBoxes) > 0
         box.delete(array.shift(fvgBoxes))
@@ -2419,7 +940,6 @@ if (not masterOn or not showFVG) and array.size(fvgBoxes) > 0
 
 bullFVG = low > nz(high[2], low)
 bearFVG = high < nz(low[2], high)
-
 if masterOn and showFVG and bullFVG
     b = box.new(bar_index[2], low, bar_index + extendR, high[2], border_color = color.new(colBull, 40), bgcolor = colFVG)
     array.push(fvgBoxes, b)
@@ -2430,11 +950,9 @@ if masterOn and showFVG and bearFVG
     array.push(fvgIsBull, false)
 
 if array.size(fvgBoxes) > 0
-    // cap total FVGs (drop oldest, keeping both arrays in sync)
     while array.size(fvgBoxes) > 20
         box.delete(array.shift(fvgBoxes))
         array.shift(fvgIsBull)
-
     int i = 0
     while i < array.size(fvgBoxes)
         box bx     = array.get(fvgBoxes, i)
@@ -2442,21 +960,14 @@ if array.size(fvgBoxes) > 0
         float top  = box.get_top(bx)
         float bot  = box.get_bottom(bx)
         float mid  = (top + bot) / 2.0
-
-        // invalidation test depends on mode + direction
         bool invalid = false
         if hideMitFVG
             if fvgFillMode == "Body close through"
-                // bullish support gap dies when a body CLOSES below its bottom;
-                // bearish resistance gap dies when a body CLOSES above its top
                 invalid := isBull ? (close < bot) : (close > top)
             else if fvgFillMode == "Wick touch (50%)"
-                // removed once price trades to the midpoint of the gap
                 invalid := isBull ? (low <= mid) : (high >= mid)
             else
-                // "Full fill (wick)" — wick fully engulfs the gap
                 invalid := high >= top and low <= bot
-
         if invalid
             box.delete(bx)
             array.remove(fvgBoxes, i)
@@ -2469,26 +980,9 @@ if array.size(fvgBoxes) > 0
 // ALERTS
 // -----------------------------------------------------------------------------
 f_touch(float lvl) => not na(lvl) and high >= lvl and low <= lvl
-
 alertcondition(f_touch(pdh) or f_touch(pdl), "PD level touched", "Price touched a Previous-Day level")
 alertcondition(f_touch(lastPH) or f_touch(lastPL), "Liquidity swept", "Price swept a swing liquidity level")
 alertcondition(f_touch(nyH) or f_touch(nyL) or f_touch(londH) or f_touch(londL) or f_touch(asiaH) or f_touch(asiaL), "Session level touched", "Price touched a session high/low")
-
-// ---- Event alerts for the new engine (feature #10) ----
-// price entered any active order block this bar
-obEntered = false
-if array.size(obTop) > 0
-    for _oi = 0 to array.size(obTop) - 1
-        if high >= array.get(obBot, _oi) and low <= array.get(obTop, _oi)
-            obEntered := true
-// DOL directional flip (momentum-sign change as a per-bar proxy)
-dolFlip = (dolMom >= 0) != (nz(dolMom[1], dolMom) >= 0)
-
 alertcondition(sfpLong or sfpShort, "SFP fired", "Sweep + reversal (liquidity grab) detected")
-alertcondition(sfpLong, "SFP long", "Bullish sweep + reversal: sell-side liquidity taken, closed back up")
-alertcondition(sfpShort, "SFP short", "Bearish sweep + reversal: buy-side liquidity taken, closed back down")
-alertcondition(obEntered, "Order block entered", "Price entered an active order block zone")
-alertcondition(bosUp or bosDn, "BOS", "Break of structure")
-alertcondition(chochUp or chochDn, "CHoCH", "Change of character (early reversal warning)")
-alertcondition(dolFlip, "DOL flipped", "Draw-on-liquidity momentum bias flipped direction")
-alertcondition(bullSMT or bearSMT, "SMT divergence", "SMT divergence vs correlated symbol (reversal cue)")
+alertcondition(sfpLong, "SFP long", "Bullish sweep + reversal")
+alertcondition(sfpShort, "SFP short", "Bearish sweep + reversal")
