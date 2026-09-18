@@ -88,6 +88,9 @@ When a level is **swept** (price trades through it), it leaves behind a faint **
 - **JSON alert payloads** — optional `alert()` on each graded SFP with a machine-readable JSON message (symbol, tf, side, grade, price, swept level, rvol, alignment, time) for webhooks / auto-trading bots.
 - **Liquidity path projection** — a dotted route from current price through the strongest ranked magnets. *Draw Model v2:* optionally follows the DOL direction only (same-side pools) and walks them **nearest-first** so the route reads like a realistic liquidity run instead of zig-zagging; leg thickness scales with magnet strength.
 
+### Backtest harness (does the grade actually predict?)
+Objectively measures every graded sweep+reversal over the loaded history: opens a virtual trade at the signal, places a stop beyond the sweep wick and a target (fixed R multiple, or the next opposing pool), then records the outcome (stop = −1R, target = +R, timeout = running R). Results are shown in a table **broken down by grade (A+ / A / B / C)** with trade count, win %, and average R (expectancy), plus an ALL row. This is the reality check — it lets you see whether higher grades genuinely win more before you trust them.
+
 ### Draw Model v2 (DOL + path, unified)
 The DOL gauge and the liquidity path now share one direction decision, so they always tell the same story. The DOL banner adds:
 - **Tug-of-war bar** — shows both sides' aggregate pull (`SSL 38 ▮▮▮▮▯▯▯▯▯▯ 62 BSL`) so you see how lopsided the draw is (and when it's near-balanced / low conviction), not just the winner.
