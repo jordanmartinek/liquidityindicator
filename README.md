@@ -49,6 +49,9 @@ Theme (Refined Dark/Light, Midnight, Slate, Classic), line/label styling, FVG op
 ### ⑧ Emoji Tags
 Configurable emoji tags per level class.
 
+### ⑨ Ghost Levels
+When a level is **swept** (price trades through it), it leaves a faint **dotted "ghost"** marking where liquidity was recently taken. Detection is self-contained (fires the instant price crosses any tracked level — previous-period, session, swing, or equal H/L), so ghosts reliably appear. Toggle **historical ghosts** on to keep every recent sweep as a dotted line back through history (up to the max kept); off shows only the latest. Ghosts fade from the set opacity toward invisible over their lifetime, then expire. Adjustable opacity, lifetime, color, and max kept.
+
 ---
 
 ## Alerts
