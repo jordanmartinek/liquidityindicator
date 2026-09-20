@@ -26,6 +26,7 @@ var string G_CLUST  = "⑤ Clustering & Confluence"
 var string G_DOL    = "⑥ Draw-on-Liquidity Gauge"
 var string G_STYLE  = "⑦ Style"
 var string G_EMO    = "⑧ Emoji Tags"
+var string G_GHOST  = "⑨ Ghost Levels"
 
 // -----------------------------------------------------------------------------
 // INPUTS — PREVIOUS-PERIOD LEVELS
@@ -167,6 +168,16 @@ colFVG  = color.new(colFVGBase, opacityFVG)
 emoPrev = input.string("⭐", "Previous-period tag", options = ["None","🔥","⭐","🟡","🔹","💧","🎯","🧲"], group = G_EMO)
 emoSess = input.string("🟡", "Session tag",         options = ["None","🔥","⭐","🟡","🔹","💧","🎯","🧲"], group = G_EMO)
 emoLiq  = input.string("💧", "Liquidity tag",       options = ["None","🔥","⭐","🟡","🔹","💧","🎯","🧲"], group = G_EMO)
+
+// -----------------------------------------------------------------------------
+// INPUTS — GHOST LEVELS
+// -----------------------------------------------------------------------------
+showGhost   = input.bool(true, "Show ghost levels (recently swept)", tooltip = "When a level is SWEPT (price trades through it), leave a faint dotted 'ghost' where the liquidity was taken. Ghosts fade over their lifetime, then disappear.", group = G_GHOST)
+showGhostHist = input.bool(true, "Show historical ghosts (dotted lines)", tooltip = "ON: keep ghosts of ALL recent sweeps as dotted lines going back through history (up to the max kept). OFF: only show a ghost briefly at the moment of the sweep. Either way they fade with age.", group = G_GHOST)
+ghostOpacity = input.int(70, "Ghost opacity (0 solid, 100 invisible)", minval = 0, maxval = 100, tooltip = "Starting transparency of a fresh ghost line. Higher = fainter. Ghosts fade further toward invisible as they age.", group = G_GHOST)
+ghostLife   = input.int(120, "Ghost lifetime (bars)", minval = 1, maxval = 3000, tooltip = "How many bars a ghost lingers after the level was swept before it disappears. Increase if ghosts vanish before you notice them.", group = G_GHOST)
+ghostCol    = input.color(color.new(#b0bec5, 0), "Ghost line color", group = G_GHOST)
+ghostKeep   = input.int(60, "Max ghosts kept", minval = 1, maxval = 300, tooltip = "Cap on the number of ghost lines retained at once (oldest dropped first).", group = G_GHOST)
 
 // -----------------------------------------------------------------------------
 // HELPERS
@@ -529,6 +540,93 @@ pmhM = (removeSwept and sw_pmh) ? na : pmh
 pmlM = (removeSwept and sw_pml) ? na : pml
 
 // -----------------------------------------------------------------------------
+// GHOST LEVELS — robust, self-contained per-bar capture.
+// Independent of removeSwept / SFP / pivot timing (the reason the old version
+// never showed). Build the set of currently-tracked levels each bar; the instant
+// THIS bar's high/low crosses one (prev bar not already beyond), record a ghost.
+// De-duped by price so a level ghosts only once while it stays swept.
+// -----------------------------------------------------------------------------
+var ghostP   = array.new<float>()   // price where liquidity was taken
+var ghostBar = array.new<int>()     // bar it was swept
+if showGhost
+    gHiNow = array.new<float>()
+    gLoNow = array.new<float>()
+    if showPDHL and not na(pdh)
+        array.push(gHiNow, pdh)
+    if showPDHL and not na(pdl)
+        array.push(gLoNow, pdl)
+    if showPWHL and not na(pwh)
+        array.push(gHiNow, pwh)
+    if showPWHL and not na(pwl)
+        array.push(gLoNow, pwl)
+    if showPMHL and not na(pmh)
+        array.push(gHiNow, pmh)
+    if showPMHL and not na(pml)
+        array.push(gLoNow, pml)
+    if showAsia and not na(asiaH)
+        array.push(gHiNow, asiaH)
+    if showAsia and not na(asiaL)
+        array.push(gLoNow, asiaL)
+    if showLond and not na(londH)
+        array.push(gHiNow, londH)
+    if showLond and not na(londL)
+        array.push(gLoNow, londL)
+    if showNY and not na(nyH)
+        array.push(gHiNow, nyH)
+    if showNY and not na(nyL)
+        array.push(gLoNow, nyL)
+    if showSwing and array.size(swHi) > 0
+        for gsi = 0 to array.size(swHi) - 1
+            array.push(gHiNow, array.get(swHi, gsi))
+    if showSwing and array.size(swLo) > 0
+        for gsi = 0 to array.size(swLo) - 1
+            array.push(gLoNow, array.get(swLo, gsi))
+    if showEQ and array.size(eqHiA) > 0
+        for gei = 0 to array.size(eqHiA) - 1
+            array.push(gHiNow, array.get(eqHiA, gei))
+    if showEQ and array.size(eqLoA) > 0
+        for gei = 0 to array.size(eqLoA) - 1
+            array.push(gLoNow, array.get(eqLoA, gei))
+    float gTol = math.max(nz(atr) * 0.05, syminfo.mintick)
+    if array.size(gHiNow) > 0
+        for gi = 0 to array.size(gHiNow) - 1
+            float lv = array.get(gHiNow, gi)
+            if high >= lv and high[1] < lv
+                bool dup = false
+                if array.size(ghostP) > 0
+                    for dj = 0 to array.size(ghostP) - 1
+                        if math.abs(array.get(ghostP, dj) - lv) <= gTol
+                            dup := true
+                if not dup
+                    array.push(ghostP, lv)
+                    array.push(ghostBar, bar_index)
+    if array.size(gLoNow) > 0
+        for gi = 0 to array.size(gLoNow) - 1
+            float lv = array.get(gLoNow, gi)
+            if low <= lv and low[1] > lv
+                bool dup = false
+                if array.size(ghostP) > 0
+                    for dj = 0 to array.size(ghostP) - 1
+                        if math.abs(array.get(ghostP, dj) - lv) <= gTol
+                            dup := true
+                if not dup
+                    array.push(ghostP, lv)
+                    array.push(ghostBar, bar_index)
+
+// ghost expiry (older than lifetime) + cap
+if array.size(ghostP) > 0
+    int gj = 0
+    while gj < array.size(ghostP)
+        if bar_index - array.get(ghostBar, gj) > ghostLife
+            array.remove(ghostP, gj)
+            array.remove(ghostBar, gj)
+        else
+            gj += 1
+while array.size(ghostP) > ghostKeep
+    array.shift(ghostP)
+    array.shift(ghostBar)
+
+// -----------------------------------------------------------------------------
 // SFP (sweep + reversal) DETECTION
 // -----------------------------------------------------------------------------
 lvHiNow = array.new<float>()
@@ -647,6 +745,11 @@ var pool_labels = array.new<label>()
 var pool_boxes = array.new<box>()
 var xtra_boxes  = array.new<box>()
 var xtra_labels = array.new<label>()
+var ghost_lines = array.new<line>()
+
+f_clearGhost() =>
+    while array.size(ghost_lines) > 0
+        line.delete(array.pop(ghost_lines))
 
 f_clearXtra() =>
     while array.size(xtra_boxes) > 0
@@ -923,6 +1026,21 @@ if barstate.islast
                     array.push(pool_labels, lb)
             gi := gi + 1
 
+    // ---- Ghost levels (last bar): faint dotted lines that fade with age ----
+    f_clearGhost()
+    if masterOn and showGhost and array.size(ghostP) > 0
+        int firstG = showGhostHist ? 0 : array.size(ghostP) - 1   // hist: all; else newest only
+        for gk = firstG to array.size(ghostP) - 1
+            float gp = array.get(ghostP, gk)
+            int   gb = array.get(ghostBar, gk)
+            if not na(gp)
+                int   age = math.max(0, bar_index - gb)
+                float fade = ghostLife > 0 ? (age / ghostLife) : 1.0
+                int transp = int(math.min(100, ghostOpacity + (100 - ghostOpacity) * fade))
+                color gc = color.new(ghostCol, transp)
+                line gl = line.new(f_clampBar(gb), gp, bar_index + 3, gp, color = gc, width = 1, style = line.style_dotted)
+                array.push(ghost_lines, gl)
+
     // ---- Order block boxes (last bar) ----
     f_clearXtra()
     if masterOn and showOB and array.size(obTop) > 0
@@ -993,6 +1111,9 @@ if barstate.islast
 // wipe extra pool when master/OB off
 if (not masterOn or not showOB) and array.size(xtra_boxes) + array.size(xtra_labels) > 0
     f_clearXtra()
+// wipe ghost lines when master/ghost off
+if (not masterOn or not showGhost) and array.size(ghost_lines) > 0
+    f_clearGhost()
 
 // -----------------------------------------------------------------------------
 // FAIR VALUE GAPS  — rolling boxes
