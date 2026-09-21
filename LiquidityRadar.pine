@@ -137,6 +137,7 @@ dolNearBias = input.float(1.5, "Nearest-pool emphasis", minval = 0.0, maxval = 4
 dolFreshW  = input.bool(true, "Freshness premium (untested pulls harder)", tooltip = "Levels price has NOT yet reacted off pull harder; levels already wicked into are discounted.", group = G_DOL)
 showLvlConf = input.bool(true, "Show per-level confidence % (target likelihood)", tooltip = "Each level/zone gets a 0-100 score for how likely price heads THERE next. The single most-likely target is flagged 🎯.", group = G_DOL)
 lvlConfMode = input.string("Magnet quality", "  Confidence % basis", options = ["Magnet quality","Raw pull"], tooltip = "Magnet quality (recommended): distance is removed so the % reflects how STRONG a magnet each level is for its distance — a far but heavy pool (equal highs + order block + old + fresh) can out-score a near lone swing. Raw pull (legacy): the % is each level's share of the proximity-weighted gravity, so the nearest level almost always dominates (obvious, less useful). The 🎯 still marks the nearest strongest pull in both modes.", group = G_DOL)
+lvlConfWin  = input.int(5, "  Confidence window (levels each side)", minval = 1, maxval = 50, tooltip = "Only the N nearest levels ABOVE and N nearest BELOW price get a confidence %, and the % is normalized over just those levels. Keeps intraday reads focused on the levels price can realistically reach instead of diluting the % across far higher-timeframe levels. Lower = tighter/more decisive; higher = wider context. 🎯 still uses all levels.", group = G_DOL)
 
 // -----------------------------------------------------------------------------
 // INPUTS — STYLE
@@ -774,6 +775,7 @@ var lv_birth = array.new<int>()
 var lv_side = array.new<int>()
 var lv_pull = array.new<float>()   // per-level DOL pull (proximity-weighted gravity)
 var lv_qual = array.new<float>()   // per-level distance-neutral magnet quality
+var lv_inwin = array.new<bool>()   // is this level within the N-nearest-each-side confidence window
 
 f_addLevel(bool active, float price, string name, color col, string emo, int birthBar, int side) =>
     if masterOn and active and not na(price) and f_inCompactRange(price)
@@ -880,6 +882,7 @@ if barstate.islast
     array.clear(lv_side)
     array.clear(lv_pull)
     array.clear(lv_qual)
+    array.clear(lv_inwin)
 
     f_addLevel(showPDHL, pdhM,   "PDH",     colBull, emoPrev, b_pdh,  1)
     f_addLevel(showPDHL, pdlM,   "PDL",     colBear, emoPrev, b_pdl, -1)
@@ -922,6 +925,7 @@ if barstate.islast
     if nl > 0
         float sensK = dolSens == "High" ? 2.0 : dolSens == "Low" ? 0.5 : 1.0
         float atrU  = math.max(nz(atr), syminfo.mintick)
+        // pass 1: pull/qual per level + DOL bias & 🎯 magnet (over ALL levels, unchanged)
         for k = 0 to nl - 1
             float pk = array.get(lv_price, k)
             string nk = array.get(lv_name, k)
@@ -929,8 +933,7 @@ if barstate.islast
             [pull, qual] = f_pull(pk, nk, bk, sensK, atrU)
             array.push(lv_pull, pull)
             array.push(lv_qual, qual)
-            totalPull := totalPull + pull
-            totalQual := totalQual + qual
+            array.push(lv_inwin, false)
             if pk >= close
                 bslStrength := bslStrength + pull
                 if pull > bslTopPull
@@ -941,6 +944,23 @@ if barstate.islast
                 if pull > sslTopPull
                     sslTopPull  := pull
                     sslTopPrice := pk
+        // pass 2: confidence window — mark the N nearest levels ABOVE and N BELOW price.
+        // A level is in-window if fewer than N same-side levels sit strictly nearer to price.
+        for k = 0 to nl - 1
+            float pk = array.get(lv_price, k)
+            bool  above = pk >= close
+            float dk = math.abs(pk - close)
+            int nearer = 0
+            for j = 0 to nl - 1
+                if j != k
+                    float pj = array.get(lv_price, j)
+                    bool  aboveJ = pj >= close
+                    if aboveJ == above and math.abs(pj - close) < dk
+                        nearer := nearer + 1
+            if nearer < lvlConfWin
+                array.set(lv_inwin, k, true)
+                totalPull := totalPull + array.get(lv_pull, k)
+                totalQual := totalQual + array.get(lv_qual, k)
 
     float dm_totalG = bslStrength + sslStrength
     float dm_liqBias = dm_totalG > 0 ? (bslStrength - sslStrength) / dm_totalG : 0.0
@@ -978,8 +998,10 @@ if barstate.islast
             string names = array.get(lv_name, array.get(idx, gi))
             int oldestBirth = array.get(lv_birth, array.get(idx, gi))
             int sideSum = array.get(lv_side, array.get(idx, gi))
-            float sumPull = array.get(lv_pull, array.get(idx, gi))   // accumulate member pull
-            float sumQual = array.get(lv_qual, array.get(idx, gi))   // accumulate member magnet-quality
+            // accumulate only IN-WINDOW members' pull/qual so the zone % matches the windowed normalization
+            bool  zInWin  = array.get(lv_inwin, array.get(idx, gi))
+            float sumPull = zInWin ? array.get(lv_pull, array.get(idx, gi)) : 0.0
+            float sumQual = zInWin ? array.get(lv_qual, array.get(idx, gi)) : 0.0
             while clusterOn and gi + 1 < idxN and (array.get(lv_price, array.get(idx, gi + 1)) - array.get(lv_price, array.get(idx, gi))) <= mergeDist
                 gi := gi + 1
                 float p = array.get(lv_price, array.get(idx, gi))
@@ -991,8 +1013,10 @@ if barstate.islast
                 int mb = array.get(lv_birth, array.get(idx, gi))
                 oldestBirth := na(oldestBirth) ? mb : (na(mb) ? oldestBirth : math.min(oldestBirth, mb))
                 sideSum := sideSum + array.get(lv_side, array.get(idx, gi))
-                sumPull := sumPull + array.get(lv_pull, array.get(idx, gi))
-                sumQual := sumQual + array.get(lv_qual, array.get(idx, gi))
+                if array.get(lv_inwin, array.get(idx, gi))
+                    zInWin  := true
+                    sumPull := sumPull + array.get(lv_pull, array.get(idx, gi))
+                    sumQual := sumQual + array.get(lv_qual, array.get(idx, gi))
 
             int ext = f_extLen(oldestBirth)
             bool drawGroup = members >= minStrength
@@ -1002,13 +1026,15 @@ if barstate.islast
                 color c = f_sideColI(sd, p, array.get(lv_col, array.get(idx, startI)))
                 string emo = sideColorOn ? f_sideEmojiI(sd, p) : array.get(lv_emo, array.get(idx, startI))
                 string tier = tieredEmoji ? (f_tierEmoji(1) + " ") : ""
-                // per-level confidence % — Magnet quality (distance removed) or Raw pull share
+                // per-level confidence % — Magnet quality (distance removed) or Raw pull share.
+                // Only levels inside the N-nearest-each-side window get a %.
                 bool useQual = lvlConfMode == "Magnet quality"
+                bool lInWin = array.get(lv_inwin, array.get(idx, startI))
                 float lpNum = useQual ? array.get(lv_qual, array.get(idx, startI)) : array.get(lv_pull, array.get(idx, startI))
                 float lpDen = useQual ? totalQual : totalPull
                 float lp = lpDen > 0 ? lpNum / lpDen * 100.0 : 0.0
                 bool isTop = not na(topPullPrice) and math.abs(p - topPullPrice) <= syminfo.mintick
-                string confLvlTag = showLvlConf ? ((isTop ? " 🎯" : " ") + str.tostring(math.round(lp)) + "%") : ""
+                string confLvlTag = (showLvlConf and lInWin) ? ((isTop ? " 🎯" : " ") + str.tostring(math.round(lp)) + "%") : ""
                 string full = tier + (emo == "None" ? "" : emo + " ") + array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick) + confLvlTag + f_countdown(p)
                 line ln = line.new(bar_index, p, bar_index + ext, p, color = c, width = lineWidth, style = f_lineStyle())
                 color soloBg  = outlineTags ? c : color.new(c, 85)
@@ -1035,13 +1061,14 @@ if barstate.islast
                     string strength = showStrengthEmoji ? (f_repeat(f_sideEmojiI(domSide, mid), members) + " x" + str.tostring(members)) : ("x" + str.tostring(members))
                     string tier = tieredEmoji ? (f_tierEmoji(members) + " ") : ""
                     string confTag = showConf ? ("  ⭐" + str.tostring(confS) + (confParts == "" ? "" : " [" + confParts + "]")) : ""
-                    // per-zone target-likelihood — Magnet quality (distance removed) or Raw pull share
+                    // per-zone target-likelihood — Magnet quality (distance removed) or Raw pull share.
+                    // Only zones with a member inside the N-nearest-each-side window get a %.
                     bool zUseQual = lvlConfMode == "Magnet quality"
                     float zNum = zUseQual ? sumQual : sumPull
                     float zDen = zUseQual ? totalQual : totalPull
                     float zPull = zDen > 0 ? zNum / zDen * 100.0 : 0.0
                     bool zTop = not na(topPullPrice) and topPullPrice >= minP - pad and topPullPrice <= maxP + pad
-                    string lvlConfTag = showLvlConf ? ((zTop ? "  🎯" : "  →") + str.tostring(math.round(zPull)) + "%") : ""
+                    string lvlConfTag = (showLvlConf and zInWin) ? ((zTop ? "  🎯" : "  →") + str.tostring(math.round(zPull)) + "%") : ""
                     string full = tier + strength + (sideTag == "" ? "" : " " + sideTag) + "  " + names + "  " + str.tostring(mid, format.mintick) + confTag + lvlConfTag + f_countdown(mid)
                     color lblBg  = outlineTags ? zbase : color.new(#1e222d, 10)
                     label lb = label.new(bar_index + ext, mid, full, style = label.style_label_left, color = lblBg, textcolor = clustLblTxt, size = f_strongSize(members))
