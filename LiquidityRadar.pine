@@ -135,7 +135,8 @@ dolTugBar  = input.bool(true, "Show tug-of-war bar (BSL vs SSL)", group = G_DOL)
 dolConfW   = input.bool(true, "Weight pull by each level's confluence score", tooltip = "A level sitting in an order block + OTE + round number pulls far harder than a lone level. Multiplies each level's DOL pull by its own confluence score - the single biggest accuracy boost.", group = G_DOL)
 dolNearBias = input.float(1.5, "Nearest-pool emphasis", minval = 0.0, maxval = 4.0, step = 0.25, tooltip = "Extra sharpening of the distance decay. Higher = the nearest untapped pool dominates the pull (price hunts the closest liquidity first). 0 = flat.", group = G_DOL)
 dolFreshW  = input.bool(true, "Freshness premium (untested pulls harder)", tooltip = "Levels price has NOT yet reacted off pull harder; levels already wicked into are discounted.", group = G_DOL)
-showLvlConf = input.bool(true, "Show per-level confidence % (target likelihood)", tooltip = "Each level/zone gets a 0-100 score for how likely price heads THERE next (its share of total liquidity pull). The single most-likely target is flagged 🎯.", group = G_DOL)
+showLvlConf = input.bool(true, "Show per-level confidence % (target likelihood)", tooltip = "Each level/zone gets a 0-100 score for how likely price heads THERE next. The single most-likely target is flagged 🎯.", group = G_DOL)
+lvlConfMode = input.string("Magnet quality", "  Confidence % basis", options = ["Magnet quality","Raw pull"], tooltip = "Magnet quality (recommended): distance is removed so the % reflects how STRONG a magnet each level is for its distance — a far but heavy pool (equal highs + order block + old + fresh) can out-score a near lone swing. Raw pull (legacy): the % is each level's share of the proximity-weighted gravity, so the nearest level almost always dominates (obvious, less useful). The 🎯 still marks the nearest strongest pull in both modes.", group = G_DOL)
 
 // -----------------------------------------------------------------------------
 // INPUTS — STYLE
@@ -771,7 +772,8 @@ var lv_col = array.new<color>()
 var lv_emo = array.new<string>()
 var lv_birth = array.new<int>()
 var lv_side = array.new<int>()
-var lv_pull = array.new<float>()   // per-level DOL pull (accuracy pass)
+var lv_pull = array.new<float>()   // per-level DOL pull (proximity-weighted gravity)
+var lv_qual = array.new<float>()   // per-level distance-neutral magnet quality
 
 f_addLevel(bool active, float price, string name, color col, string emo, int birthBar, int side) =>
     if masterOn and active and not na(price) and f_inCompactRange(price)
@@ -822,8 +824,15 @@ f_confScore(float mid, float loB, float hiB, int members) =>
     int s = int(math.min(math.round(score), 100))
     [s, parts]
 
-// ---- per-level DOL pull (accuracy pass) ----
-// pull = distance-decay(#2) × type(#5 EQ top) × age × freshness(#3) × confluence(#1)
+// ---- per-level DOL pull + magnet-quality (accuracy pass) ----
+// Two scores are produced from the same weights:
+//   • pull  = distance-decay(#2) × type × age × freshness(#3) × confluence(#1)
+//             — proximity dominates. Drives the DOL arrow/bias and the 🎯 magnet.
+//   • qual  = type × age × freshness × confluence  (distance REMOVED)
+//             — "how strong a magnet is this for its distance". Drives the
+//             per-level confidence % in Magnet-quality mode, so a far but heavy
+//             pool can out-score a near lone level.
+// f_pull returns [pull, qual]; callers pick which to display.
 f_pull(float pk, string nk, int bk, float sensK, float atrU) =>
     float dist = math.abs(pk - close)
     // sharper decay so the NEAREST pool dominates (dolNearBias raises the exponent)
@@ -856,7 +865,9 @@ f_pull(float pk, string nk, int bk, float sensK, float atrU) =>
     if dolConfW
         [cs, cp] = f_confScore(pk, pk - atrU * 0.05, pk + atrU * 0.05, 1)
         confW := 1.0 + cs / 100.0    // 1.0 .. 2.0
-    distW * typeW * ageW * freshW * confW
+    float qual = typeW * ageW * freshW * confW      // distance-neutral magnet quality
+    float pull = distW * qual                        // proximity-weighted gravity
+    [pull, qual]
 
 // ---- DOL gravity tally + shared direction (last bar) ----
 if barstate.islast
@@ -868,6 +879,7 @@ if barstate.islast
     array.clear(lv_birth)
     array.clear(lv_side)
     array.clear(lv_pull)
+    array.clear(lv_qual)
 
     f_addLevel(showPDHL, pdhM,   "PDH",     colBull, emoPrev, b_pdh,  1)
     f_addLevel(showPDHL, pdlM,   "PDL",     colBear, emoPrev, b_pdl, -1)
@@ -906,6 +918,7 @@ if barstate.islast
     float sslTopPrice = na
     int nl = array.size(lv_price)
     float totalPull = 0.0
+    float totalQual = 0.0
     if nl > 0
         float sensK = dolSens == "High" ? 2.0 : dolSens == "Low" ? 0.5 : 1.0
         float atrU  = math.max(nz(atr), syminfo.mintick)
@@ -913,9 +926,11 @@ if barstate.islast
             float pk = array.get(lv_price, k)
             string nk = array.get(lv_name, k)
             int   bk = array.get(lv_birth, k)
-            float pull = f_pull(pk, nk, bk, sensK, atrU)
+            [pull, qual] = f_pull(pk, nk, bk, sensK, atrU)
             array.push(lv_pull, pull)
+            array.push(lv_qual, qual)
             totalPull := totalPull + pull
+            totalQual := totalQual + qual
             if pk >= close
                 bslStrength := bslStrength + pull
                 if pull > bslTopPull
@@ -964,6 +979,7 @@ if barstate.islast
             int oldestBirth = array.get(lv_birth, array.get(idx, gi))
             int sideSum = array.get(lv_side, array.get(idx, gi))
             float sumPull = array.get(lv_pull, array.get(idx, gi))   // accumulate member pull
+            float sumQual = array.get(lv_qual, array.get(idx, gi))   // accumulate member magnet-quality
             while clusterOn and gi + 1 < idxN and (array.get(lv_price, array.get(idx, gi + 1)) - array.get(lv_price, array.get(idx, gi))) <= mergeDist
                 gi := gi + 1
                 float p = array.get(lv_price, array.get(idx, gi))
@@ -976,6 +992,7 @@ if barstate.islast
                 oldestBirth := na(oldestBirth) ? mb : (na(mb) ? oldestBirth : math.min(oldestBirth, mb))
                 sideSum := sideSum + array.get(lv_side, array.get(idx, gi))
                 sumPull := sumPull + array.get(lv_pull, array.get(idx, gi))
+                sumQual := sumQual + array.get(lv_qual, array.get(idx, gi))
 
             int ext = f_extLen(oldestBirth)
             bool drawGroup = members >= minStrength
@@ -985,8 +1002,11 @@ if barstate.islast
                 color c = f_sideColI(sd, p, array.get(lv_col, array.get(idx, startI)))
                 string emo = sideColorOn ? f_sideEmojiI(sd, p) : array.get(lv_emo, array.get(idx, startI))
                 string tier = tieredEmoji ? (f_tierEmoji(1) + " ") : ""
-                // per-level confidence = this level's share of total liquidity pull
-                float lp = totalPull > 0 ? array.get(lv_pull, array.get(idx, startI)) / totalPull * 100.0 : 0.0
+                // per-level confidence % — Magnet quality (distance removed) or Raw pull share
+                bool useQual = lvlConfMode == "Magnet quality"
+                float lpNum = useQual ? array.get(lv_qual, array.get(idx, startI)) : array.get(lv_pull, array.get(idx, startI))
+                float lpDen = useQual ? totalQual : totalPull
+                float lp = lpDen > 0 ? lpNum / lpDen * 100.0 : 0.0
                 bool isTop = not na(topPullPrice) and math.abs(p - topPullPrice) <= syminfo.mintick
                 string confLvlTag = showLvlConf ? ((isTop ? " 🎯" : " ") + str.tostring(math.round(lp)) + "%") : ""
                 string full = tier + (emo == "None" ? "" : emo + " ") + array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick) + confLvlTag + f_countdown(p)
@@ -1015,8 +1035,11 @@ if barstate.islast
                     string strength = showStrengthEmoji ? (f_repeat(f_sideEmojiI(domSide, mid), members) + " x" + str.tostring(members)) : ("x" + str.tostring(members))
                     string tier = tieredEmoji ? (f_tierEmoji(members) + " ") : ""
                     string confTag = showConf ? ("  ⭐" + str.tostring(confS) + (confParts == "" ? "" : " [" + confParts + "]")) : ""
-                    // per-zone target-likelihood = zone's share of total liquidity pull
-                    float zPull = totalPull > 0 ? sumPull / totalPull * 100.0 : 0.0
+                    // per-zone target-likelihood — Magnet quality (distance removed) or Raw pull share
+                    bool zUseQual = lvlConfMode == "Magnet quality"
+                    float zNum = zUseQual ? sumQual : sumPull
+                    float zDen = zUseQual ? totalQual : totalPull
+                    float zPull = zDen > 0 ? zNum / zDen * 100.0 : 0.0
                     bool zTop = not na(topPullPrice) and topPullPrice >= minP - pad and topPullPrice <= maxP + pad
                     string lvlConfTag = showLvlConf ? ((zTop ? "  🎯" : "  →") + str.tostring(math.round(zPull)) + "%") : ""
                     string full = tier + strength + (sideTag == "" ? "" : " " + sideTag) + "  " + names + "  " + str.tostring(mid, format.mintick) + confTag + lvlConfTag + f_countdown(mid)
