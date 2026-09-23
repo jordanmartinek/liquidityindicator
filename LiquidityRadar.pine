@@ -149,6 +149,8 @@ projStacked = input.bool(true,  "Stacked-agreement flag ⭐", tooltip = "Flags a
 projLiveSess = input.bool(true, "Exclude forming session H/L from magnet", tooltip = "A still-forming session high/low tracks price in real time, so it sits ~0 distance away and unfairly dominates the confidence % (price 'chasing' a level it is itself creating). When on, the CURRENT session's extreme still draws as a line but takes no magnet / confidence role until the session closes or price pulls away — it becomes real resting liquidity, then re-enters the pull.", group = G_DOL)
 projDistFloor = input.bool(true, "Distance floor (ignore levels hugging price)", tooltip = "General safety net: any level within the floor distance of price contributes ~no pull and no confidence %, since you can't be 'drawn' to where price already is. Catches the session case and any other level price is sitting on.", group = G_DOL)
 projDistFloorATR = input.float(0.12, "  Distance floor (× ATR)", minval = 0.0, maxval = 1.0, step = 0.02, tooltip = "How close (in ATRs) a level must be to price before it's treated as 'already here' and excluded from the magnet pool. 0 = disable.", group = G_DOL)
+// --- resistance-adjusted bias: a pool only pulls as hard as the PATH to it is open ---
+projResist = input.bool(true, "Resistance-adjusted DOL bias", tooltip = "Weights each side's draw by how CLEAR the path to it is. Structure standing in the way (order blocks, FVGs) between price and a pool discounts that side's effective pull, so a heavily-walled pool pulls less than an open one. Price hunts the REACHABLE liquidity, not the blocked pool. Conservative: resistance only DISCOUNTS a side's pull, it never adds to the opposite side. Obstacle severity uses the Path-clearance sensitivity. A 🧱 clearance readout is added to the banner.", group = G_DOL)
 
 // -----------------------------------------------------------------------------
 // INPUTS — STYLE
@@ -1102,8 +1104,24 @@ if barstate.islast
                     totalPull := totalPull + array.get(lv_pull, k)
                     totalQual := totalQual + array.get(lv_qual, k)
 
-    float dm_totalG = bslStrength + sslStrength
-    float dm_liqBias = dm_totalG > 0 ? (bslStrength - sslStrength) / dm_totalG : 0.0
+    // ---- resistance-adjusted (clearance-weighted) draw ----
+    // Each side's EFFECTIVE pull = raw draw × how clear the path to that side's magnet is.
+    // Structure in the way (OBs / FVGs) discounts a side; it never adds to the other side.
+    float atrR   = math.max(nz(atr), syminfo.mintick)
+    float upClr  = 100.0
+    float dnClr  = 100.0
+    if projResist
+        if not na(bslTopPrice)
+            [uc, uo] = f_pathClear(close, bslTopPrice, atrR)
+            upClr := uc
+        if not na(sslTopPrice)
+            [dc, doo] = f_pathClear(close, sslTopPrice, atrR)
+            dnClr := dc
+    float bslEff = bslStrength * (projResist ? upClr / 100.0 : 1.0)
+    float sslEff = sslStrength * (projResist ? dnClr / 100.0 : 1.0)
+
+    float dm_totalG = bslEff + sslEff
+    float dm_liqBias = dm_totalG > 0 ? (bslEff - sslEff) / dm_totalG : 0.0
     float dm_bias = (1.0 - dolMomWt / 100.0) * dm_liqBias + (dolMomWt / 100.0) * dolMom
     bool  dolDrawUp = dm_bias >= 0
     float dolTgt = dolDrawUp ? bslTopPrice : sslTopPrice
@@ -1283,7 +1301,7 @@ if barstate.islast
         // balance-aware conviction (#9): magnitude of the bias, further scaled by how
         // DECISIVE the BSL-vs-SSL split is. A near-50/50 tug-of-war reads as low
         // confidence even when the winning side's absolute pull is large.
-        float dominance = totalG > 0 ? math.abs(bslStrength - sslStrength) / totalG : 0.0
+        float dominance = totalG > 0 ? math.abs(bslEff - sslEff) / totalG : 0.0
         float conv = math.round(math.min(1.0, math.abs(dm_bias)) * (0.4 + 0.6 * dominance) * 100)
         float tgtPrice = dolTgt
         string distTxt = ""
@@ -1308,7 +1326,7 @@ if barstate.islast
         string tgtTxt = na(tgtPrice) ? "" : ("🎯 target" + distTxt + clrTxt + etaTxt)
         string tugTxt = ""
         if dolTugBar and totalG > 0
-            int bslPct = int(math.round(bslStrength / totalG * 100.0))
+            int bslPct = int(math.round(bslEff / totalG * 100.0))
             int sslPct = 100 - bslPct
             int sslSeg = int(math.round(sslPct / 10.0))
             string bar = ""
@@ -1322,18 +1340,26 @@ if barstate.islast
             string state = posR >= 0.62 ? "PREMIUM" : (posR <= 0.38 ? "DISCOUNT" : "EQUILIBRIUM")
             string emoR = posR >= 0.62 ? "🔺" : (posR <= 0.38 ? "🔻" : "⚖️")
             equiTxt := emoR + " " + state + " " + str.tostring(math.round(posR * 100)) + "%"
+        // resistance readout: how clear the path is up vs down (0 = fully walled, 100 = open)
+        string resistTxt = ""
+        if projResist
+            resistTxt := "🧱 clear ↑" + str.tostring(math.round(upClr)) + " ↓" + str.tostring(math.round(dnClr))
         color dirAccent = drawUp ? themeUpSolid : themeDnSolid
         bool showTgtRow = dolTgtLine and not na(tgtPrice)
         bool showTugRow = dolTugBar and totalG > 0
         bool showEquiRow = projEqui and equiTxt != ""
+        bool showResistRow = projResist and resistTxt != ""
         dolSzB = dolSize == "Huge" ? size.large : dolSize == "Large" ? size.normal : size.small
-        var table dolTbl = table.new(position.top_right, 1, 4, border_width = 1)
+        var table dolTbl = table.new(position.top_right, 1, 5, border_width = 1)
         table.set_position(dolTbl, f_tablePos(dolBanPos))
-        table.clear(dolTbl, 0, 0, 0, 3)
+        table.clear(dolTbl, 0, 0, 0, 4)
         table.cell(dolTbl, 0, 0, dolTxt, text_color = dirAccent, bgcolor = themePanelBg, text_size = dolSzB)
         int rowN = 1
         if showTugRow
             table.cell(dolTbl, 0, rowN, tugTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
+            rowN := rowN + 1
+        if showResistRow
+            table.cell(dolTbl, 0, rowN, resistTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
             rowN := rowN + 1
         if showEquiRow
             table.cell(dolTbl, 0, rowN, equiTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
