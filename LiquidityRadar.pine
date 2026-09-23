@@ -145,6 +145,10 @@ projETA     = input.bool(true,  "ETA to 🎯 target (time projection)", tooltip 
 projEqui    = input.bool(true,  "Equilibrium / range-state (Prem·EQ·Disc)", tooltip = "Shows where price sits in the current dealing range: Premium (upper), Equilibrium (~50%), or Discount (lower). Crossing equilibrium toward a pool is a continuation tell. Adds a range-state row to the banner.", group = G_DOL)
 projConfMom = input.bool(true,  "Confidence momentum ▲▼", tooltip = "Marks whether each level's confidence % is RISING or FALLING versus the previous bar. A strengthening magnet (▲) is a firming draw; a fading one (▼) warns of rejection. Appended to the per-level %.", group = G_DOL)
 projStacked = input.bool(true,  "Stacked-agreement flag ⭐", tooltip = "Flags a level where multiple independent signals align — DOL bias side + primary magnet + an overlapping order block / FVG. 3+ agreeing signals is the highest-conviction projection. Adds ⭐ to that level.", group = G_DOL)
+// --- de-skew: stop a level price is CURRENTLY forming/sitting on from inflating confidence ---
+projLiveSess = input.bool(true, "Exclude forming session H/L from magnet", tooltip = "A still-forming session high/low tracks price in real time, so it sits ~0 distance away and unfairly dominates the confidence % (price 'chasing' a level it is itself creating). When on, the CURRENT session's extreme still draws as a line but takes no magnet / confidence role until the session closes or price pulls away — it becomes real resting liquidity, then re-enters the pull.", group = G_DOL)
+projDistFloor = input.bool(true, "Distance floor (ignore levels hugging price)", tooltip = "General safety net: any level within the floor distance of price contributes ~no pull and no confidence %, since you can't be 'drawn' to where price already is. Catches the session case and any other level price is sitting on.", group = G_DOL)
+projDistFloorATR = input.float(0.12, "  Distance floor (× ATR)", minval = 0.0, maxval = 1.0, step = 0.02, tooltip = "How close (in ATRs) a level must be to price before it's treated as 'already here' and excluded from the magnet pool. 0 = disable.", group = G_DOL)
 
 // -----------------------------------------------------------------------------
 // INPUTS — STYLE
@@ -339,11 +343,16 @@ f_sessHL(bool active, string sess) =>
                 lo := na
                 loCarried := false
     prevIn := inS
-    [hi, lo, hiCarried, loCarried]
+    // "forming" = we're inside this session AND the current bar is at/making the extreme.
+    // A forming extreme is not resting liquidity yet (price is defining it in real time),
+    // so it should NOT act as a DOL magnet / carry a confidence % (it would just chase price).
+    bool hiForming = active and inS and not na(hi) and high >= hi
+    bool loForming = active and inS and not na(lo) and low  <= lo
+    [hi, lo, hiCarried, loCarried, hiForming, loForming]
 
-[asiaH, asiaL, asiaHc, asiaLc] = f_sessHL(showAsia, asiaSess)
-[londH, londL, londHc, londLc] = f_sessHL(showLond, londSess)
-[nyH,   nyL,   nyHc,   nyLc]   = f_sessHL(showNY,   nySess)
+[asiaH, asiaL, asiaHc, asiaLc, asiaHf, asiaLf] = f_sessHL(showAsia, asiaSess)
+[londH, londL, londHc, londLc, londHf, londLf] = f_sessHL(showLond, londSess)
+[nyH,   nyL,   nyHc,   nyLc,   nyHf,   nyLf]   = f_sessHL(showNY,   nySess)
 
 // -----------------------------------------------------------------------------
 // SWINGS + HTF SWINGS
@@ -783,8 +792,10 @@ var lv_side = array.new<int>()
 var lv_pull = array.new<float>()   // per-level DOL pull (proximity-weighted gravity)
 var lv_qual = array.new<float>()   // per-level distance-neutral magnet quality
 var lv_inwin = array.new<bool>()   // is this level within the N-nearest-each-side confidence window
+var lv_nomag = array.new<bool>()   // true = level draws but takes NO DOL magnet / confidence role
 
-f_addLevel(bool active, float price, string name, color col, string emo, int birthBar, int side) =>
+// variant that can flag a level as "no magnet" (still drawn, but excluded from the DOL pull)
+f_addLevelM(bool active, float price, string name, color col, string emo, int birthBar, int side, bool noMagnet) =>
     if masterOn and active and not na(price) and f_inCompactRange(price)
         array.push(lv_price, price)
         array.push(lv_name, name)
@@ -792,6 +803,11 @@ f_addLevel(bool active, float price, string name, color col, string emo, int bir
         array.push(lv_emo, emo)
         array.push(lv_birth, birthBar)
         array.push(lv_side, side)
+        array.push(lv_nomag, noMagnet)
+
+// convenience wrapper: a normal level always takes a magnet role
+f_addLevel(bool active, float price, string name, color col, string emo, int birthBar, int side) =>
+    f_addLevelM(active, price, name, col, emo, birthBar, side, false)
 
 // confluence score for a price band [loB..hiB]
 f_confScore(float mid, float loB, float hiB, int members) =>
@@ -970,6 +986,7 @@ if barstate.islast
     array.clear(lv_pull)
     array.clear(lv_qual)
     array.clear(lv_inwin)
+    array.clear(lv_nomag)
     array.clear(cm_keysNow)          // fresh confidence-momentum snapshot this bar
     array.clear(cm_valsNow)
 
@@ -980,12 +997,12 @@ if barstate.islast
     f_addLevel(showPMHL, pmhM,   "PMH",     colBull, emoPrev, b_pmh,  1)
     f_addLevel(showPMHL, pmlM,   "PML",     colBear, emoPrev, b_pml, -1)
     f_addLevel(showDO,   dOpen,  "D.Open",  colSess, emoPrev, b_do,   0)
-    f_addLevel(showAsia, asiaH,  f_sessName("Asia H", asiaHc),   colSess, emoSess, b_ah,   1)
-    f_addLevel(showAsia, asiaL,  f_sessName("Asia L", asiaLc),   colSess, emoSess, b_al,  -1)
-    f_addLevel(showLond, londH,  f_sessName("London H", londHc), colSess, emoSess, b_lh,   1)
-    f_addLevel(showLond, londL,  f_sessName("London L", londLc), colSess, emoSess, b_ll,  -1)
-    f_addLevel(showNY,   nyH,    f_sessName("NY H", nyHc),       colSess, emoSess, b_nh,   1)
-    f_addLevel(showNY,   nyL,    f_sessName("NY L", nyLc),       colSess, emoSess, b_nl,  -1)
+    f_addLevelM(showAsia, asiaH,  f_sessName("Asia H", asiaHc),   colSess, emoSess, b_ah,   1, projLiveSess and asiaHf)
+    f_addLevelM(showAsia, asiaL,  f_sessName("Asia L", asiaLc),   colSess, emoSess, b_al,  -1, projLiveSess and asiaLf)
+    f_addLevelM(showLond, londH,  f_sessName("London H", londHc), colSess, emoSess, b_lh,   1, projLiveSess and londHf)
+    f_addLevelM(showLond, londL,  f_sessName("London L", londLc), colSess, emoSess, b_ll,  -1, projLiveSess and londLf)
+    f_addLevelM(showNY,   nyH,    f_sessName("NY H", nyHc),       colSess, emoSess, b_nh,   1, projLiveSess and nyHf)
+    f_addLevelM(showNY,   nyL,    f_sessName("NY L", nyLc),       colSess, emoSess, b_nl,  -1, projLiveSess and nyLf)
     if showSwing
         if array.size(swHi) > 0
             for si = 0 to array.size(swHi) - 1
@@ -1014,42 +1031,53 @@ if barstate.islast
     if nl > 0
         float sensK = dolSens == "High" ? 2.0 : dolSens == "Low" ? 0.5 : 1.0
         float atrU  = math.max(nz(atr), syminfo.mintick)
-        // pass 1: pull/qual per level + DOL bias & 🎯 magnet (over ALL levels, unchanged)
+        // pass 1: pull/qual per level + DOL bias & 🎯 magnet.
+        // Excluded levels (forming session extreme, or hugging price under the distance
+        // floor) still DRAW but contribute zero pull/qual — they take no magnet, no bias
+        // tilt, and no confidence %, so a level price is sitting on can't inflate the score.
         for k = 0 to nl - 1
             float pk = array.get(lv_price, k)
             string nk = array.get(lv_name, k)
             int   bk = array.get(lv_birth, k)
-            [pull, qual] = f_pull(pk, nk, bk, sensK, atrU)
+            bool  floorHit = projDistFloor and projDistFloorATR > 0 and (math.abs(pk - close) < projDistFloorATR * atrU)
+            bool  excl = array.get(lv_nomag, k) or floorHit
+            array.set(lv_nomag, k, excl)   // fold the dynamic floor in so pass 2 + render can read it
+            [rawPull, rawQual] = f_pull(pk, nk, bk, sensK, atrU)
+            float pull = excl ? 0.0 : rawPull
+            float qual = excl ? 0.0 : rawQual
             array.push(lv_pull, pull)
             array.push(lv_qual, qual)
             array.push(lv_inwin, false)
-            if pk >= close
-                bslStrength := bslStrength + pull
-                if pull > bslTopPull
-                    bslTopPull  := pull
-                    bslTopPrice := pk
-            else
-                sslStrength := sslStrength + pull
-                if pull > sslTopPull
-                    sslTopPull  := pull
-                    sslTopPrice := pk
+            if not excl
+                if pk >= close
+                    bslStrength := bslStrength + pull
+                    if pull > bslTopPull
+                        bslTopPull  := pull
+                        bslTopPrice := pk
+                else
+                    sslStrength := sslStrength + pull
+                    if pull > sslTopPull
+                        sslTopPull  := pull
+                        sslTopPrice := pk
         // pass 2: confidence window — mark the N nearest levels ABOVE and N BELOW price.
         // A level is in-window if fewer than N same-side levels sit strictly nearer to price.
         for k = 0 to nl - 1
-            float pk = array.get(lv_price, k)
-            bool  above = pk >= close
-            float dk = math.abs(pk - close)
-            int nearer = 0
-            for j = 0 to nl - 1
-                if j != k
-                    float pj = array.get(lv_price, j)
-                    bool  aboveJ = pj >= close
-                    if aboveJ == above and math.abs(pj - close) < dk
-                        nearer := nearer + 1
-            if nearer < lvlConfWin
-                array.set(lv_inwin, k, true)
-                totalPull := totalPull + array.get(lv_pull, k)
-                totalQual := totalQual + array.get(lv_qual, k)
+            // excluded levels take no window slot and don't crowd out real levels
+            if not array.get(lv_nomag, k)
+                float pk = array.get(lv_price, k)
+                bool  above = pk >= close
+                float dk = math.abs(pk - close)
+                int nearer = 0
+                for j = 0 to nl - 1
+                    if j != k and not array.get(lv_nomag, j)
+                        float pj = array.get(lv_price, j)
+                        bool  aboveJ = pj >= close
+                        if aboveJ == above and math.abs(pj - close) < dk
+                            nearer := nearer + 1
+                if nearer < lvlConfWin
+                    array.set(lv_inwin, k, true)
+                    totalPull := totalPull + array.get(lv_pull, k)
+                    totalQual := totalQual + array.get(lv_qual, k)
 
     float dm_totalG = bslStrength + sslStrength
     float dm_liqBias = dm_totalG > 0 ? (bslStrength - sslStrength) / dm_totalG : 0.0
