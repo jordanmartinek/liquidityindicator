@@ -35,6 +35,9 @@ showPDHL = input.bool(true,  "Prev Day High/Low (PDH/PDL)",    group = G_PREV)
 showPWHL = input.bool(true,  "Prev Week High/Low (PWH/PWL)",   group = G_PREV)
 showPMHL = input.bool(false, "Prev Month High/Low (PMH/PML)",  group = G_PREV)
 showDO   = input.bool(false, "Daily Open",                     group = G_PREV)
+showWO   = input.bool(false, "Weekly Open",                    tooltip = "Current week's opening price — a key institutional reference; price often reverts to it. Feeds the clusters + DOL pull.", group = G_PREV)
+showMO   = input.bool(false, "Monthly Open",                   tooltip = "Current month's opening price — a major reference level. Feeds the clusters + DOL pull.", group = G_PREV)
+showMidO = input.bool(false, "NY Midnight Open (00:00 ET)",    tooltip = "Price at 00:00 New York time — the ICT 'true day' open. A high-signal intraday anchor for premium/discount. Feeds the clusters + DOL pull.", group = G_PREV)
 
 // -----------------------------------------------------------------------------
 // INPUTS — SESSIONS
@@ -63,6 +66,9 @@ removeSwept = input.bool(true, "Remove swept levels (swings, EQ, prev-period)", 
 showEQ     = input.bool(true,  "Equal Highs/Lows (EQH/EQL)",   group = G_STRUCT)
 eqTol      = input.float(0.35, "  EQ tolerance (× ATR)", minval = 0.0, step = 0.05, tooltip = "Two swing pivots count as an Equal High/Low if within this many ATRs of each other.", group = G_STRUCT)
 eqLookback = input.int(6, "  EQ lookback (pivots)", minval = 1, maxval = 30, tooltip = "How many recent same-type pivots to compare against when hunting equal highs/lows.", group = G_STRUCT)
+showRelEQ  = input.bool(true, "  Relative (near) Equal H/L", tooltip = "Also flag NEAR-equal highs/lows — pivots close but not within the strict EQ tolerance. Real stop-runs rarely line up to the tick; relative EQs (rEQH/rEQL) catch the softer clusters. Tagged distinctly and fed into the clusters/pull at a slightly lower weight than exact EQs.", group = G_STRUCT)
+relEqTol   = input.float(0.75, "    Relative EQ tolerance (× ATR)", minval = 0.0, step = 0.05, tooltip = "Wider band (in ATRs) for near-equal highs/lows. Should be larger than the strict EQ tolerance.", group = G_STRUCT)
+showBreaker = input.bool(true, "Breaker blocks (failed OB flips polarity)", tooltip = "When an order block is violated (price closes through it), it doesn't just vanish — it becomes a BREAKER: former demand flips to supply (and vice versa). Breakers are strong reaction zones; they feed the confluence score + resistance like order blocks.", group = G_STRUCT)
 // --- FVG ---
 showFVG    = input.bool(true,  "Fair Value Gaps (FVG)",        group = G_STRUCT)
 hideMitFVG = input.bool(true,  "  Remove invalidated FVGs",    group = G_STRUCT)
@@ -115,6 +121,10 @@ bigStrongLbl = input.bool(true, "Enlarge label for strong zones", group = G_CLUS
 showConf    = input.bool(true, "Confluence score on zones (0-100)", tooltip = "Rolls up stacked levels + order-block overlap + OTE-fib proximity + premium/discount extreme + round-number proximity into a 0-100 'how loaded is this zone' score. The OTE/premium-discount factors are computed from the live dealing range internally (not drawn on the chart).", group = G_CLUST)
 confMin     = input.int(0, "  Hide zones below score", minval = 0, maxval = 100, tooltip = "Only show cluster zones scoring at least this. 0 = show all.", group = G_CLUST)
 confRound   = input.float(0.0, "  Round-number step (price)", minval = 0.0, tooltip = "Adds confluence when a zone sits near a round-number multiple of this step (e.g. 50/100 indices, 1000 BTC). 0 = disable.", group = G_CLUST)
+confVWAP    = input.bool(true, "  VWAP proximity in confluence", tooltip = "Adds confluence when a level sits near the session VWAP — a heavily-defended fair-value reference. VWAP is used as a SCORING factor only (not drawn as its own magnet).", group = G_CLUST)
+showVP      = input.bool(false, "Volume Profile levels (POC / VAH / VAL)", tooltip = "Builds a rough volume profile over a lookback and adds the Point of Control (highest-volume price) and Value Area High/Low as levels. Acceptance-based levels (where volume traded), a different KIND of level from swing liquidity — they feed the clusters + DOL pull.", group = G_CLUST)
+vpLen       = input.int(240, "  VP lookback (bars)", minval = 20, maxval = 1000, tooltip = "How many recent bars to build the volume profile from.", group = G_CLUST)
+vpBins      = input.int(24, "  VP resolution (bins)", minval = 8, maxval = 60, tooltip = "Number of price buckets in the profile. More = finer POC/VA, slightly heavier.", group = G_CLUST)
 
 // -----------------------------------------------------------------------------
 // INPUTS — DRAW-ON-LIQUIDITY GAUGE
@@ -313,6 +323,65 @@ pwl   = request.security(syminfo.tickerid, "W", low[1],  lookahead = barmerge.lo
 pmh   = request.security(syminfo.tickerid, "M", high[1], lookahead = barmerge.lookahead_on)
 pml   = request.security(syminfo.tickerid, "M", low[1],  lookahead = barmerge.lookahead_on)
 dOpen = request.security(syminfo.tickerid, "D", open,    lookahead = barmerge.lookahead_on)
+wOpen = request.security(syminfo.tickerid, "W", open,    lookahead = barmerge.lookahead_on)
+mOpen = request.security(syminfo.tickerid, "M", open,    lookahead = barmerge.lookahead_on)
+// NY midnight open: capture price at the first bar of the New York (ET) day.
+var float midO = na
+bool newNYDay = ta.change(time("D", "0000-0000", "America/New_York")) != 0
+if newNYDay
+    midO := open
+// session VWAP (scoring factor only)
+vwapVal = ta.vwap(hlc3)
+
+// -----------------------------------------------------------------------------
+// VOLUME PROFILE — rough POC / Value Area over a lookback (computed on last bar)
+// -----------------------------------------------------------------------------
+var float vpPOC = na
+var float vpVAH = na
+var float vpVAL = na
+if showVP and barstate.islast
+    float hiP = ta.highest(high, vpLen)
+    float loP = ta.lowest(low, vpLen)
+    if not na(hiP) and not na(loP) and hiP > loP
+        float binW = (hiP - loP) / vpBins
+        var bins = array.new<float>()
+        array.clear(bins)
+        for bni = 0 to vpBins - 1
+            array.push(bins, 0.0)
+        // distribute each bar's volume into the bin covering its hlc3
+        for bk = 0 to vpLen - 1
+            float pxk = (high[bk] + low[bk] + close[bk]) / 3.0
+            float vk  = nz(volume[bk], 1.0)
+            int bidx = int(math.floor((pxk - loP) / binW))
+            bidx := math.max(0, math.min(vpBins - 1, bidx))
+            array.set(bins, bidx, array.get(bins, bidx) + vk)
+        // POC = highest-volume bin center; total for value-area
+        float totV = array.sum(bins)
+        int pocI = 0
+        float pocV = 0.0
+        for bni = 0 to vpBins - 1
+            if array.get(bins, bni) > pocV
+                pocV := array.get(bins, bni)
+                pocI := bni
+        vpPOC := loP + (pocI + 0.5) * binW
+        // expand around POC until ~70% of volume is captured -> value area
+        float acc = pocV
+        int lo_i = pocI
+        int hi_i = pocI
+        while acc < totV * 0.70 and (lo_i > 0 or hi_i < vpBins - 1)
+            float belowV = lo_i > 0 ? array.get(bins, lo_i - 1) : -1.0
+            float aboveV = hi_i < vpBins - 1 ? array.get(bins, hi_i + 1) : -1.0
+            if aboveV >= belowV and hi_i < vpBins - 1
+                hi_i := hi_i + 1
+                acc := acc + array.get(bins, hi_i)
+            else if lo_i > 0
+                lo_i := lo_i - 1
+                acc := acc + array.get(bins, lo_i)
+            else if hi_i < vpBins - 1
+                hi_i := hi_i + 1
+                acc := acc + array.get(bins, hi_i)
+        vpVAL := loP + lo_i * binW
+        vpVAH := loP + (hi_i + 1) * binW
 
 // -----------------------------------------------------------------------------
 // SESSIONS
@@ -452,45 +521,68 @@ while array.size(swLo) > swingHist
 // EQUAL HIGHS / LOWS — rolling-buffer detection
 // -----------------------------------------------------------------------------
 float eqTolPrice = nz(atr) * eqTol
+float relEqTolPrice = nz(atr) * relEqTol
 var pvHi  = array.new<float>()
 var pvLo  = array.new<float>()
 var eqHiA = array.new<float>()
 var eqHiB = array.new<int>()
 var eqLoA = array.new<float>()
 var eqLoB = array.new<int>()
+var reqHiA = array.new<float>()   // relative (near) equal highs
+var reqHiB = array.new<int>()
+var reqLoA = array.new<float>()   // relative (near) equal lows
+var reqLoB = array.new<int>()
 
 if showEQ and not na(ph)
     bool found = false
+    bool relFound = false
     float matched = na
+    float relMatched = na
     int hs = array.size(pvHi)
     if hs > 0
         int start = math.max(hs - eqLookback, 0)
         for qi = start to hs - 1
             float prevH = array.get(pvHi, qi)
-            if math.abs(ph - prevH) <= eqTolPrice
+            float d = math.abs(ph - prevH)
+            if d <= eqTolPrice
                 found := true
                 matched := math.max(ph, prevH)
+            else if showRelEQ and d <= relEqTolPrice
+                relFound := true
+                relMatched := math.max(ph, prevH)
     if found
         array.push(eqHiA, matched)
         array.push(eqHiB, bar_index - swingLen)
+    else if relFound
+        array.push(reqHiA, relMatched)
+        array.push(reqHiB, bar_index - swingLen)
     array.push(pvHi, ph)
     while array.size(pvHi) > 40
         array.shift(pvHi)
 
 if showEQ and not na(pl)
     bool found = false
+    bool relFound = false
     float matched = na
+    float relMatched = na
     int ls = array.size(pvLo)
     if ls > 0
         int start = math.max(ls - eqLookback, 0)
         for qi = start to ls - 1
             float prevL = array.get(pvLo, qi)
-            if math.abs(pl - prevL) <= eqTolPrice
+            float d = math.abs(pl - prevL)
+            if d <= eqTolPrice
                 found := true
                 matched := math.min(pl, prevL)
+            else if showRelEQ and d <= relEqTolPrice
+                relFound := true
+                relMatched := math.min(pl, prevL)
     if found
         array.push(eqLoA, matched)
         array.push(eqLoB, bar_index - swingLen)
+    else if relFound
+        array.push(reqLoA, relMatched)
+        array.push(reqLoB, bar_index - swingLen)
     array.push(pvLo, pl)
     while array.size(pvLo) > 40
         array.shift(pvLo)
@@ -517,6 +609,29 @@ while array.size(eqHiA) > swingHist
 while array.size(eqLoA) > swingHist
     array.shift(eqLoA)
     array.shift(eqLoB)
+// relative-EQ maintenance (sweep removal + size cap), mirroring exact EQ
+if array.size(reqHiA) > 0
+    int i = 0
+    while i < array.size(reqHiA)
+        if removeSwept and high > array.get(reqHiA, i)
+            array.remove(reqHiA, i)
+            array.remove(reqHiB, i)
+        else
+            i += 1
+if array.size(reqLoA) > 0
+    int i = 0
+    while i < array.size(reqLoA)
+        if removeSwept and low < array.get(reqLoA, i)
+            array.remove(reqLoA, i)
+            array.remove(reqLoB, i)
+        else
+            i += 1
+while array.size(reqHiA) > swingHist
+    array.shift(reqHiA)
+    array.shift(reqHiB)
+while array.size(reqLoA) > swingHist
+    array.shift(reqLoA)
+    array.shift(reqLoB)
 
 // -----------------------------------------------------------------------------
 // BIRTH-BAR TRACKING (for age-scaled extension)
@@ -525,6 +640,7 @@ var int b_pdh = na, var int b_pdl = na
 var int b_pwh = na, var int b_pwl = na
 var int b_pmh = na, var int b_pml = na
 var int b_do  = na
+var int b_wo  = na, var int b_mo = na, var int b_mid = na
 var int b_ah  = na, var int b_al = na
 var int b_lh  = na, var int b_ll = na
 var int b_nh  = na, var int b_nl = na
@@ -535,6 +651,9 @@ b_pwl := (na(b_pwl) or pwl != pwl[1]) ? bar_index : b_pwl
 b_pmh := (na(b_pmh) or pmh != pmh[1]) ? bar_index : b_pmh
 b_pml := (na(b_pml) or pml != pml[1]) ? bar_index : b_pml
 b_do  := (na(b_do)  or dOpen != dOpen[1]) ? bar_index : b_do
+b_wo  := (na(b_wo)  or wOpen != wOpen[1]) ? bar_index : b_wo
+b_mo  := (na(b_mo)  or mOpen != mOpen[1]) ? bar_index : b_mo
+b_mid := (na(b_mid) or midO  != midO[1])  ? bar_index : b_mid
 b_ah  := (na(b_ah)  or asiaH != asiaH[1]) ? bar_index : b_ah
 b_al  := (na(b_al)  or asiaL != asiaL[1]) ? bar_index : b_al
 b_lh  := (na(b_lh)  or londH != londH[1]) ? bar_index : b_lh
@@ -731,6 +850,11 @@ var obTop  = array.new<float>()
 var obBot  = array.new<float>()
 var obBull = array.new<bool>()
 var obBirth = array.new<int>()
+// breaker blocks: a violated OB with flipped polarity (former demand -> supply, etc.)
+var brkTop  = array.new<float>()
+var brkBot  = array.new<float>()
+var brkBull = array.new<bool>()   // polarity AFTER the flip
+var brkBirth = array.new<int>()
 if showOB and disp and close > open and (sfpLong or (close > high[1]))
     array.push(obTop, high[1])
     array.push(obBot, low[1])
@@ -747,6 +871,12 @@ if array.size(obTop) > 0
         bool bull = array.get(obBull, oi)
         bool dead = bull ? (close < array.get(obBot, oi)) : (close > array.get(obTop, oi))
         if dead
+            // on violation, convert to a breaker with flipped polarity (if enabled)
+            if showBreaker
+                array.push(brkTop, array.get(obTop, oi))
+                array.push(brkBot, array.get(obBot, oi))
+                array.push(brkBull, not bull)
+                array.push(brkBirth, bar_index)
             array.remove(obTop, oi)
             array.remove(obBot, oi)
             array.remove(obBull, oi)
@@ -758,6 +888,24 @@ while array.size(obTop) > obKeep
     array.shift(obBot)
     array.shift(obBull)
     array.shift(obBirth)
+// breaker maintenance: a breaker dies when price closes back through it (opposite of OB)
+if array.size(brkTop) > 0
+    int bi = 0
+    while bi < array.size(brkTop)
+        bool bbull = array.get(brkBull, bi)
+        bool bdead = bbull ? (close < array.get(brkBot, bi)) : (close > array.get(brkTop, bi))
+        if bdead
+            array.remove(brkTop, bi)
+            array.remove(brkBot, bi)
+            array.remove(brkBull, bi)
+            array.remove(brkBirth, bi)
+        else
+            bi += 1
+while array.size(brkTop) > obKeep
+    array.shift(brkTop)
+    array.shift(brkBot)
+    array.shift(brkBull)
+    array.shift(brkBirth)
 
 // -----------------------------------------------------------------------------
 // COLLECT → CLUSTER → RENDER  (last bar only)
@@ -876,6 +1024,19 @@ f_confScore(float mid, float loB, float hiB, int members) =>
         if math.abs(mid - nearest) <= tol
             score := score + 10.0
             parts := parts + "round "
+    // VWAP proximity — a defended fair-value reference (scoring factor only)
+    if confVWAP and not na(vwapVal) and math.abs(mid - vwapVal) <= tol
+        score := score + 10.0
+        parts := parts + "VWAP "
+    // breaker block overlap — flipped OB, strong reaction zone
+    if showBreaker and array.size(brkTop) > 0
+        bool brkHit = false
+        for bri = 0 to array.size(brkTop) - 1
+            if hiB >= array.get(brkBot, bri) and loB <= array.get(brkTop, bri)
+                brkHit := true
+        if brkHit
+            score := score + 14.0
+            parts := parts + "brk "
     int s = int(math.min(math.round(score), 100))
     [s, parts]
 
@@ -895,14 +1056,26 @@ f_pull(float pk, string nk, int bk, float sensK, float atrU) =>
     // type weight — EQ (engineered liquidity) now ranks at the TOP with monthly/HTF
     float typeW = 1.0
     if dolUseType
-        if str.contains(nk, "EQ")
-            typeW := 2.4
+        if str.contains(nk, "rEQ")
+            typeW := 1.7                 // relative (near) equal H/L — softer than exact EQ
+        else if str.contains(nk, "EQ")
+            typeW := 2.4                 // exact equal H/L — engineered liquidity, top
         else if str.contains(nk, "PMH") or str.contains(nk, "PML")
             typeW := 2.2
+        else if str.contains(nk, "POC")
+            typeW := 2.1                 // volume point of control — heavy acceptance
         else if str.contains(nk, "PWH") or str.contains(nk, "PWL")
             typeW := 1.9
+        else if str.contains(nk, "M.Open") or str.contains(nk, "W.Open")
+            typeW := 1.8                 // monthly / weekly opens — institutional refs
+        else if str.contains(nk, "VAH") or str.contains(nk, "VAL")
+            typeW := 1.7                 // value-area edges
+        else if str.contains(nk, "Breaker")
+            typeW := 1.7                 // flipped OB — strong reaction zone
         else if str.contains(nk, "PDH") or str.contains(nk, "PDL")
             typeW := 1.6
+        else if str.contains(nk, "Midnight")
+            typeW := 1.4                 // NY midnight open
         else if str.contains(nk, "London") or str.contains(nk, "NY") or str.contains(nk, "Asia")
             typeW := 1.2
         typeW := 1.0 + (typeW - 1.0) * sensK
@@ -1024,6 +1197,9 @@ if barstate.islast
     f_addLevel(showPMHL, pmhM,   "PMH",     colBull, emoPrev, b_pmh,  1)
     f_addLevel(showPMHL, pmlM,   "PML",     colBear, emoPrev, b_pml, -1)
     f_addLevel(showDO,   dOpen,  "D.Open",  colSess, emoPrev, b_do,   0)
+    f_addLevel(showWO,   wOpen,  "W.Open",  colSess, emoPrev, b_wo,   0)
+    f_addLevel(showMO,   mOpen,  "M.Open",  colSess, emoPrev, b_mo,   0)
+    f_addLevel(showMidO, midO,   "Midnight",colSess, emoPrev, b_mid,  0)
     f_addLevelM(showAsia, asiaH,  f_sessName("Asia H", asiaHc),   colSess, emoSess, b_ah,   1, projLiveSess and asiaHf)
     f_addLevelM(showAsia, asiaL,  f_sessName("Asia L", asiaLc),   colSess, emoSess, b_al,  -1, projLiveSess and asiaLf)
     f_addLevelM(showLond, londH,  f_sessName("London H", londHc), colSess, emoSess, b_lh,   1, projLiveSess and londHf)
@@ -1044,6 +1220,22 @@ if barstate.islast
         if array.size(eqLoA) > 0
             for ei = 0 to array.size(eqLoA) - 1
                 f_addLevel(true, array.get(eqLoA, ei), "EQL", colBear, emoLiq, array.get(eqLoB, ei), -1)
+    if showEQ and showRelEQ
+        if array.size(reqHiA) > 0
+            for ei = 0 to array.size(reqHiA) - 1
+                f_addLevel(true, array.get(reqHiA, ei), "rEQH", colBull, emoLiq, array.get(reqHiB, ei), 1)
+        if array.size(reqLoA) > 0
+            for ei = 0 to array.size(reqLoA) - 1
+                f_addLevel(true, array.get(reqLoA, ei), "rEQL", colBear, emoLiq, array.get(reqLoB, ei), -1)
+    if showBreaker and array.size(brkTop) > 0
+        for bri = 0 to array.size(brkTop) - 1
+            float bmid = (array.get(brkTop, bri) + array.get(brkBot, bri)) / 2.0
+            bool  bbl  = array.get(brkBull, bri)
+            f_addLevel(true, bmid, bbl ? "Breaker▲" : "Breaker▼", bbl ? colBull : colBear, emoLiq, array.get(brkBirth, bri), bbl ? 1 : -1)
+    if showVP
+        f_addLevel(not na(vpPOC), vpPOC, "POC", colZone, emoPrev, na, 0)
+        f_addLevel(not na(vpVAH), vpVAH, "VAH", colZone, emoPrev, na, 1)
+        f_addLevel(not na(vpVAL), vpVAL, "VAL", colZone, emoPrev, na, -1)
 
     // ---- DOL gravity: pull = distance x type x age, per side ----
     float bslStrength = 0.0
