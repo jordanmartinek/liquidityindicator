@@ -205,12 +205,30 @@ ghostOpacity = input.int(70, "Ghost opacity (0 solid, 100 invisible)", minval = 
 ghostLife   = input.int(120, "Ghost lifetime (bars)", minval = 1, maxval = 3000, tooltip = "How many bars a ghost lingers after the level was swept before it disappears. Increase if ghosts vanish before you notice them.", group = G_GHOST)
 ghostCol    = input.color(color.new(#b0bec5, 0), "Ghost line color", group = G_GHOST)
 ghostKeep   = input.int(60, "Max ghosts kept", minval = 1, maxval = 300, tooltip = "Cap on the number of ghost lines retained at once (oldest dropped first).", group = G_GHOST)
+// --- tested / virgin state: has price already PROBED a level (wicked in, not swept through)? ---
+showTested   = input.bool(true, "Flag tested levels (probed, not swept)", tooltip = "Marks levels a wick has already PROBED into (reacted off) but not fully swept — 'used' liquidity vs a virgin untouched level. Tested levels get a ✓ and a dotted/dimmed outline; untouched ones stay solid. (Fully swept levels are removed already.)", group = G_GHOST)
+testDepthATR = input.float(0.10, "  Tested probe depth (× ATR)", minval = 0.02, maxval = 1.0, step = 0.02, tooltip = "How far a wick must poke INTO a level (in ATRs) to count as tested. Small = only genuine probes register; larger = grazes count too.", group = G_GHOST)
+testDiscount = input.bool(true, "  Discount tested levels in scoring", tooltip = "A tested level is a slightly weaker magnet (some of its liquidity was already taken / defended), so reduce its DOL pull. Visual-only if this is off.", group = G_GHOST)
+testDiscAmt  = input.float(0.25, "    Tested pull discount", minval = 0.0, maxval = 0.9, step = 0.05, tooltip = "How much to cut a tested level's pull (0.25 = -25%). 0 = no discount.", group = G_GHOST)
+testKeep     = input.int(120, "  Max tested levels tracked", minval = 10, maxval = 500, group = G_GHOST)
 
 // -----------------------------------------------------------------------------
 // HELPERS
 // -----------------------------------------------------------------------------
 f_lineStyle() =>
     lineStyleI == "Dashed" ? line.style_dashed : lineStyleI == "Dotted" ? line.style_dotted : line.style_solid
+
+// tested-state memory: prices that a wick has PROBED into (persists across the per-bar
+// level rebuild). Populated in the capture block below; read at scoring + render time.
+var testedP = array.new<float>()
+f_isTested(float price, float atrU) =>
+    bool hit = false
+    if showTested and array.size(testedP) > 0
+        float tol = math.max(atrU * 0.10, syminfo.mintick)
+        for ti = 0 to array.size(testedP) - 1
+            if math.abs(array.get(testedP, ti) - price) <= tol
+                hit := true
+    hit
 
 f_labelSize() =>
     labelSize == "Tiny" ? size.tiny : labelSize == "Normal" ? size.normal : size.small
@@ -828,6 +846,81 @@ if showSFP and array.size(lvLoNow) > 0
 bool sfpShort = showSFP and not na(sweptHiLvl) and volOK
 bool sfpLong  = showSFP and not na(sweptLoLvl) and volOK
 
+// -----------------------------------------------------------------------------
+// TESTED-STATE CAPTURE — a wick PROBES a level (enters within depth×ATR) but does NOT
+// sweep through it. Recorded persistently by price (deduped/capped), independent of the
+// per-bar level rebuild. Fully-swept levels are removed elsewhere, so this is the
+// "touched but still standing" middle state.
+// -----------------------------------------------------------------------------
+if showTested
+    float tDepth = math.max(nz(atr) * testDepthATR, syminfo.mintick)
+    float tDedup = math.max(nz(atr) * 0.05, syminfo.mintick)
+    tHiNow = array.new<float>()
+    tLoNow = array.new<float>()
+    if not na(pdhM)
+        array.push(tHiNow, pdhM)
+    if not na(pwhM)
+        array.push(tHiNow, pwhM)
+    if not na(pmhM)
+        array.push(tHiNow, pmhM)
+    if not na(pdlM)
+        array.push(tLoNow, pdlM)
+    if not na(pwlM)
+        array.push(tLoNow, pwlM)
+    if not na(pmlM)
+        array.push(tLoNow, pmlM)
+    if not na(asiaH)
+        array.push(tHiNow, asiaH)
+    if not na(londH)
+        array.push(tHiNow, londH)
+    if not na(nyH)
+        array.push(tHiNow, nyH)
+    if not na(asiaL)
+        array.push(tLoNow, asiaL)
+    if not na(londL)
+        array.push(tLoNow, londL)
+    if not na(nyL)
+        array.push(tLoNow, nyL)
+    if array.size(swHi) > 0
+        for si = 0 to array.size(swHi) - 1
+            array.push(tHiNow, array.get(swHi, si))
+    if array.size(swLo) > 0
+        for si = 0 to array.size(swLo) - 1
+            array.push(tLoNow, array.get(swLo, si))
+    if array.size(eqHiA) > 0
+        for si = 0 to array.size(eqHiA) - 1
+            array.push(tHiNow, array.get(eqHiA, si))
+    if array.size(eqLoA) > 0
+        for si = 0 to array.size(eqLoA) - 1
+            array.push(tLoNow, array.get(eqLoA, si))
+    // highs: wick pokes up to within tDepth BELOW the level but doesn't reach it (no sweep)
+    if array.size(tHiNow) > 0
+        for si = 0 to array.size(tHiNow) - 1
+            float lv = array.get(tHiNow, si)
+            if high >= lv - tDepth and high < lv
+                bool dup = false
+                if array.size(testedP) > 0
+                    for dj = 0 to array.size(testedP) - 1
+                        if math.abs(array.get(testedP, dj) - lv) <= tDedup
+                            dup := true
+                if not dup
+                    array.push(testedP, lv)
+    // lows: wick pokes down to within tDepth ABOVE the level but doesn't reach it
+    if array.size(tLoNow) > 0
+        for si = 0 to array.size(tLoNow) - 1
+            float lv = array.get(tLoNow, si)
+            if low <= lv + tDepth and low > lv
+                bool dup = false
+                if array.size(testedP) > 0
+                    for dj = 0 to array.size(testedP) - 1
+                        if math.abs(array.get(testedP, dj) - lv) <= tDedup
+                            dup := true
+                if not dup
+                    array.push(testedP, lv)
+    // cap (oldest dropped first)
+    while array.size(testedP) > testKeep
+        array.shift(testedP)
+
 // signal markers — capped rolling pool so they never exhaust the label budget
 var mk_labels = array.new<label>()
 f_mark(int x, float y, string txt, string yl, string stl, color col, color tcol, string sz) =>
@@ -1093,8 +1186,12 @@ f_pull(float pk, string nk, int bk, float sensK, float atrU) =>
     if dolConfW
         [cs, cp] = f_confScore(pk, pk - atrU * 0.05, pk + atrU * 0.05, 1)
         confW := 1.0 + cs / 100.0    // 1.0 .. 2.0
-    float qual = typeW * ageW * freshW * confW      // distance-neutral magnet quality
-    float pull = distW * qual                        // proximity-weighted gravity
+    // tested discount — a level already probed is a slightly weaker magnet
+    float testW = 1.0
+    if testDiscount and f_isTested(pk, atrU)
+        testW := 1.0 - testDiscAmt
+    float qual = typeW * ageW * freshW * confW * testW   // distance-neutral magnet quality
+    float pull = distW * qual                             // proximity-weighted gravity
     [pull, qual]
 
 
@@ -1419,8 +1516,13 @@ if barstate.islast
                 bool sideAgree = (dolDrawUp and p >= close) or (not dolDrawUp and p < close)
                 string stackTag = (projStacked and lInWin and isTop and sideAgree and f_hasOBFVG(p - atrUt * 0.05, p + atrUt * 0.05)) ? " ⭐" : ""
                 string confLvlTag = (showLvlConf and lInWin) ? ((isTop ? " 🎯" : " ") + str.tostring(math.round(lp)) + "%" + momTag + stackTag) : ""
-                string full = tier + (emo == "None" ? "" : emo + " ") + array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick) + confLvlTag + f_countdown(p)
-                line ln = line.new(bar_index, p, bar_index + ext, p, color = c, width = lineWidth, style = f_lineStyle())
+                // tested/virgin: probed levels get a ✓ + dotted, dimmed line (still standing, just 'used')
+                bool lTested = f_isTested(p, atrUt)
+                string testTag = (showTested and lTested) ? " ✓" : ""
+                color cLine = (showTested and lTested) ? color.new(c, 55) : c
+                string lStyle = (showTested and lTested) ? line.style_dotted : f_lineStyle()
+                string full = tier + (emo == "None" ? "" : emo + " ") + array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick) + confLvlTag + testTag + f_countdown(p)
+                line ln = line.new(bar_index, p, bar_index + ext, p, color = cLine, width = lineWidth, style = lStyle)
                 color soloBg  = outlineTags ? c : color.new(c, 85)
                 color soloTxt = outlineTags ? clustLblTxt : c
                 label lb = label.new(bar_index + ext, p, full, style = label.style_label_left, color = soloBg, textcolor = soloTxt, size = f_labelSize())
@@ -1463,7 +1565,13 @@ if barstate.islast
                     bool zSideAgree = (dolDrawUp and mid >= close) or (not dolDrawUp and mid < close)
                     string zStackTag = (projStacked and zInWin and zTop and zSideAgree and f_hasOBFVG(minP - pad, maxP + pad)) ? " ⭐" : ""
                     string lvlConfTag = (showLvlConf and zInWin) ? ((zTop ? "  🎯" : "  →") + str.tostring(math.round(zPull)) + "%" + zMomTag + zStackTag) : ""
-                    string full = tier + strength + (sideTag == "" ? "" : " " + sideTag) + "  " + names + "  " + str.tostring(mid, format.mintick) + confTag + lvlConfTag + f_countdown(mid)
+                    // tested/virgin zone: dashed hollow border + ✓ when price has probed the zone
+                    bool zTested = showTested and (f_isTested(mid, atrUz) or f_isTested(minP, atrUz) or f_isTested(maxP, atrUz))
+                    if zTested
+                        box.set_border_style(bx, line.style_dashed)
+                        box.set_bgcolor(bx, color.new(zbase, 92))
+                    string testTagZ = zTested ? "  ✓" : ""
+                    string full = tier + strength + (sideTag == "" ? "" : " " + sideTag) + "  " + names + "  " + str.tostring(mid, format.mintick) + confTag + lvlConfTag + testTagZ + f_countdown(mid)
                     color lblBg  = outlineTags ? zbase : color.new(#1e222d, 10)
                     label lb = label.new(bar_index + ext, mid, full, style = label.style_label_left, color = lblBg, textcolor = clustLblTxt, size = f_strongSize(members))
                     array.push(pool_boxes, bx)
