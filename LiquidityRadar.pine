@@ -138,6 +138,13 @@ dolFreshW  = input.bool(true, "Freshness premium (untested pulls harder)", toolt
 showLvlConf = input.bool(true, "Show per-level confidence % (target likelihood)", tooltip = "Each level/zone gets a 0-100 score for how likely price heads THERE next. The single most-likely target is flagged 🎯.", group = G_DOL)
 lvlConfMode = input.string("Magnet quality", "  Confidence % basis", options = ["Magnet quality","Raw pull"], tooltip = "Magnet quality (recommended): distance is removed so the % reflects how STRONG a magnet each level is for its distance — a far but heavy pool (equal highs + order block + old + fresh) can out-score a near lone swing. Raw pull (legacy): the % is each level's share of the proximity-weighted gravity, so the nearest level almost always dominates (obvious, less useful). The 🎯 still marks the nearest strongest pull in both modes.", group = G_DOL)
 lvlConfWin  = input.int(5, "  Confidence window (levels each side)", minval = 1, maxval = 50, tooltip = "Only the N nearest levels ABOVE and N nearest BELOW price get a confidence %, and the % is normalized over just those levels. Keeps intraday reads focused on the levels price can realistically reach instead of diluting the % across far higher-timeframe levels. Lower = tighter/more decisive; higher = wider context. 🎯 still uses all levels.", group = G_DOL)
+// --- projection pass (all reuse existing pull / velocity / OB-FVG / range machinery) ---
+projClear   = input.bool(true,  "Path-clearance on 🎯 target", tooltip = "Discounts the primary magnet by what stands between price and it: opposing order blocks / FVGs / strong levels in the path lower a 0-100 clearance score. A clear runway reads high; a blocked path reads low. Shown as 🛣️ on the target row.", group = G_DOL)
+projClearW  = input.float(1.0, "  Clearance sensitivity", minval = 0.0, maxval = 3.0, step = 0.25, tooltip = "How hard each obstacle in the path cuts the clearance score. 0 = ignore obstacles; higher = a single blocker matters more.", group = G_DOL)
+projETA     = input.bool(true,  "ETA to 🎯 target (time projection)", tooltip = "Uses recent price velocity to project HOW LONG until the primary magnet is reached (bars or clock time, per the Countdown setting). Adds a ⏱ estimate to the target row.", group = G_DOL)
+projEqui    = input.bool(true,  "Equilibrium / range-state (Prem·EQ·Disc)", tooltip = "Shows where price sits in the current dealing range: Premium (upper), Equilibrium (~50%), or Discount (lower). Crossing equilibrium toward a pool is a continuation tell. Adds a range-state row to the banner.", group = G_DOL)
+projConfMom = input.bool(true,  "Confidence momentum ▲▼", tooltip = "Marks whether each level's confidence % is RISING or FALLING versus the previous bar. A strengthening magnet (▲) is a firming draw; a fading one (▼) warns of rejection. Appended to the per-level %.", group = G_DOL)
+projStacked = input.bool(true,  "Stacked-agreement flag ⭐", tooltip = "Flags a level where multiple independent signals align — DOL bias side + primary magnet + an overlapping order block / FVG. 3+ agreeing signals is the highest-conviction projection. Adds ⭐ to that level.", group = G_DOL)
 
 // -----------------------------------------------------------------------------
 // INPUTS — STYLE
@@ -871,6 +878,86 @@ f_pull(float pk, string nk, int bk, float sensK, float atrU) =>
     float pull = distW * qual                        // proximity-weighted gravity
     [pull, qual]
 
+// FVG state (declared here so projection helpers below can read it; populated later)
+var fvgBoxes  = array.new<box>()
+var fvgIsBull = array.new<bool>()
+
+// ---- projection helpers (reuse OB/FVG/level state; no new data feeds) ----
+// Path-clearance: 0..100 for how UNOBSTRUCTED the route from price -> target is.
+// Every opposing order block / FVG / strong level strictly between the two prices
+// is an obstacle that cuts the score. A clear runway ≈ 100; a blocked path ≈ low.
+f_pathClear(float fromP, float toP, float atrU) =>
+    float lo = math.min(fromP, toP)
+    float hi = math.max(fromP, toP)
+    float pad = atrU * 0.05
+    int obstacles = 0
+    // order blocks whose zone falls between price and target
+    if array.size(obTop) > 0
+        for oi = 0 to array.size(obTop) - 1
+            float ot = array.get(obTop, oi)
+            float ob = array.get(obBot, oi)
+            if ot >= lo - pad and ob <= hi + pad and not (ot >= hi and ob >= hi) and not (ot <= lo and ob <= lo)
+                obstacles := obstacles + 1
+    // fair value gaps between price and target
+    if array.size(fvgBoxes) > 0
+        for fi = 0 to array.size(fvgBoxes) - 1
+            float ft = box.get_top(array.get(fvgBoxes, fi))
+            float fb = box.get_bottom(array.get(fvgBoxes, fi))
+            if ft >= lo - pad and fb <= hi + pad
+                obstacles := obstacles + 1
+    float clr = 100.0 * math.pow(0.72, projClearW * obstacles)
+    [math.round(clr), obstacles]
+
+// ETA to a target price from recent velocity (independent of the countdown toggle so the
+// projETA switch works on its own). Formats per the Countdown units setting.
+f_eta(float target) =>
+    string outTxt = ""
+    if nz(velocity) > 0 and not na(target)
+        float bars = math.abs(target - close) / velocity
+        if cdMode == "Bars"
+            outTxt := " ⏱≈" + str.tostring(math.round(bars)) + "b"
+        else
+            float secs = bars * secPerBar
+            outTxt := secs < 3600 ? (" ⏱≈" + str.tostring(math.round(secs / 60)) + "m") : (secs < 86400 ? (" ⏱≈" + str.tostring(math.round(secs / 3600)) + "h") : (" ⏱≈" + str.tostring(math.round(secs / 86400)) + "d"))
+    outTxt
+
+// Confidence momentum: remember each level's confidence % keyed by rounded price so we
+// can show ▲/▼ vs the previous bar. Two maps: *_prev is last bar's snapshot (read from),
+// *_now is this bar's fresh values (written to); they swap at the end of the last-bar block.
+var cm_keysPrev = array.new<float>()
+var cm_valsPrev = array.new<float>()
+var cm_keysNow  = array.new<float>()
+var cm_valsNow  = array.new<float>()
+f_cmKey(float p, float atrU) =>
+    math.round(p / math.max(atrU * 0.1, syminfo.mintick))
+f_cmPrev(float p, float atrU) =>
+    float k = f_cmKey(p, atrU)
+    float found = na
+    if array.size(cm_keysPrev) > 0
+        for ci = 0 to array.size(cm_keysPrev) - 1
+            if array.get(cm_keysPrev, ci) == k
+                found := array.get(cm_valsPrev, ci)
+    found
+f_cmStore(float p, float atrU, float confPct) =>
+    array.push(cm_keysNow, f_cmKey(p, atrU))
+    array.push(cm_valsNow, confPct)
+    0
+
+// Stacked agreement: does a price band overlap an order block OR an FVG?
+f_hasOBFVG(float loB, float hiB) =>
+    bool hit = false
+    if array.size(obTop) > 0
+        for oi = 0 to array.size(obTop) - 1
+            if hiB >= array.get(obBot, oi) and loB <= array.get(obTop, oi)
+                hit := true
+    if not hit and array.size(fvgBoxes) > 0
+        for fi = 0 to array.size(fvgBoxes) - 1
+            float ft = box.get_top(array.get(fvgBoxes, fi))
+            float fb = box.get_bottom(array.get(fvgBoxes, fi))
+            if hiB >= fb and loB <= ft
+                hit := true
+    hit
+
 // ---- DOL gravity tally + shared direction (last bar) ----
 if barstate.islast
     f_clearPools()
@@ -883,6 +970,8 @@ if barstate.islast
     array.clear(lv_pull)
     array.clear(lv_qual)
     array.clear(lv_inwin)
+    array.clear(cm_keysNow)          // fresh confidence-momentum snapshot this bar
+    array.clear(cm_valsNow)
 
     f_addLevel(showPDHL, pdhM,   "PDH",     colBull, emoPrev, b_pdh,  1)
     f_addLevel(showPDHL, pdlM,   "PDL",     colBear, emoPrev, b_pdl, -1)
@@ -1034,7 +1123,17 @@ if barstate.islast
                 float lpDen = useQual ? totalQual : totalPull
                 float lp = lpDen > 0 ? lpNum / lpDen * 100.0 : 0.0
                 bool isTop = not na(topPullPrice) and math.abs(p - topPullPrice) <= syminfo.mintick
-                string confLvlTag = (showLvlConf and lInWin) ? ((isTop ? " 🎯" : " ") + str.tostring(math.round(lp)) + "%") : ""
+                float atrUt = math.max(nz(atr), syminfo.mintick)
+                // confidence momentum ▲/▼ vs previous bar (feature 4)
+                string momTag = ""
+                if projConfMom and showLvlConf and lInWin
+                    float prevC = f_cmPrev(p, atrUt)
+                    momTag := na(prevC) ? "" : (lp > prevC + 0.5 ? " ▲" : (lp < prevC - 0.5 ? " ▼" : " ="))
+                    f_cmStore(p, atrUt, lp)
+                // stacked-agreement ⭐: DOL-side agrees + it's the magnet + overlaps OB/FVG (feature 8)
+                bool sideAgree = (dolDrawUp and p >= close) or (not dolDrawUp and p < close)
+                string stackTag = (projStacked and lInWin and isTop and sideAgree and f_hasOBFVG(p - atrUt * 0.05, p + atrUt * 0.05)) ? " ⭐" : ""
+                string confLvlTag = (showLvlConf and lInWin) ? ((isTop ? " 🎯" : " ") + str.tostring(math.round(lp)) + "%" + momTag + stackTag) : ""
                 string full = tier + (emo == "None" ? "" : emo + " ") + array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick) + confLvlTag + f_countdown(p)
                 line ln = line.new(bar_index, p, bar_index + ext, p, color = c, width = lineWidth, style = f_lineStyle())
                 color soloBg  = outlineTags ? c : color.new(c, 85)
@@ -1068,7 +1167,17 @@ if barstate.islast
                     float zDen = zUseQual ? totalQual : totalPull
                     float zPull = zDen > 0 ? zNum / zDen * 100.0 : 0.0
                     bool zTop = not na(topPullPrice) and topPullPrice >= minP - pad and topPullPrice <= maxP + pad
-                    string lvlConfTag = (showLvlConf and zInWin) ? ((zTop ? "  🎯" : "  →") + str.tostring(math.round(zPull)) + "%") : ""
+                    float atrUz = math.max(nz(atr), syminfo.mintick)
+                    // confidence momentum ▲/▼ vs previous bar (feature 4)
+                    string zMomTag = ""
+                    if projConfMom and showLvlConf and zInWin
+                        float zPrevC = f_cmPrev(mid, atrUz)
+                        zMomTag := na(zPrevC) ? "" : (zPull > zPrevC + 0.5 ? " ▲" : (zPull < zPrevC - 0.5 ? " ▼" : " ="))
+                        f_cmStore(mid, atrUz, zPull)
+                    // stacked-agreement ⭐: DOL-side agrees + it's the magnet + zone overlaps OB/FVG (feature 8)
+                    bool zSideAgree = (dolDrawUp and mid >= close) or (not dolDrawUp and mid < close)
+                    string zStackTag = (projStacked and zInWin and zTop and zSideAgree and f_hasOBFVG(minP - pad, maxP + pad)) ? " ⭐" : ""
+                    string lvlConfTag = (showLvlConf and zInWin) ? ((zTop ? "  🎯" : "  →") + str.tostring(math.round(zPull)) + "%" + zMomTag + zStackTag) : ""
                     string full = tier + strength + (sideTag == "" ? "" : " " + sideTag) + "  " + names + "  " + str.tostring(mid, format.mintick) + confTag + lvlConfTag + f_countdown(mid)
                     color lblBg  = outlineTags ? zbase : color.new(#1e222d, 10)
                     label lb = label.new(bar_index + ext, mid, full, style = label.style_label_left, color = lblBg, textcolor = clustLblTxt, size = f_strongSize(members))
@@ -1106,6 +1215,14 @@ if barstate.islast
                 label olb = label.new(bar_index + extendR, (obT + obB) / 2.0, bull ? "OB▲ demand" : "OB▼ supply", style = label.style_label_left, color = color.new(bull ? obColBull : obColBear, 30), textcolor = color.white, size = size.tiny)
                 array.push(xtra_labels, olb)
 
+    // confidence-momentum: snapshot this bar's values into *_prev for next bar's ▲/▼
+    array.clear(cm_keysPrev)
+    array.clear(cm_valsPrev)
+    if array.size(cm_keysNow) > 0
+        for ci = 0 to array.size(cm_keysNow) - 1
+            array.push(cm_keysPrev, array.get(cm_keysNow, ci))
+            array.push(cm_valsPrev, array.get(cm_valsNow, ci))
+
     // ---- DOL banner ----
     if masterOn and showDOL and (bslStrength > 0 or sslStrength > 0)
         float atrU2 = math.max(nz(atr), syminfo.mintick)
@@ -1131,7 +1248,13 @@ if barstate.islast
                 mtr := mtr + (seg <= filled ? "▰" : "▱")
             meter := " " + mtr
         string dolTxt = arrow + " DOL " + (drawUp ? "UP" : "DOWN") + " " + str.tostring(math.round(conv)) + "%" + meter
-        string tgtTxt = na(tgtPrice) ? "" : ("🎯 target" + distTxt)
+        // path-clearance (feature 1) + ETA (feature 2) appended to the 🎯 target row
+        string clrTxt = ""
+        if projClear and not na(tgtPrice)
+            [clrScore, obsN] = f_pathClear(close, tgtPrice, atrU2)
+            clrTxt := " · 🛣️" + str.tostring(clrScore) + (obsN > 0 ? (" (" + str.tostring(obsN) + " block" + (obsN == 1 ? "" : "s") + ")") : " clear")
+        string etaTxt = (projETA and not na(tgtPrice)) ? f_eta(tgtPrice) : ""
+        string tgtTxt = na(tgtPrice) ? "" : ("🎯 target" + distTxt + clrTxt + etaTxt)
         string tugTxt = ""
         if dolTugBar and totalG > 0
             int bslPct = int(math.round(bslStrength / totalG * 100.0))
@@ -1141,17 +1264,28 @@ if barstate.islast
             for sg = 1 to 10
                 bar := bar + (sg <= sslSeg ? "▮" : "▯")
             tugTxt := "SSL " + str.tostring(sslPct) + " " + bar + " " + str.tostring(bslPct) + " BSL"
+        // equilibrium / range-state (feature 3): where price sits in the live dealing range
+        string equiTxt = ""
+        if projEqui and not na(rngHi) and not na(rngLo) and rngHi > rngLo
+            float posR = (close - rngLo) / (rngHi - rngLo)
+            string state = posR >= 0.62 ? "PREMIUM" : (posR <= 0.38 ? "DISCOUNT" : "EQUILIBRIUM")
+            string emoR = posR >= 0.62 ? "🔺" : (posR <= 0.38 ? "🔻" : "⚖️")
+            equiTxt := emoR + " " + state + " " + str.tostring(math.round(posR * 100)) + "%"
         color dirAccent = drawUp ? themeUpSolid : themeDnSolid
         bool showTgtRow = dolTgtLine and not na(tgtPrice)
         bool showTugRow = dolTugBar and totalG > 0
+        bool showEquiRow = projEqui and equiTxt != ""
         dolSzB = dolSize == "Huge" ? size.large : dolSize == "Large" ? size.normal : size.small
-        var table dolTbl = table.new(position.top_right, 1, 3, border_width = 1)
+        var table dolTbl = table.new(position.top_right, 1, 4, border_width = 1)
         table.set_position(dolTbl, f_tablePos(dolBanPos))
-        table.clear(dolTbl, 0, 0, 0, 2)
+        table.clear(dolTbl, 0, 0, 0, 3)
         table.cell(dolTbl, 0, 0, dolTxt, text_color = dirAccent, bgcolor = themePanelBg, text_size = dolSzB)
         int rowN = 1
         if showTugRow
             table.cell(dolTbl, 0, rowN, tugTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
+            rowN := rowN + 1
+        if showEquiRow
+            table.cell(dolTbl, 0, rowN, equiTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
             rowN := rowN + 1
         if showTgtRow
             table.cell(dolTbl, 0, rowN, tgtTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
@@ -1166,11 +1300,8 @@ if (not masterOn or not showGhost) and array.size(ghost_lines) > 0
     f_clearGhost()
 
 // -----------------------------------------------------------------------------
-// FAIR VALUE GAPS  — rolling boxes
+// FAIR VALUE GAPS  — rolling boxes  (arrays declared earlier, near projection helpers)
 // -----------------------------------------------------------------------------
-var fvgBoxes  = array.new<box>()
-var fvgIsBull = array.new<bool>()
-
 if (not masterOn or not showFVG) and array.size(fvgBoxes) > 0
     while array.size(fvgBoxes) > 0
         box.delete(array.shift(fvgBoxes))
