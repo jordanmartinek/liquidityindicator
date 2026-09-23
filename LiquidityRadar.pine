@@ -151,6 +151,8 @@ projDistFloor = input.bool(true, "Distance floor (ignore levels hugging price)",
 projDistFloorATR = input.float(0.12, "  Distance floor (× ATR)", minval = 0.0, maxval = 1.0, step = 0.02, tooltip = "How close (in ATRs) a level must be to price before it's treated as 'already here' and excluded from the magnet pool. 0 = disable.", group = G_DOL)
 // --- resistance-adjusted bias: a pool only pulls as hard as the PATH to it is open ---
 projResist = input.bool(true, "Resistance-adjusted DOL bias", tooltip = "Weights each side's draw by how CLEAR the path to it is. Structure standing in the way (order blocks, FVGs) between price and a pool discounts that side's effective pull, so a heavily-walled pool pulls less than an open one. Price hunts the REACHABLE liquidity, not the blocked pool. Conservative: resistance only DISCOUNTS a side's pull, it never adds to the opposite side. Obstacle severity uses the Path-clearance sensitivity. A 🧱 clearance readout is added to the banner.", group = G_DOL)
+// --- landscape bias: don't let ONE level price is hugging dominate the whole side ---
+biasCap = input.float(0.5, "Bias dominance cap (max share per level)", minval = 0.2, maxval = 1.0, step = 0.05, tooltip = "Caps how much a SINGLE level can contribute to its side's pull when computing the DOL bias. Without this, one level price is sitting right next to can out-pull a whole cluster of levels on the other side (distance decay makes the nearest level huge), flipping the bias toward wherever price momentarily is. Capping each level's share (e.g. 0.5 = no level exceeds 50% of its side) makes the bias reflect the LIQUIDITY LANDSCAPE — where the mass/cluster of levels sits — instead of one proximity outlier. The 🎯 magnet still tracks the single nearest-strongest level, so you keep both readings. 1.0 = disable (legacy).", group = G_DOL)
 
 // -----------------------------------------------------------------------------
 // INPUTS — STYLE
@@ -1103,6 +1105,28 @@ if barstate.islast
                     array.set(lv_inwin, k, true)
                     totalPull := totalPull + array.get(lv_pull, k)
                     totalQual := totalQual + array.get(lv_qual, k)
+
+    // ---- landscape cap: stop ONE hugging level from dominating its side ----
+    // Distance decay makes the nearest level's pull huge, so a single level price is sitting
+    // next to can out-weigh a whole cluster on the other side and flip the bias. Clamp each
+    // level's contribution to biasCap × its side's raw total, so the bias reflects the mass /
+    // cluster of levels (the liquidity landscape) rather than one proximity outlier.
+    // The 🎯 magnet (bslTopPull/sslTopPull) is untouched — proximity read stays available.
+    if biasCap < 1.0 and nl > 0
+        float bslCapAbs = bslStrength * biasCap
+        float sslCapAbs = sslStrength * biasCap
+        float bslCapped = 0.0
+        float sslCapped = 0.0
+        for k = 0 to nl - 1
+            if not array.get(lv_nomag, k)
+                float pk2 = array.get(lv_price, k)
+                float p2  = array.get(lv_pull, k)
+                if pk2 >= close
+                    bslCapped := bslCapped + math.min(p2, bslCapAbs)
+                else
+                    sslCapped := sslCapped + math.min(p2, sslCapAbs)
+        bslStrength := bslCapped
+        sslStrength := sslCapped
 
     // ---- resistance-adjusted (clearance-weighted) draw ----
     // Each side's EFFECTIVE pull = raw draw × how clear the path to that side's magnet is.
