@@ -809,6 +809,10 @@ f_addLevelM(bool active, float price, string name, color col, string emo, int bi
 f_addLevel(bool active, float price, string name, color col, string emo, int birthBar, int side) =>
     f_addLevelM(active, price, name, col, emo, birthBar, side, false)
 
+// FVG state (declared here so f_confScore + projection helpers below can read it; populated later)
+var fvgBoxes  = array.new<box>()
+var fvgIsBull = array.new<bool>()
+
 // confluence score for a price band [loB..hiB]
 f_confScore(float mid, float loB, float hiB, int members) =>
     float score = 0.0
@@ -817,14 +821,36 @@ f_confScore(float mid, float loB, float hiB, int members) =>
     score := score + math.min(members, 5) * 12.0
     if members >= 2
         parts := parts + "stack "
-    bool obHit = false
+    float atrC = math.max(nz(atr), syminfo.mintick)
+    // ORDER BLOCK — graded by zone size (displacement leaves bigger blocks) + freshness,
+    // instead of a flat flag. Take the STRONGEST overlapping OB (not a sum).
+    float obBest = 0.0
     if array.size(obTop) > 0
         for oi = 0 to array.size(obTop) - 1
-            if hiB >= array.get(obBot, oi) and loB <= array.get(obTop, oi)
-                obHit := true
-    if obHit
-        score := score + 22.0
-        parts := parts + "OB "
+            float ot = array.get(obTop, oi)
+            float ob = array.get(obBot, oi)
+            if hiB >= ob and loB <= ot
+                float sizeW = math.min((ot - ob) / atrC, 1.5) / 1.5      // 0..1 by zone size vs ATR
+                float freshW = 1.0 - math.min(math.max(0.0, bar_index - array.get(obBirth, oi)) / 60.0, 1.0)  // 1 fresh -> 0 old
+                float obStr = 12.0 + sizeW * 10.0 + freshW * 4.0          // 12 .. 26
+                obBest := math.max(obBest, obStr)
+    if obBest > 0
+        score := score + obBest
+        parts := parts + (obBest >= 20.0 ? "OB+ " : "OB ")
+    // FAIR VALUE GAP — now folded into confluence, graded by gap size vs ATR. An unfilled
+    // gap overlapping the level adds real weight (was previously ignored in scoring).
+    float fvgBest = 0.0
+    if array.size(fvgBoxes) > 0
+        for fi = 0 to array.size(fvgBoxes) - 1
+            float ft = box.get_top(array.get(fvgBoxes, fi))
+            float fb = box.get_bottom(array.get(fvgBoxes, fi))
+            if hiB >= fb and loB <= ft
+                float gapW = math.min(math.abs(ft - fb) / atrC, 1.0)      // 0..1 by gap size vs ATR
+                float fvgStr = 8.0 + gapW * 8.0                            // 8 .. 16
+                fvgBest := math.max(fvgBest, fvgStr)
+    if fvgBest > 0
+        score := score + fvgBest
+        parts := parts + (fvgBest >= 13.0 ? "FVG+ " : "FVG ")
     // OTE fib proximity + premium/discount extreme (from the live dealing range).
     // Computed internally for scoring only - the P/D fibs are NOT drawn on chart.
     if not na(rngHi) and not na(rngLo) and rngHi > rngLo
@@ -894,9 +920,6 @@ f_pull(float pk, string nk, int bk, float sensK, float atrU) =>
     float pull = distW * qual                        // proximity-weighted gravity
     [pull, qual]
 
-// FVG state (declared here so projection helpers below can read it; populated later)
-var fvgBoxes  = array.new<box>()
-var fvgIsBull = array.new<bool>()
 
 // ---- projection helpers (reuse OB/FVG/level state; no new data feeds) ----
 // Path-clearance: 0..100 for how UNOBSTRUCTED the route from price -> target is.
