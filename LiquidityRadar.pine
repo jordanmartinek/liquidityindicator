@@ -99,6 +99,11 @@ dirAware  = input.bool(true,  "Only show for levels price is approaching", group
 // INPUTS — CLUSTERING & CONFLUENCE
 // -----------------------------------------------------------------------------
 masterOn   = input.bool(true, "MASTER: draw everything", tooltip = "Global on/off for all drawings.", group = G_CLUST)
+// --- declutter: one-click density + top-N-per-side + confidence gate (faint, not removed) ---
+densityPreset = input.string("Balanced", "Chart density", options = ["Minimal","Balanced","Everything","Custom"], tooltip = "One-click declutter. MINIMAL: only the few strongest levels each side drawn boldly, everything else faint. BALANCED: a healthy handful. EVERYTHING: draw all at full strength (legacy). CUSTOM: use the Top-N / gate / fade values below. Levels below the cut are DIMMED (drawn faintly), never removed — so nothing is lost, it just recedes.", group = G_CLUST)
+densTopN   = input.int(4, "  Custom: bold levels per side (Top-N by confidence)", minval = 1, maxval = 30, tooltip = "Only the N highest-confidence levels ABOVE and N BELOW price are drawn bold; the rest go faint. (Custom preset.)", group = G_CLUST)
+densGate   = input.float(6.0, "  Custom: faint below confidence %", minval = 0.0, maxval = 100.0, step = 1.0, tooltip = "Levels/zones whose confidence % is below this are drawn faintly. (Custom preset.)", group = G_CLUST)
+densFadeOp = input.int(78, "  Faint opacity (0 solid → 100 invisible)", minval = 40, maxval = 96, tooltip = "How dim a de-emphasized level is drawn. Higher = fainter.", group = G_CLUST)
 clusterOn  = input.bool(true, "Merge nearby levels into zones", group = G_CLUST)
 clustDist  = input.float(0.5, "Cluster distance (× ATR)", minval = 0.05, step = 0.05, tooltip = "Levels within this many ATRs of each other merge into one strength-rated zone.", group = G_CLUST)
 minStrength = input.int(1, "Min strength to display", minval = 1, maxval = 8, tooltip = "Only draw levels/zones whose strength (stacked count) is at least this. 2+ hides lone levels.", group = G_CLUST)
@@ -217,6 +222,14 @@ testKeep     = input.int(120, "  Max tested levels tracked", minval = 10, maxval
 // -----------------------------------------------------------------------------
 f_lineStyle() =>
     lineStyleI == "Dashed" ? line.style_dashed : lineStyleI == "Dotted" ? line.style_dotted : line.style_solid
+
+// --- density preset -> effective declutter params (Custom uses the raw inputs) ---
+// eTopN: how many levels per side (by confidence) stay BOLD; eGate: faint below this
+// confidence %. Everything = draw all at full strength. De-emphasised levels are drawn
+// FAINT (never removed), so nothing is lost — it just recedes.
+int   eTopN = densityPreset == "Minimal" ? 2 : densityPreset == "Balanced" ? 4 : densityPreset == "Everything" ? 9999 : densTopN
+float eGate = densityPreset == "Minimal" ? 12.0 : densityPreset == "Balanced" ? 6.0 : densityPreset == "Everything" ? 0.0 : densGate
+bool  densOn = densityPreset != "Everything"
 
 // tested-state memory: prices that a wick has PROBED into (persists across the per-bar
 // level rebuild). Populated in the capture block below; read at scoring + render time.
@@ -1038,6 +1051,7 @@ var lv_pull = array.new<float>()   // per-level DOL pull (proximity-weighted gra
 var lv_qual = array.new<float>()   // per-level distance-neutral magnet quality
 var lv_inwin = array.new<bool>()   // is this level within the N-nearest-each-side confidence window
 var lv_nomag = array.new<bool>()   // true = level draws but takes NO DOL magnet / confidence role
+var lv_primary = array.new<bool>() // declutter: true = among the Top-N by confidence on its side (drawn bold)
 
 // variant that can flag a level as "no magnet" (still drawn, but excluded from the DOL pull)
 f_addLevelM(bool active, float price, string name, color col, string emo, int birthBar, int side, bool noMagnet) =>
@@ -1284,6 +1298,7 @@ if barstate.islast
     array.clear(lv_qual)
     array.clear(lv_inwin)
     array.clear(lv_nomag)
+    array.clear(lv_primary)
     array.clear(cm_keysNow)          // fresh confidence-momentum snapshot this bar
     array.clear(cm_valsNow)
 
@@ -1364,6 +1379,7 @@ if barstate.islast
             array.push(lv_pull, pull)
             array.push(lv_qual, qual)
             array.push(lv_inwin, false)
+            array.push(lv_primary, false)
             if not excl
                 if pk >= close
                     bslStrength := bslStrength + pull
@@ -1394,6 +1410,25 @@ if barstate.islast
                     array.set(lv_inwin, k, true)
                     totalPull := totalPull + array.get(lv_pull, k)
                     totalQual := totalQual + array.get(lv_qual, k)
+        // pass 2b: declutter rank — mark the Top-N by confidence on each side as PRIMARY
+        // (bold). A level is primary if fewer than eTopN same-side levels have higher
+        // confidence. Below-Top-N or below the gate levels are drawn faintly at render.
+        bool useQualR = lvlConfMode == "Magnet quality"
+        for k = 0 to nl - 1
+            if not array.get(lv_nomag, k)
+                float pk = array.get(lv_price, k)
+                bool  above = pk >= close
+                float ck = useQualR ? array.get(lv_qual, k) : array.get(lv_pull, k)
+                int stronger = 0
+                for j = 0 to nl - 1
+                    if j != k and not array.get(lv_nomag, j)
+                        float pj = array.get(lv_price, j)
+                        bool  aboveJ = pj >= close
+                        float cj = useQualR ? array.get(lv_qual, j) : array.get(lv_pull, j)
+                        if aboveJ == above and cj > ck
+                            stronger := stronger + 1
+                if stronger < eTopN
+                    array.set(lv_primary, k, true)
 
     // ---- landscape cap: stop ONE hugging level from dominating its side ----
     // Distance decay makes the nearest level's pull huge, so a single level price is sitting
@@ -1471,6 +1506,7 @@ if barstate.islast
             int sideSum = array.get(lv_side, array.get(idx, gi))
             // accumulate only IN-WINDOW members' pull/qual so the zone % matches the windowed normalization
             bool  zInWin  = array.get(lv_inwin, array.get(idx, gi))
+            bool  zPrimary = array.get(lv_primary, array.get(idx, gi))   // declutter: any Top-N member?
             float sumPull = zInWin ? array.get(lv_pull, array.get(idx, gi)) : 0.0
             float sumQual = zInWin ? array.get(lv_qual, array.get(idx, gi)) : 0.0
             while clusterOn and gi + 1 < idxN and (array.get(lv_price, array.get(idx, gi + 1)) - array.get(lv_price, array.get(idx, gi))) <= mergeDist
@@ -1484,6 +1520,8 @@ if barstate.islast
                 int mb = array.get(lv_birth, array.get(idx, gi))
                 oldestBirth := na(oldestBirth) ? mb : (na(mb) ? oldestBirth : math.min(oldestBirth, mb))
                 sideSum := sideSum + array.get(lv_side, array.get(idx, gi))
+                if array.get(lv_primary, array.get(idx, gi))
+                    zPrimary := true
                 if array.get(lv_inwin, array.get(idx, gi))
                     zInWin  := true
                     sumPull := sumPull + array.get(lv_pull, array.get(idx, gi))
@@ -1519,12 +1557,16 @@ if barstate.islast
                 // tested/virgin: probed levels get a ✓ + dotted, dimmed line (still standing, just 'used')
                 bool lTested = f_isTested(p, atrUt)
                 string testTag = (showTested and lTested) ? " ✓" : ""
-                color cLine = (showTested and lTested) ? color.new(c, 55) : c
-                string lStyle = (showTested and lTested) ? line.style_dotted : f_lineStyle()
-                string full = tier + (emo == "None" ? "" : emo + " ") + array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick) + confLvlTag + testTag + f_countdown(p)
+                // declutter: faint if de-prioritised (beyond Top-N) or below the confidence gate
+                bool lPrimary = array.get(lv_primary, array.get(idx, startI))
+                bool lFaint = densOn and (not lPrimary or (lInWin and lp < eGate))
+                color cLine = lFaint ? color.new(c, densFadeOp) : ((showTested and lTested) ? color.new(c, 55) : c)
+                string lStyle = (lFaint or (showTested and lTested)) ? line.style_dotted : f_lineStyle()
+                // faint levels shed their tags to a bare price so they recede into the background
+                string full = lFaint ? (array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick)) : (tier + (emo == "None" ? "" : emo + " ") + array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick) + confLvlTag + testTag + f_countdown(p))
                 line ln = line.new(bar_index, p, bar_index + ext, p, color = cLine, width = lineWidth, style = lStyle)
-                color soloBg  = outlineTags ? c : color.new(c, 85)
-                color soloTxt = outlineTags ? clustLblTxt : c
+                color soloBg  = lFaint ? color.new(c, densFadeOp) : (outlineTags ? c : color.new(c, 85))
+                color soloTxt = lFaint ? color.new(c, math.max(densFadeOp - 30, 0)) : (outlineTags ? clustLblTxt : c)
                 label lb = label.new(bar_index + ext, p, full, style = label.style_label_left, color = soloBg, textcolor = soloTxt, size = f_labelSize())
                 array.push(pool_lines, ln)
                 array.push(pool_labels, lb)
@@ -1571,9 +1613,16 @@ if barstate.islast
                         box.set_border_style(bx, line.style_dashed)
                         box.set_bgcolor(bx, color.new(zbase, 92))
                     string testTagZ = zTested ? "  ✓" : ""
-                    string full = tier + strength + (sideTag == "" ? "" : " " + sideTag) + "  " + names + "  " + str.tostring(mid, format.mintick) + confTag + lvlConfTag + testTagZ + f_countdown(mid)
-                    color lblBg  = outlineTags ? zbase : color.new(#1e222d, 10)
-                    label lb = label.new(bar_index + ext, mid, full, style = label.style_label_left, color = lblBg, textcolor = clustLblTxt, size = f_strongSize(members))
+                    // declutter: faint zone if no Top-N member OR below the confidence gate
+                    bool zFaint = densOn and (not zPrimary or (zInWin and zPull < eGate))
+                    if zFaint
+                        box.set_border_style(bx, line.style_dotted)
+                        box.set_border_color(bx, color.new(zbase, densFadeOp))
+                        box.set_bgcolor(bx, color.new(zbase, math.max(densFadeOp, 90)))
+                    string full = zFaint ? (names + "  " + str.tostring(mid, format.mintick)) : (tier + strength + (sideTag == "" ? "" : " " + sideTag) + "  " + names + "  " + str.tostring(mid, format.mintick) + confTag + lvlConfTag + testTagZ + f_countdown(mid))
+                    color lblBg  = zFaint ? color.new(zbase, densFadeOp) : (outlineTags ? zbase : color.new(#1e222d, 10))
+                    color lblTxt = zFaint ? color.new(zbase, math.max(densFadeOp - 30, 0)) : clustLblTxt
+                    label lb = label.new(bar_index + ext, mid, full, style = label.style_label_left, color = lblBg, textcolor = lblTxt, size = zFaint ? size.tiny : f_strongSize(members))
                     array.push(pool_boxes, bx)
                     array.push(pool_labels, lb)
             gi := gi + 1
