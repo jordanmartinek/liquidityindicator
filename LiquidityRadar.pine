@@ -146,6 +146,14 @@ dolMomWt   = input.float(30, "Momentum tilt %", minval = 0, maxval = 100, step =
 dolTgtLine = input.bool(true, "Show primary-magnet target in banner", tooltip = "Adds a banner row with the strongest magnet price and its distance (ATR / %).", group = G_DOL)
 dolMeter   = input.bool(true, "Show conviction meter", group = G_DOL)
 dolTugBar  = input.bool(true, "Show tug-of-war bar (BSL vs SSL)", group = G_DOL)
+// --- pull-field ladder: a compact right-edge heatmap of the draw toward the dominant magnet ---
+showField  = input.bool(false, "Pull-field ladder (right-edge heatmap)", tooltip = "A compact stack of colored cells at the right edge showing WHERE the draw toward the dominant magnet is strongest. Each cell is a price band between price and the primary target; HOT = strong, clear pull; COLD = weak or blocked by an order block / FVG in the path. It's the resistance-adjusted pull model rendered as a spatial field — a legibility view, not a new signal. Default off to keep the chart clean.", group = G_DOL)
+fieldBands = input.int(12, "  Field resolution (cells)", minval = 4, maxval = 30, tooltip = "How many price bands to split the price→magnet span into.", group = G_DOL)
+fieldWidth = input.int(4, "  Field width (bars)", minval = 1, maxval = 20, tooltip = "Width of the ladder column in bars, drawn to the right of the last bar.", group = G_DOL)
+fieldGap   = input.int(2, "  Field gap from price (bars)", minval = 0, maxval = 30, group = G_DOL)
+fieldHot   = input.color(color.new(#ff5252, 0), "  Hot color (strong clear pull)", group = G_DOL)
+fieldCold  = input.color(color.new(#5c6bc0, 0), "  Cold color (weak / blocked)", group = G_DOL)
+fieldOpacity = input.int(30, "  Field opacity (0 solid → 100 invisible)", minval = 0, maxval = 90, group = G_DOL)
 // --- accuracy pass ---
 dolConfW   = input.bool(true, "Weight pull by each level's confluence score", tooltip = "A level sitting in an order block + OTE + round number pulls far harder than a lone level. Multiplies each level's DOL pull by its own confluence score - the single biggest accuracy boost.", group = G_DOL)
 dolNearBias = input.float(1.5, "Nearest-pool emphasis", minval = 0.0, maxval = 4.0, step = 0.25, tooltip = "Extra sharpening of the distance decay. Higher = the nearest untapped pool dominates the pull (price hunts the closest liquidity first). 0 = flat.", group = G_DOL)
@@ -1022,10 +1030,15 @@ var pool_boxes = array.new<box>()
 var xtra_boxes  = array.new<box>()
 var xtra_labels = array.new<label>()
 var ghost_lines = array.new<line>()
+var field_boxes = array.new<box>()   // pull-field ladder cells (right edge)
 
 f_clearGhost() =>
     while array.size(ghost_lines) > 0
         line.delete(array.pop(ghost_lines))
+
+f_clearField() =>
+    while array.size(field_boxes) > 0
+        box.delete(array.pop(field_boxes))
 
 f_clearXtra() =>
     while array.size(xtra_boxes) > 0
@@ -1741,6 +1754,45 @@ if barstate.islast
             table.cell(dolTbl, 0, rowN, tgtTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
         table.set_frame_color(dolTbl, color.new(dirAccent, 35))
         table.set_frame_width(dolTbl, themeBW)
+
+    // ---- pull-field ladder (right-edge heatmap toward the dominant magnet) ----
+    // For each price band between price and dolTgt: strength = draw-toward-magnet (rises as
+    // the band nears the target) × path-clearance from price to the band (cold where an
+    // OB/FVG blocks the way). Rendered as a compact column of boxes at the right edge.
+    f_clearField()
+    if masterOn and showField and not na(dolTgt) and math.abs(dolTgt - close) > syminfo.mintick
+        float atrF  = math.max(nz(atr), syminfo.mintick)
+        float span  = dolTgt - close                 // signed: + = magnet above, - = below
+        int   x0    = bar_index + fieldGap
+        int   x1    = x0 + fieldWidth
+        // pass 1: raw band scores, track max for normalization
+        var fscore = array.new<float>()
+        array.clear(fscore)
+        float fmax = 0.0
+        for bi = 0 to fieldBands - 1
+            float f0 = span * (bi / float(fieldBands))
+            float f1 = span * ((bi + 1) / float(fieldBands))
+            float bMid = close + (f0 + f1) / 2.0
+            float dTo = math.abs(dolTgt - bMid) / atrF          // distance from band to magnet
+            float draw = math.pow(1.0 / (1.0 + dTo), 1.0 + dolNearBias)  // stronger near the target
+            [clr, obs] = f_pathClear(close, bMid, atrF)          // clearance price -> band
+            float sc = draw * (clr / 100.0)
+            array.push(fscore, sc)
+            fmax := math.max(fmax, sc)
+        // pass 2: render normalized hot->cold cells
+        if fmax > 0
+            for bi = 0 to fieldBands - 1
+                float f0 = span * (bi / float(fieldBands))
+                float f1 = span * ((bi + 1) / float(fieldBands))
+                float yTop = close + math.max(f0, f1)
+                float yBot = close + math.min(f0, f1)
+                float t = array.get(fscore, bi) / fmax           // 0..1 heat
+                color cell = color.from_gradient(t, 0.0, 1.0, fieldCold, fieldHot)
+                box fb = box.new(x0, yTop, x1, yBot, border_color = color.new(cell, math.min(fieldOpacity + 20, 95)), border_width = 1, bgcolor = color.new(cell, fieldOpacity))
+                array.push(field_boxes, fb)
+// wipe field when master/field off
+if (not masterOn or not showField) and array.size(field_boxes) > 0
+    f_clearField()
 
 // wipe extra pool when master/OB off
 if (not masterOn or not showOB) and array.size(xtra_boxes) + array.size(xtra_labels) > 0
