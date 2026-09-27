@@ -98,6 +98,8 @@ dirAware  = input.bool(true,  "Only show for levels price is approaching", group
 // -----------------------------------------------------------------------------
 // INPUTS — CLUSTERING & CONFLUENCE
 // -----------------------------------------------------------------------------
+// --- MODE: one dropdown that bundles sensible defaults for a trading style ---
+tradeMode  = input.string("Custom", "Mode (one-click preset)", options = ["Scalp","Intraday","Swing","Clean","Custom"], tooltip = "One-click trading-style preset. It bundles the safe, high-impact display settings — chart density and the confidence window — into a sensible starting point, so you don't have to tune dozens of toggles. SCALP: tight & minimal (nearest few levels). INTRADAY: balanced. SWING: balanced but a wider window for bigger structure. CLEAN: maximum focus, only the strongest levels bold. CUSTOM (default): leaves every setting exactly as you set it. Mode does NOT touch which level CATEGORIES are on or detection lengths — only the focus/density layer — so nothing changes meaning, it just changes what's emphasised.", group = G_CLUST)
 masterOn   = input.bool(true, "MASTER: draw everything", tooltip = "Global on/off for all drawings.", group = G_CLUST)
 // --- declutter: one-click density + top-N-per-side + confidence gate (faint, not removed) ---
 densityPreset = input.string("Balanced", "Chart density", options = ["Minimal","Balanced","Everything","Custom"], tooltip = "One-click declutter. MINIMAL: only the few strongest levels each side drawn boldly, everything else faint. BALANCED: a healthy handful. EVERYTHING: draw all at full strength (legacy). CUSTOM: use the Top-N / gate / fade values below. Levels below the cut are DIMMED (drawn faintly), never removed — so nothing is lost, it just recedes.", group = G_CLUST)
@@ -135,6 +137,7 @@ vpBins      = input.int(24, "  VP resolution (bins)", minval = 8, maxval = 60, t
 // INPUTS — DRAW-ON-LIQUIDITY GAUGE
 // -----------------------------------------------------------------------------
 showDOL   = input.bool(true, "Show DOL gauge", tooltip = "A corner banner pointing to the side (BSL above vs SSL below) with the greater LIQUIDITY GRAVITY - a multi-factor score of where price is most likely being drawn.", group = G_DOL)
+showVerdict = input.bool(true, "One-line verdict (headline)", tooltip = "A single plain-language line at the top of the banner distilling the whole read into the sentence you act on: bias direction · dominant target + distance · confidence % · path clear/blocked · premium/equilibrium/discount. Everything else in the banner is the supporting detail.", group = G_DOL)
 dolBanPos = input.string("Top Right", "Banner position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_DOL)
 dolBull   = input.string("🔼", "Bullish draw emoji", options = ["🔼","🟢","🚀","📈","👆","🐂"], group = G_DOL)
 dolBear   = input.string("🔽", "Bearish draw emoji", options = ["🔽","🔴","🐻","📉","👇","🩸"], group = G_DOL)
@@ -231,13 +234,20 @@ testKeep     = input.int(120, "  Max tested levels tracked", minval = 10, maxval
 f_lineStyle() =>
     lineStyleI == "Dashed" ? line.style_dashed : lineStyleI == "Dotted" ? line.style_dotted : line.style_solid
 
+// --- MODE -> effective density preset + confidence window (Custom = leave raw inputs) ---
+// Mode is a convenience layer over the existing density/window controls; it only maps to a
+// density preset name + a confidence-window size, so behavior stays identical to setting
+// those by hand. It never changes level categories or detection lengths.
+string eDensity = tradeMode == "Scalp" ? "Minimal" : tradeMode == "Intraday" ? "Balanced" : tradeMode == "Swing" ? "Balanced" : tradeMode == "Clean" ? "Minimal" : densityPreset
+int   eConfWin  = tradeMode == "Scalp" ? 3 : tradeMode == "Intraday" ? 5 : tradeMode == "Swing" ? 8 : tradeMode == "Clean" ? 4 : lvlConfWin
+
 // --- density preset -> effective declutter params (Custom uses the raw inputs) ---
 // eTopN: how many levels per side (by confidence) stay BOLD; eGate: faint below this
 // confidence %. Everything = draw all at full strength. De-emphasised levels are drawn
 // FAINT (never removed), so nothing is lost — it just recedes.
-int   eTopN = densityPreset == "Minimal" ? 2 : densityPreset == "Balanced" ? 4 : densityPreset == "Everything" ? 9999 : densTopN
-float eGate = densityPreset == "Minimal" ? 12.0 : densityPreset == "Balanced" ? 6.0 : densityPreset == "Everything" ? 0.0 : densGate
-bool  densOn = densityPreset != "Everything"
+int   eTopN = eDensity == "Minimal" ? 2 : eDensity == "Balanced" ? 4 : eDensity == "Everything" ? 9999 : densTopN
+float eGate = eDensity == "Minimal" ? 12.0 : eDensity == "Balanced" ? 6.0 : eDensity == "Everything" ? 0.0 : densGate
+bool  densOn = eDensity != "Everything"
 
 // tested-state memory: prices that a wick has PROBED into (persists across the per-bar
 // level rebuild). Populated in the capture block below; read at scoring + render time.
@@ -1419,7 +1429,7 @@ if barstate.islast
                         bool  aboveJ = pj >= close
                         if aboveJ == above and math.abs(pj - close) < dk
                             nearer := nearer + 1
-                if nearer < lvlConfWin
+                if nearer < eConfWin
                     array.set(lv_inwin, k, true)
                     totalPull := totalPull + array.get(lv_pull, k)
                     totalQual := totalQual + array.get(lv_qual, k)
@@ -1730,17 +1740,37 @@ if barstate.islast
         string resistTxt = ""
         if projResist
             resistTxt := "🧱 clear ↑" + str.tostring(math.round(upClr)) + " ↓" + str.tostring(math.round(dnClr))
+        // ---- one-line verdict: the sentence a trader acts on ----
+        string verdictTxt = ""
+        if showVerdict
+            string vDir = drawUp ? "LONG" : "SHORT"
+            string vTgt = na(tgtPrice) ? "" : (" · →" + str.tostring(tgtPrice, format.mintick) + " (" + str.tostring(math.abs(tgtPrice - close) / atrU2, "#.0") + "R~ATR)")
+            string vConf = " · " + str.tostring(math.round(conv)) + "%"
+            string vPath = ""
+            if not na(tgtPrice)
+                [vc, vo] = f_pathClear(close, tgtPrice, atrU2)
+                vPath := vo > 0 ? (" · ⚠ " + str.tostring(vo) + " block" + (vo == 1 ? "" : "s")) : " · clear"
+            string vState = ""
+            if not na(rngHi) and not na(rngLo) and rngHi > rngLo
+                float vp = (close - rngLo) / (rngHi - rngLo)
+                vState := vp >= 0.62 ? " · premium" : (vp <= 0.38 ? " · discount" : " · equilibrium")
+            verdictTxt := (drawUp ? "🔼 " : "🔽 ") + vDir + vTgt + vConf + vPath + vState
         color dirAccent = drawUp ? themeUpSolid : themeDnSolid
         bool showTgtRow = dolTgtLine and not na(tgtPrice)
         bool showTugRow = dolTugBar and totalG > 0
         bool showEquiRow = projEqui and equiTxt != ""
         bool showResistRow = projResist and resistTxt != ""
+        bool showVerdictRow = showVerdict and verdictTxt != ""
         dolSzB = dolSize == "Huge" ? size.large : dolSize == "Large" ? size.normal : size.small
-        var table dolTbl = table.new(position.top_right, 1, 5, border_width = 1)
+        var table dolTbl = table.new(position.top_right, 1, 6, border_width = 1)
         table.set_position(dolTbl, f_tablePos(dolBanPos))
-        table.clear(dolTbl, 0, 0, 0, 4)
-        table.cell(dolTbl, 0, 0, dolTxt, text_color = dirAccent, bgcolor = themePanelBg, text_size = dolSzB)
-        int rowN = 1
+        table.clear(dolTbl, 0, 0, 0, 5)
+        int rowN = 0
+        if showVerdictRow
+            table.cell(dolTbl, 0, rowN, verdictTxt, text_color = dirAccent, bgcolor = themePanelBg, text_size = dolSzB)
+            rowN := rowN + 1
+        table.cell(dolTbl, 0, rowN, dolTxt, text_color = dirAccent, bgcolor = showVerdictRow ? themeRowBg : themePanelBg, text_size = showVerdictRow ? size.small : dolSzB)
+        rowN := rowN + 1
         if showTugRow
             table.cell(dolTbl, 0, rowN, tugTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
             rowN := rowN + 1
