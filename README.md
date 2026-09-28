@@ -40,6 +40,7 @@ A corner banner showing the side price is most likely being drawn toward. Each l
 - **Freshness premium** — untested levels pull harder; a level price is currently sitting on is discounted.
 - **Equal highs/lows rank top** — engineered liquidity is the textbook draw target.
 - **Balance-aware conviction** — a near-50/50 tug-of-war reads as low confidence even when the winning side's absolute pull is large.
+- **Flip stability (deadband + hysteresis)** — the arrow no longer flips the instant one side edges out the other. The committed direction is held until the opposing side wins *decisively* (the bias clears an adjustable **deadband**); inside the band it keeps its prior direction. Optionally the flip is only committed **on bar close** (a single intrabar spike through a level can't turn it — a faint **⟳** hint shows a pending turn intrabar). This removes the random flip near a key level, which matters most on lower timeframes (e.g. the 5-minute chart). Set the deadband to 0 for the legacy instant-flip behavior.
 
 **Per-level confidence:** every drawn level/zone shows a **0–100 % target-likelihood** (its share of total liquidity pull), and the single most-likely target is flagged **🎯** — so you can see at a glance which level price is most likely to head toward next.
 

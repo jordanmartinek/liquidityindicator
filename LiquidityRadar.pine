@@ -176,6 +176,10 @@ projDistFloorATR = input.float(0.12, "  Distance floor (× ATR)", minval = 0.0, 
 projResist = input.bool(true, "Resistance-adjusted DOL bias", tooltip = "Weights each side's draw by how CLEAR the path to it is. Structure standing in the way (order blocks, FVGs) between price and a pool discounts that side's effective pull, so a heavily-walled pool pulls less than an open one. Price hunts the REACHABLE liquidity, not the blocked pool. Conservative: resistance only DISCOUNTS a side's pull, it never adds to the opposite side. Obstacle severity uses the Path-clearance sensitivity. A 🧱 clearance readout is added to the banner.", group = G_DOL)
 // --- landscape bias: don't let ONE level price is hugging dominate the whole side ---
 biasCap = input.float(0.5, "Bias dominance cap (max share per level)", minval = 0.2, maxval = 1.0, step = 0.05, tooltip = "Caps how much a SINGLE level can contribute to its side's pull when computing the DOL bias. Without this, one level price is sitting right next to can out-pull a whole cluster of levels on the other side (distance decay makes the nearest level huge), flipping the bias toward wherever price momentarily is. Capping each level's share (e.g. 0.5 = no level exceeds 50% of its side) makes the bias reflect the LIQUIDITY LANDSCAPE — where the mass/cluster of levels sits — instead of one proximity outlier. The 🎯 magnet still tracks the single nearest-strongest level, so you keep both readings. 1.0 = disable (legacy).", group = G_DOL)
+// --- flip stability: deadband + hysteresis so the arrow doesn't whipsaw near a key level ---
+dolStable   = input.bool(true, "Stabilize DOL flips (deadband + hysteresis)", tooltip = "Stops the DOL arrow flipping randomly when price is approaching a key level. Instead of flipping the instant one side edges out the other (bias crosses exactly 0), the arrow only CHANGES direction once the opposing side is decisively ahead — the bias must clear the deadband on the new side. Inside the band the arrow HOLDS its prior direction. Highly recommended for lower timeframes (e.g. the 5-minute chart) where the raw bias is noisy.", group = G_DOL)
+dolDeadband = input.float(0.10, "  Flip deadband (bias units, 0-1)", minval = 0.0, maxval = 0.9, step = 0.01, tooltip = "How decisively the opposing side must win before the arrow flips. The DOL bias runs from -1 (all SSL / down) to +1 (all BSL / up). With a 0.10 deadband, an UP arrow only flips to DOWN once bias falls below -0.10, and a DOWN arrow only flips UP once bias rises above +0.10. Between -0.10 and +0.10 the arrow holds its last direction. Higher = stickier (fewer flips, slower to turn); 0 = legacy instant flip at 0.", group = G_DOL)
+dolFlipConfirm = input.bool(true, "  Only flip on bar close (confirm)", tooltip = "Require the deadband to be cleared on a CLOSED bar before committing a flip, so a single intrabar spike through a level can't turn the arrow. The banner still shows a faint 'turning…' hint intrabar, but the committed direction only changes when the bar closes beyond the deadband. Turn off to allow intrabar flips (still gated by the deadband).", group = G_DOL)
 
 // -----------------------------------------------------------------------------
 // INPUTS — STYLE
@@ -1298,6 +1302,12 @@ f_hasOBFVG(float loB, float hiB) =>
                 hit := true
     hit
 
+// ---- DOL flip stability state (persists across bars) ----
+// Committed arrow direction from the last decision: +1 = UP (BSL draw), -1 = DOWN (SSL draw).
+// The deadband + hysteresis logic below only mutates this when the opposing side wins
+// decisively (bias clears the deadband), so the arrow holds through near-50/50 noise.
+var float dm_dirState = 1.0
+
 // ---- DOL gravity tally + shared direction (last bar) ----
 if barstate.islast
     f_clearPools()
@@ -1484,7 +1494,32 @@ if barstate.islast
     float dm_totalG = bslEff + sslEff
     float dm_liqBias = dm_totalG > 0 ? (bslEff - sslEff) / dm_totalG : 0.0
     float dm_bias = (1.0 - dolMomWt / 100.0) * dm_liqBias + (dolMomWt / 100.0) * dolMom
-    bool  dolDrawUp = dm_bias >= 0
+    // ---- deadband + hysteresis: only flip when the opposing side wins DECISIVELY ----
+    // Legacy behaviour flipped the arrow the instant dm_bias crossed exactly 0, so distance
+    // decay, the hard distance-floor cut, discrete path-clearance steps and live momentum all
+    // whipsawed the direction as price approached a key level. Here the committed direction
+    // (dm_dirState, +1 up / -1 down) is held UNLESS the bias clears the deadband on the OTHER
+    // side: an UP arrow only turns DOWN once dm_bias < -dolDeadband, and vice-versa. Inside
+    // [-dolDeadband, +dolDeadband] the prior direction persists. When "confirm on bar close"
+    // is on, the flip is only committed on a closed bar; intrabar we surface a "turning" hint
+    // but keep the committed direction so a single spike through a level can't flip the read.
+    bool  dm_turning = false
+    if dolStable
+        float band = dolDeadband
+        bool  wantUp   = dm_bias >  band      // BSL decisively ahead
+        bool  wantDown = dm_bias < -band      // SSL decisively ahead
+        bool  crossUp   = wantUp   and dm_dirState < 0    // currently DOWN, bias says flip UP
+        bool  crossDown = wantDown and dm_dirState > 0    // currently UP,   bias says flip DOWN
+        bool  canCommit = (not dolFlipConfirm) or barstate.isconfirmed
+        if (crossUp or crossDown) and canCommit
+            dm_dirState := crossUp ? 1.0 : -1.0
+        else if crossUp or crossDown
+            // deadband cleared but waiting on bar close to confirm — flag the pending turn
+            dm_turning := true
+    else
+        // legacy: instant flip at zero, no memory
+        dm_dirState := dm_bias >= 0 ? 1.0 : -1.0
+    bool  dolDrawUp = dm_dirState >= 0
     float dolTgt = dolDrawUp ? bslTopPrice : sslTopPrice
     // single MOST-LIKELY target = the level with the greatest pull overall
     float topPullPrice = bslTopPull >= sslTopPull ? bslTopPrice : sslTopPrice
@@ -1702,7 +1737,9 @@ if barstate.islast
             for seg = 1 to 5
                 mtr := mtr + (seg <= filled ? "▰" : "▱")
             meter := " " + mtr
-        string dolTxt = arrow + " DOL " + (drawUp ? "UP" : "DOWN") + " " + str.tostring(math.round(conv)) + "%" + meter
+        // hysteresis hint: deadband cleared toward the OTHER side but not yet committed (waiting on bar close)
+        string turnTxt = (dolStable and dm_turning) ? " ⟳" : ""
+        string dolTxt = arrow + " DOL " + (drawUp ? "UP" : "DOWN") + turnTxt + " " + str.tostring(math.round(conv)) + "%" + meter
         // path-clearance (feature 1) + ETA (feature 2) appended to the 🎯 target row
         string clrTxt = ""
         if projClear and not na(tgtPrice)
