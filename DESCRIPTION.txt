@@ -1,0 +1,205 @@
+LIQUIDITY RADAR — ABOUT THIS INDICATOR
+
+Paste this text into the TradingView "About this indicator" description box when you publish. It is written as end-user documentation: what the tool draws, what every setting does, how to read the banner, and a complete workflow for trading Draw-on-Liquidity (DOL).
+
+
+WHAT IT IS
+
+Liquidity Radar maps the resting liquidity on your chart, scores how "loaded" each pool is, and tells you which side price is most likely being drawn toward next. It is an overlay indicator (draws on price), built for intraday liquidity trading and tuned to behave well on low timeframes such as the 5-minute chart.
+
+It answers three questions at a glance:
+
+1. Where is the liquidity? Highs and lows that hold stop orders (PDH/PDL, weekly/monthly, session highs/lows, swing highs/lows, equal highs/lows), plus Order Blocks and Fair Value Gaps.
+2. How strong is each pool? A 0-100 confluence score and a per-level confidence %.
+3. Which way is price being pulled? The Draw-on-Liquidity (DOL) gauge: a corner banner with a direction arrow, conviction %, a tug-of-war bar, the primary target, path clearance, an ETA, and where price sits in its dealing range.
+
+Levels are removed the moment they are swept (traded through), so the chart only ever shows live, untapped liquidity.
+
+
+CORE CONCEPTS (READ THIS FIRST)
+
+• BSL / SSL. Buy-Side Liquidity rests ABOVE price (old highs, buy stops); Sell-Side Liquidity rests BELOW price (old lows, sell stops). Price tends to run toward the pool that gives the market the most fuel.
+• Draw-on-Liquidity (DOL). The pool price is most likely to gravitate to next. The DOL gauge is a weighted "gravity" model: every level exerts a pull that grows with proximity, importance, age, freshness, and confluence.
+• Sweep + reversal (SFP). A wick pierces a level and the candle closes back: a stop-run. This is the validity trigger — liquidity was taken, and price often reverses toward the opposite pool.
+• Dealing range / premium-discount. The live swing range. Upper third = premium (look to sell), lower third = discount (look to buy), middle = equilibrium.
+
+
+QUICK START (5 MINUTES)
+
+1. Add Liquidity Radar to a chart. Defaults are tuned for intraday.
+2. Note the DOL banner (top-right by default). The arrow is the current draw; the % is conviction.
+3. Find the target row — the single most likely magnet, with its distance and a path-clearance score.
+4. Check the range-state row (PREMIUM / EQUILIBRIUM / DISCOUNT). Trade WITH the draw, FROM the opposite extreme.
+5. Wait for an SFP (sweep + reversal) against a level on the far side, then trade toward the target. Manage risk beyond the swept level.
+
+The rest of this document explains every setting and a full DOL strategy.
+
+
+THE SETTINGS, GROUP BY GROUP
+
+The inputs are organized into numbered groups. Every option below lists its default.
+
+1) PREVIOUS-PERIOD LEVELS
+Institutional reference highs/lows and opens. Removed once swept; feed the clusters + DOL pull.
+• Prev Day High/Low (PDH/PDL) — on.
+• Prev Week High/Low (PWH/PWL) — on.
+• Prev Month High/Low (PMH/PML) — off.
+• Daily / Weekly / Monthly Open — off. Institutional reference prices; price often reverts.
+• NY Midnight Open (00:00 ET) — off. The ICT "true day" open; a high-signal premium/discount anchor.
+
+2) SESSIONS
+Asian / London / New York session highs and lows.
+• Session Timezone — UTC. Set to your reference zone.
+• Asian / London / New York H/L — on, with editable session times (defaults 0000-0800 / 0800-1600 / 1300-2100).
+• Reset session H/L each new day — on. Clears yesterday's session extremes.
+• Remove session level once swept — on.
+• Reclassify unswept session H/L as swings — on. A session extreme that survives the day becomes durable swing liquidity (e.g. "Asia H (swing)").
+
+3) STRUCTURE (SWINGS, EQ, FVG, OB, SFP)
+• Swing Highs/Lows — on. Pivot-based liquidity.
+  - Swing pivot length (10), Historical swings kept per side (40).
+  - Add higher-timeframe swings — on; HTF timeframe (240 = 4h), HTF pivot length (5). Captures major structure far back on a low-TF chart.
+• Remove swept levels — on.
+• Equal Highs/Lows (EQH/EQL) — on. Engineered liquidity — the textbook draw target.
+  - EQ tolerance (0.35 x ATR), EQ lookback (6 pivots).
+  - Relative (near) Equal H/L — on; catches softer clusters at a slightly lower weight (rEQ tolerance 0.75 x ATR).
+• Breaker blocks — on. A violated order block flips polarity (demand to supply, or vice versa) and becomes a strong reaction zone; feeds confluence + resistance.
+• Fair Value Gaps (FVG) — on. 3-candle imbalances.
+  - Remove invalidated FVGs — on; FVG invalidation — Body close through (also Wick-touch 50% or Full-fill).
+• Sweep + reversal markers (SFP) — on. The core validity trigger.
+  - Require volume confirmation — on; Rel-volume lookback (20), Min rel-volume for grab (1.5x). Only flags a grab on elevated volume.
+• Order blocks after displacement — on. After a sweep + displacement, the last opposing candle is marked demand/supply until mitigated.
+  - Displacement size (1.2 x ATR), Max order blocks kept (8).
+
+4) COUNTDOWN
+• Show countdown to level — on. A "time-to-reach" estimate on labels from price velocity.
+  - Velocity lookback (14), Countdown units — Clock time (or Bars), Only show for levels price is approaching — on.
+
+5) CLUSTERING & CONFLUENCE
+• MASTER: draw everything — on. Global on/off for all drawings.
+• Chart density — Balanced. One-click declutter: Minimal (only strongest bold), Balanced, Everything (all bold), or Custom. De-emphasized levels are drawn faint, never removed.
+  - Custom: bold levels per side (Top-4), faint below confidence % (6), faint opacity (78).
+• Merge nearby levels into zones — on; Cluster distance (0.5 x ATR). Nearby levels become one strength-rated zone.
+• Min strength to display (1) / Max strength markers (4) / Zone fill opacity (weakest 85 to strongest 55).
+• Color-code by side (BSL/SSL) — on, with BSL (above) and SSL (below) colors + strength markers.
+• Confluence score on zones (0-100) — on. Rolls up: stacked levels + Order-Block overlap + OTE-fib proximity + premium/discount extreme + round-number proximity (plus optional VWAP + breaker).
+  - Hide zones below score (0), Round-number step (0 = off), VWAP proximity — on.
+• Volume Profile levels (POC / VAH / VAL) — off. Adds acceptance-based levels; VP lookback (240), VP resolution (24 bins).
+
+6) DRAW-ON-LIQUIDITY GAUGE (the heart of the tool — see the dedicated section below)
+• Show DOL gauge — on; Banner position — Top Right; bull/bear emoji, text size.
+• Gravity sensitivity — Medium. How sharply nearby/important/aged/clustered liquidity dominates.
+• Weight by level importance / age — on. Major and older levels pull harder.
+• Momentum tilt % — 30. How much live directional momentum biases the arrow on top of the static liquidity score.
+• Show primary-magnet target / conviction meter / tug-of-war bar — on.
+
+Accuracy pass
+• Weight pull by each level's confluence score — on. The single biggest accuracy boost — a level in an OB + OTE + round number pulls far harder than a lone level.
+• Nearest-pool emphasis — 1.5. Sharpens distance decay so the nearest untapped pool dominates.
+• Freshness premium (untested pulls harder) — on.
+• Show per-level confidence % — on. Each level gets a 0-100 target-likelihood; the single most likely is flagged with a target icon.
+  - Confidence % basis — Magnet quality (distance removed, so a far but heavy pool can out-score a near lone swing) or Raw pull (legacy). Confidence window — 5 levels each side.
+
+Projection pass
+• Path-clearance on target — on. Discounts the magnet by opposing OBs/FVGs in the path; a clear runway reads high. Clearance sensitivity (1.0).
+• ETA to target — on. Projects time-to-target from velocity.
+• Equilibrium / range-state — on. PREMIUM / EQUILIBRIUM / DISCOUNT row.
+• Confidence momentum (up/down arrows) — on. Whether each level's % is rising or fading vs last bar.
+• Stacked-agreement flag (star) — on. Flags a level where DOL side + primary magnet + an overlapping OB/FVG all align (highest conviction).
+
+De-skew & bias shaping
+• Exclude forming session H/L from magnet — on. A still-forming session extreme tracks price and would otherwise dominate the % unfairly; it draws but takes no magnet role until it settles.
+• Distance floor (ignore levels hugging price) — on; Distance floor (0.12 x ATR). You can't be "drawn" to where price already is.
+• Resistance-adjusted DOL bias — on. Each side's draw is weighted by how clear the path to it is; a walled pool pulls less than an open one. Only discounts — never adds to the other side.
+• Bias dominance cap — 0.5. Caps how much a single level can contribute to its side, so the bias reflects the liquidity landscape (the cluster of levels) rather than one proximity outlier.
+
+Flip stability (recommended on for the 5-minute chart)
+• Stabilize DOL flips (deadband + hysteresis) — on. The arrow no longer flips the instant one side edges out the other. It only changes direction once the opposing side is decisively ahead — the bias must clear the deadband; inside the band the arrow holds its prior direction.
+• Flip deadband (bias units, 0-1) — 0.10. Higher = stickier (fewer flips, slower to turn); 0 = legacy instant flip.
+• Only flip on bar close (confirm) — on. A single intrabar spike can't turn the arrow; a faint marker shows a pending turn until the bar closes.
+
+7) STYLE
+Panel theme (Refined Dark default), line width/style, label size, line extend-right, age-scaled extension (older levels draw longer), Compact Mode (hide far levels), and all level/zone/FVG colors.
+
+8) EMOJI TAGS
+Configurable tags per level class (previous-period, session, liquidity).
+
+9) TESTED LEVELS
+• Flag tested levels (probed, not swept) — on. A level a wick has probed but not swept gets a check mark and a dimmed/dotted outline — "used" liquidity vs a virgin, untouched level.
+  - Tested probe depth (0.10 x ATR), Discount tested levels in scoring — on, Tested pull discount (0.25 = -25%), Max tested tracked (120).
+
+
+HOW TO READ THE DOL BANNER
+
+A typical banner reads top-to-bottom:
+
+  DOL UP 72% (meter)            -> direction, conviction %, conviction meter
+  SSL 28 (bar) 72 BSL           -> tug-of-war: share of gravity each side
+  clear up 88 / down 41         -> path clearance up vs down (0 walled, 100 open)
+  PREMIUM 78%                   -> where price sits in the dealing range
+  target 5123.50 (1.4 ATR / 0.6%), clear 82, ETA approx 12m   -> primary magnet + clearance + ETA
+
+• Arrow + %. The committed draw direction and conviction. A small turning marker next to the arrow means a flip is pending confirmation on bar close.
+• Tug-of-war. The balance of gravity. Near 50/50 = indecision (low conviction).
+• Clearance up/down. How open each path is. A high number on the arrow's side is a clean runway.
+• Range-state. PREMIUM / EQUILIBRIUM / DISCOUNT.
+• Target row. The single most likely magnet, its distance (ATR + %), path clearance, and time estimate.
+
+On the levels themselves you will also see per-level confidence %, a target icon on the top target, up/down confidence momentum, a star for stacked agreement, and a check mark on tested levels.
+
+
+A COMPLETE DOL TRADING WORKFLOW
+
+This is a repeatable framework, not financial advice. Adapt sizing and risk to your own plan.
+
+1. Establish the draw (bias).
+Read the DOL arrow and conviction. Prefer setups where:
+- conviction is at least about 60% and the tug-of-war is clearly lopsided,
+- the clearance on the arrow's side is high (open runway),
+- the target carries a star (stacked agreement) — DOL side + primary magnet + OB/FVG align.
+With flip stability on, treat the arrow as a committed bias, not a tick-by-tick signal.
+
+2. Locate your entry pool (the opposite side).
+Price reaches for one pool by first taking the other. If the draw is UP toward BSL, your entry interest is at SSL below — a discount pool where price grabs sell-side liquidity before reversing up. Use the range-state: buy from discount, sell from premium.
+
+3. Wait for the trigger (SFP).
+Let price sweep that opposite-side level and close back (an SFP marker prints, volume-confirmed by default). That stop-run is your signal that the near pool is taken and price can rotate toward the target.
+
+4. Refine with confluence.
+Favor entries where the swept level sits in an Order Block or FVG, near OTE / VWAP / a round number, or inside a high confluence-score zone. A tested (check-marked) level is weaker (some liquidity already gone); a virgin level is a cleaner reaction.
+
+5. Define the target.
+The target is your primary objective; the clearance tells you how clean the path is, and the ETA gives a rough time estimate. Opposing OBs/FVGs in the way (low clearance) are logical partial-exit or caution points. Watch the confidence momentum on the target — rising supports holding; fading warns of rejection.
+
+6. Manage risk.
+Stop beyond the swept extreme (the level that triggered you). Consider scaling out at intermediate pools / obstacles and trailing toward the target. If the DOL arrow flips (clears the deadband the other way) or the target's confidence turns down hard, the thesis has weakened — tighten or exit.
+
+Two example reads
+
+• Bullish continuation: DOL UP 74%, range DISCOUNT, target = weekly high (star, clearance 85). Price sweeps the London low into a bullish FVG and closes back (SFP long). Enter long, stop below the swept low, target the weekly high.
+• Bearish reversal: DOL DOWN 68%, range PREMIUM, target = equal lows below (star). Price runs the prior-day high (buy-side grab) into an order block and closes back (SFP short). Enter short, stop above the swept high, target the equal lows.
+
+
+TUNING FOR THE 5-MINUTE CHART
+
+• Keep Stabilize DOL flips on. If the arrow still turns too eagerly, raise the deadband to 0.15-0.20; if it's sluggish, lower toward 0.05.
+• If momentum feels too jumpy, reduce Momentum tilt % from 30 toward 15.
+• Use Chart density = Balanced (or Minimal for a very clean chart); nothing is deleted, weaker levels just fade.
+• Leave Resistance-adjusted bias, Distance floor, and Exclude forming session H/L on — together they stop a level price is sitting on from hijacking the read.
+
+
+ALERTS
+
+• PD level touched — price touched a previous-day level.
+• Liquidity swept — price swept a swing liquidity level.
+• Session level touched — price touched a session high/low.
+• SFP fired / SFP long / SFP short — a sweep + reversal (liquidity grab) was detected.
+
+
+NOTES
+
+• Written for Pine Script v6; max_bars_back = 1000. Overlay indicator (not a strategy — no orders or backtest).
+• Swept levels are removed automatically, so the chart shows only live, untapped liquidity.
+• Everything the DOL/projection system reads is computed internally from the levels, Order Blocks, FVGs, and the live dealing range — no external data feeds.
+
+Not financial advice. For research and educational use.

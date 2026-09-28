@@ -4,7 +4,7 @@ A focused **TradingView Pine Script v6** indicator for trading liquidity. It map
 
 > Single file: [`LiquidityRadar.pine`](./LiquidityRadar.pine). Copy its contents into a new indicator in the TradingView Pine Editor and **Add to chart**.
 
-> **Publishing?** [`DESCRIPTION.md`](./DESCRIPTION.md) is a ready-to-paste **“About this indicator”** write-up — a full how-to-use guide, an explanation of every setting, how to read the DOL banner, and a complete Draw-on-Liquidity trading workflow. Copy it into the TradingView description box when you publish.
+> **Publishing?** A ready-to-paste **“About this indicator”** write-up is included — a full how-to-use guide, an explanation of every setting, how to read the DOL banner, and a complete Draw-on-Liquidity trading workflow. Copy it into the TradingView description box when you publish. Two formats: [`DESCRIPTION.md`](./DESCRIPTION.md) (Markdown) and [`DESCRIPTION.txt`](./DESCRIPTION.txt) (plain text — pastes cleanest into the TradingView box).
 
 ---
 
