@@ -1076,20 +1076,23 @@ f_confScore(float mid, float loB, float hiB, int members) =>
     if obBest > 0
         score := score + obBest
         parts := parts + (obBest >= 20.0 ? "OB+ " : "OB ")
-    // FAIR VALUE GAP — now folded into confluence, graded by gap size vs ATR. An unfilled
-    // gap overlapping the level adds real weight (was previously ignored in scoring).
+    // FAIR VALUE GAP — folded into confluence, now graded by each gap's STRENGTH score
+    // (size + creation volume + inside OB/breaker + inversion), not just raw gap size, so a
+    // strong gap in a block / an IFVG adds far more weight than a trivial imbalance. Take the
+    // strongest overlapping gap. Falls back to gap-size grading if strength wasn't stored.
     float fvgBest = 0.0
     if array.size(fvgBoxes) > 0
         for fi = 0 to array.size(fvgBoxes) - 1
             float ft = box.get_top(array.get(fvgBoxes, fi))
             float fb = box.get_bottom(array.get(fvgBoxes, fi))
             if hiB >= fb and loB <= ft
-                float gapW = math.min(math.abs(ft - fb) / atrC, 1.0)      // 0..1 by gap size vs ATR
-                float fvgStr = 8.0 + gapW * 8.0                            // 8 .. 16
-                fvgBest := math.max(fvgBest, fvgStr)
+                float sStr = fi < array.size(fvgStr) ? array.get(fvgStr, fi) : na
+                float strW = na(sStr) ? math.min(math.abs(ft - fb) / atrC, 1.0) : sStr / 100.0   // 0..1
+                float fvgPts = 8.0 + strW * 14.0                           // 8 .. 22
+                fvgBest := math.max(fvgBest, fvgPts)
     if fvgBest > 0
         score := score + fvgBest
-        parts := parts + (fvgBest >= 13.0 ? "FVG+ " : "FVG ")
+        parts := parts + (fvgBest >= 16.0 ? "FVG+ " : "FVG ")
     // OTE fib proximity + premium/discount extreme (from the live dealing range).
     // Computed internally for scoring only - the P/D fibs are NOT drawn on chart.
     if not na(rngHi) and not na(rngLo) and rngHi > rngLo
@@ -1197,22 +1200,28 @@ f_pathClear(float fromP, float toP, float atrU) =>
     float lo = math.min(fromP, toP)
     float hi = math.max(fromP, toP)
     float pad = atrU * 0.05
-    int obstacles = 0
-    // order blocks whose zone falls between price and target
+    int obstacles = 0            // count shown in the banner
+    float severity = 0.0         // strength-weighted obstacle load that actually cuts clearance
+    // order blocks whose zone falls between price and target (full-weight structural walls)
     if array.size(obTop) > 0
         for oi = 0 to array.size(obTop) - 1
             float ot = array.get(obTop, oi)
             float ob = array.get(obBot, oi)
             if ot >= lo - pad and ob <= hi + pad and not (ot >= hi and ob >= hi) and not (ot <= lo and ob <= lo)
                 obstacles := obstacles + 1
-    // fair value gaps between price and target
+                severity  := severity + 1.0
+    // fair value gaps between price and target — a STRONG gap walls the path harder than a
+    // trivial one, so each gap's severity scales with its strength score (0.2..1.0).
     if array.size(fvgBoxes) > 0
         for fi = 0 to array.size(fvgBoxes) - 1
             float ft = box.get_top(array.get(fvgBoxes, fi))
             float fb = box.get_bottom(array.get(fvgBoxes, fi))
             if ft >= lo - pad and fb <= hi + pad
+                float sStr = fi < array.size(fvgStr) ? array.get(fvgStr, fi) : na
+                float w = na(sStr) ? 1.0 : (0.2 + 0.8 * (sStr / 100.0))
                 obstacles := obstacles + 1
-    float clr = 100.0 * math.pow(0.72, projClearW * obstacles)
+                severity  := severity + w
+    float clr = 100.0 * math.pow(0.72, projClearW * severity)
     [math.round(clr), obstacles]
 
 // ETA to a target price from recent velocity (independent of the countdown toggle so the
@@ -1257,11 +1266,15 @@ f_hasOBFVG(float loB, float hiB) =>
         for oi = 0 to array.size(obTop) - 1
             if hiB >= array.get(obBot, oi) and loB <= array.get(obTop, oi)
                 hit := true
+    // only a reasonably strong gap counts toward stacked agreement — a trivial imbalance
+    // shouldn't fire the high-conviction ⭐ flag.
     if not hit and array.size(fvgBoxes) > 0
         for fi = 0 to array.size(fvgBoxes) - 1
             float ft = box.get_top(array.get(fvgBoxes, fi))
             float fb = box.get_bottom(array.get(fvgBoxes, fi))
-            if hiB >= fb and loB <= ft
+            float sStr = fi < array.size(fvgStr) ? array.get(fvgStr, fi) : na
+            bool strongEnough = na(sStr) or not fvgFilterOn or sStr >= fvgMinStr
+            if hiB >= fb and loB <= ft and strongEnough
                 hit := true
     hit
 
