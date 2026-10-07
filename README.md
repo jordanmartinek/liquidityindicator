@@ -21,7 +21,7 @@ Asian / London / New York session highs and lows, with a daily reset, sweep-remo
 ### ③ Structure
 - **Swing highs/lows** kept as historical unswept liquidity, plus optional **higher-timeframe swings** for major structure far back.
 - **Equal highs/lows** via rolling-buffer detection (catches non-consecutive equals).
-- **Fair Value Gaps** with selectable invalidation (body close through / wick touch / full fill).
+- **Fair Value Gaps** with selectable invalidation (body close through / wick touch / full fill) **and a strength filter** that scores every gap **0–100** for how likely price is to *respect* it, then only draws the ones that clear a threshold (weak gaps are dimmed or hidden). The score blends **gap size vs ATR**, the **relative volume / displacement** of the candle that created it, whether it sits **inside an order block or breaker block**, and whether it is an **inversion (IFVG)** of a prior opposite gap. This cuts the flood of trivial gaps on low timeframes (e.g. the 5-minute chart). Each kept gap can print its strength % with `inv` / `blk` tags.
 - **Sweep + reversal (SFP)** markers: a wick pierces a tracked level then the candle closes back on the origin side (a stop-run), optionally volume-confirmed.
 - **Order Blocks**: after a sweep + displacement, the last opposing candle is marked as a demand/supply zone until mitigated.
 

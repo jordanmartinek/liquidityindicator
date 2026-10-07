@@ -73,6 +73,16 @@ showBreaker = input.bool(true, "Breaker blocks (failed OB flips polarity)", tool
 showFVG    = input.bool(true,  "Fair Value Gaps (FVG)",        group = G_STRUCT)
 hideMitFVG = input.bool(true,  "  Remove invalidated FVGs",    group = G_STRUCT)
 fvgFillMode = input.string("Body close through", "  FVG invalidation", options = ["Body close through","Wick touch (50%)","Full fill (wick)"], tooltip = "Body close through: gap disappears once a candle CLOSES beyond it. Wick touch: removed at midpoint. Full fill: removed only when a wick fully engulfs it.", group = G_STRUCT)
+// --- FVG strength filter (declutter: only keep gaps price is likely to respect) ---
+fvgFilterOn   = input.bool(true,  "  Filter FVGs by strength", tooltip = "Score every fair value gap 0-100 for how likely price is to RESPECT it, and only draw the ones that clear the threshold below. Kills the flood of trivial gaps on low timeframes (e.g. the 5-minute chart) and leaves the gaps that actually matter. The score blends: gap size vs ATR, the displacement/relative-volume of the candle that created it, whether it sits inside an order block or breaker block, and whether it is an inversion (IFVG) of a prior opposite gap.", group = G_STRUCT)
+fvgMinStr     = input.int(45, "    Min FVG strength % to draw", minval = 0, maxval = 100, tooltip = "Fair value gaps scoring below this are hidden (or dimmed, if 'Dim weak FVGs' is on). Raise to thin the chart further; lower to show more. Only applies when 'Filter FVGs by strength' is on.", group = G_STRUCT)
+fvgDimWeak    = input.bool(true, "    Dim weak FVGs instead of hiding", tooltip = "Rather than removing sub-threshold gaps entirely, draw them very faintly so context is kept while the strong gaps stand out. Off = weak gaps are not drawn at all.", group = G_STRUCT)
+fvgShowStr    = input.bool(true, "    Label FVG strength %", tooltip = "Print each drawn gap's strength % (plus a tag: 'inv' = followed an inversion, 'blk' = inside an order/breaker block) on the box so you can see WHY it was kept.", group = G_STRUCT)
+fvgSizeW      = input.float(1.0, "    Weight: gap size vs ATR", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "How much the gap's own size (displacement) counts toward its strength. Bigger gaps = stronger imbalance.", group = G_STRUCT)
+fvgVolW       = input.float(1.0, "    Weight: creation volume", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "How much the relative volume of the candle that CREATED the gap counts. High-volume displacement gaps are respected more often. Uses the Rel-volume lookback from the SFP section.", group = G_STRUCT)
+fvgBlockW     = input.float(1.0, "    Weight: inside OB / breaker", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap overlaps an order block or breaker block — a gap defended by a resting institutional zone is far more likely to hold.", group = G_STRUCT)
+fvgInvW       = input.float(1.0, "    Weight: inversion (IFVG)", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap forms right after an opposite gap in the same zone was invalidated (an inverted FVG / IFVG). Inversions mark a decisive flip and tend to be respected hard on the retest.", group = G_STRUCT)
+fvgInvBars    = input.int(30, "    Inversion memory (bars)", minval = 1, maxval = 200, tooltip = "How many bars back a recently-invalidated opposite gap still counts as the parent of an inversion.", group = G_STRUCT)
 // --- SFP (sweep + reversal) ---
 showSFP    = input.bool(true, "Sweep + reversal markers (SFP)", tooltip = "The core validity trigger: a wick pierces a tracked level then the candle CLOSES back on the origin side (a stop-run). Marks 🎯 SFP long/short.", group = G_STRUCT)
 sfpUseVol  = input.bool(true, "  Require volume confirmation", tooltip = "Only flag a sweep as a real grab on elevated relative volume.", group = G_STRUCT)
@@ -987,6 +997,60 @@ f_addLevel(bool active, float price, string name, color col, string emo, int bir
 // FVG state (declared here so f_confScore + projection helpers below can read it; populated later)
 var fvgBoxes  = array.new<box>()
 var fvgIsBull = array.new<bool>()
+var fvgStr    = array.new<float>()   // 0-100 strength score per gap
+var fvgLabels = array.new<label>()   // optional strength label per gap (na if none)
+// inversion memory: zones of recently-invalidated gaps, so a new opposite gap in the
+// same zone can be flagged as an inverted FVG (IFVG).
+var invTop    = array.new<float>()
+var invBot    = array.new<float>()
+var invWasBull = array.new<bool>()   // polarity of the gap that got invalidated
+var invBar    = array.new<int>()     // bar it was invalidated on
+
+// Score a fair value gap 0-100 for how likely price is to RESPECT it.
+// Blends gap size vs ATR, the displacement/relative-volume of the creating candle,
+// whether it overlaps an order block / breaker block, and whether it inverts a prior
+// opposite gap (IFVG). dispVol is the volume of the candle that created the gap.
+// Returns [score, followsInversion, insideBlock].
+f_fvgStrength(float gTop, float gBot, bool isBull, float dispVol) =>
+    float atrF = math.max(nz(atr), syminfo.mintick)
+    // 1) gap size vs ATR  -> 0..35
+    float gapW   = math.min(math.abs(gTop - gBot) / atrF, 1.0)
+    float sizeSc = gapW * 35.0 * fvgSizeW
+    // 2) creation volume (relative volume of the displacement candle) -> 0..25
+    float relV   = nz(avgVol) > 0 ? dispVol / avgVol : 1.0
+    float volSc  = math.min(math.max(relV - 1.0, 0.0) / 1.5, 1.0) * 25.0 * fvgVolW
+    // 3) inside an order block or breaker block -> 0..25
+    float blockSc = 0.0
+    bool  inBlock = false
+    if array.size(obTop) > 0
+        for oi = 0 to array.size(obTop) - 1
+            float ot = array.get(obTop, oi)
+            float ob = array.get(obBot, oi)
+            if not na(ot) and not na(ob) and gTop >= ob and gBot <= ot   // gap overlaps OB
+                inBlock := true
+    if showBreaker and array.size(brkTop) > 0
+        for bri = 0 to array.size(brkTop) - 1
+            float bt = array.get(brkTop, bri)
+            float bb = array.get(brkBot, bri)
+            if not na(bt) and not na(bb) and gTop >= bb and gBot <= bt   // gap overlaps breaker
+                inBlock := true
+    if inBlock
+        blockSc := 25.0 * fvgBlockW
+    // 4) inversion of a prior opposite gap in the same zone (IFVG) -> 0..25
+    float invSc = 0.0
+    bool  isInv = false
+    if array.size(invTop) > 0
+        for ii = 0 to array.size(invTop) - 1
+            if bar_index - array.get(invBar, ii) <= fvgInvBars and array.get(invWasBull, ii) != isBull
+                float it = array.get(invTop, ii)
+                float ib = array.get(invBot, ii)
+                if gTop >= ib and gBot <= it
+                    isInv := true
+    if isInv
+        invSc := 25.0 * fvgInvW
+    float raw = sizeSc + volSc + blockSc + invSc
+    int scInt = int(math.min(math.round(raw), 100))
+    [scInt, isInv, inBlock]
 
 // confluence score for a price band [loB..hiB]
 f_confScore(float mid, float loB, float hiB, int members) =>
@@ -1703,26 +1767,50 @@ if (not masterOn or not showOB) and array.size(xtra_boxes) + array.size(xtra_lab
 // -----------------------------------------------------------------------------
 // FAIR VALUE GAPS  — rolling boxes  (arrays declared earlier, near projection helpers)
 // -----------------------------------------------------------------------------
+f_delFvgAt(int ix) =>
+    box.delete(array.get(fvgBoxes, ix))
+    label lb = array.get(fvgLabels, ix)
+    if not na(lb)
+        label.delete(lb)
+    array.remove(fvgBoxes, ix)
+    array.remove(fvgIsBull, ix)
+    array.remove(fvgStr, ix)
+    array.remove(fvgLabels, ix)
+
 if (not masterOn or not showFVG) and array.size(fvgBoxes) > 0
     while array.size(fvgBoxes) > 0
-        box.delete(array.shift(fvgBoxes))
-        array.shift(fvgIsBull)
+        f_delFvgAt(0)
 
 bullFVG = low > nz(high[2], low)
 bearFVG = high < nz(low[2], high)
-if masterOn and showFVG and bullFVG
-    b = box.new(bar_index[2], low, bar_index + extendR, high[2], border_color = color.new(colBull, 40), bgcolor = colFVG)
-    array.push(fvgBoxes, b)
-    array.push(fvgIsBull, true)
-if masterOn and showFVG and bearFVG
-    b = box.new(bar_index[2], low[2], bar_index + extendR, high, border_color = color.new(colBear, 40), bgcolor = colFVG)
-    array.push(fvgBoxes, b)
-    array.push(fvgIsBull, false)
+// A newly confirmed gap is scored for strength; weak gaps are hidden (or dimmed) so the
+// chart isn't flooded with trivial imbalances on low timeframes.
+if masterOn and showFVG and (bullFVG or bearFVG)
+    bool  isBull = bullFVG
+    float gTop   = isBull ? low   : low[2]
+    float gBot   = isBull ? high[2] : high
+    // the displacement candle that opened the gap is the middle bar [1]
+    float dispVol = nz(volume[1], volume)
+    [sc, isInv, inBlock] = f_fvgStrength(gTop, gBot, isBull, dispVol)
+    bool pass = (not fvgFilterOn) or (sc >= fvgMinStr)
+    if pass or fvgDimWeak
+        bool weak = fvgFilterOn and sc < fvgMinStr
+        color baseCol = isBull ? colBull : colBear
+        int   fillOp  = weak ? math.min(opacityFVG + 15, 97) : opacityFVG
+        int   bordOp  = weak ? 85 : 40
+        box b = box.new(bar_index[2], gTop, bar_index + extendR, gBot, border_color = color.new(baseCol, bordOp), bgcolor = color.new(colFVGBase, fillOp))
+        array.push(fvgBoxes, b)
+        array.push(fvgIsBull, isBull)
+        array.push(fvgStr, sc)
+        label lb = na
+        if fvgShowStr and not weak
+            string tag = str.tostring(sc) + "%" + (isInv ? " inv" : "") + (inBlock ? " blk" : "")
+            lb := label.new(bar_index + extendR, (gTop + gBot) / 2.0, tag, style = label.style_label_left, color = color.new(baseCol, 25), textcolor = color.white, size = size.tiny)
+        array.push(fvgLabels, lb)
 
 if array.size(fvgBoxes) > 0
     while array.size(fvgBoxes) > 20
-        box.delete(array.shift(fvgBoxes))
-        array.shift(fvgIsBull)
+        f_delFvgAt(0)
     int i = 0
     while i < array.size(fvgBoxes)
         box bx     = array.get(fvgBoxes, i)
@@ -1739,12 +1827,30 @@ if array.size(fvgBoxes) > 0
             else
                 invalid := high >= top and low <= bot
         if invalid
-            box.delete(bx)
-            array.remove(fvgBoxes, i)
-            array.remove(fvgIsBull, i)
+            // remember this zone briefly so a later opposite gap here counts as an inversion
+            array.push(invTop, top)
+            array.push(invBot, bot)
+            array.push(invWasBull, isBull)
+            array.push(invBar, bar_index)
+            f_delFvgAt(i)
         else
             box.set_right(bx, bar_index + extendR)
+            label lb = array.get(fvgLabels, i)
+            if not na(lb)
+                label.set_x(lb, bar_index + extendR)
             i += 1
+
+// prune inversion memory beyond its window
+if array.size(invTop) > 0
+    int k = 0
+    while k < array.size(invTop)
+        if bar_index - array.get(invBar, k) > fvgInvBars
+            array.remove(invTop, k)
+            array.remove(invBot, k)
+            array.remove(invWasBull, k)
+            array.remove(invBar, k)
+        else
+            k += 1
 
 // -----------------------------------------------------------------------------
 // ALERTS
