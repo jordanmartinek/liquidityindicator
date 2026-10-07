@@ -21,7 +21,7 @@ Asian / London / New York session highs and lows, with a daily reset, sweep-remo
 ### ③ Structure
 - **Swing highs/lows** kept as historical unswept liquidity, plus optional **higher-timeframe swings** for major structure far back.
 - **Equal highs/lows** via rolling-buffer detection (catches non-consecutive equals).
-- **Fair Value Gaps** with selectable invalidation (body close through / wick touch / full fill).
+- **Fair Value Gaps** with selectable invalidation (body close through / wick touch / full fill) **and a strength filter** that scores every gap **0–100** for how likely price is to *respect* it, then only draws the ones that clear a threshold (weak gaps are dimmed or hidden). The score blends **gap size vs ATR**, the **relative volume / displacement** of the candle that created it, whether it sits **inside an order block or breaker block**, and whether it is an **inversion (IFVG)** of a prior opposite gap. This cuts the flood of trivial gaps on low timeframes (e.g. the 5-minute chart). Each kept gap can print its strength % with `inv` / `blk` tags. The strength score also **feeds the rest of the model**: it weights the gap's contribution to the confluence score, scales how hard the gap walls the **path-clearance / resistance** read on the DOL banner (a strong gap blocks harder than a trivial one), and gates whether a gap counts toward the high-conviction **stacked-agreement ⭐** flag.
 - **Sweep + reversal (SFP)** markers: a wick pierces a tracked level then the candle closes back on the origin side (a stop-run), optionally volume-confirmed.
 - **Order Blocks**: after a sweep + displacement, the last opposing candle is marked as a demand/supply zone until mitigated.
 
@@ -31,7 +31,7 @@ All swing / equal / previous-period levels are removed once price sweeps them.
 Per-level "time-to-reach" estimate based on price velocity (clock time or bars), optionally direction-aware.
 
 ### ⑤ Clustering & Confluence
-Nearby levels merge into a single **strength-rated zone**, color-coded by side — **BSL** (buy-side, above price) vs **SSL** (sell-side, below price) — with tiered strength emojis and a min-strength filter. Each zone gets a **confluence score (0–100)** rolling up stacked levels + order-block overlap + **OTE-fib proximity + premium/discount extreme** (computed from the live dealing range internally — not drawn on the chart) + round-number proximity, and the zone shades from its side color toward hot amber as the score climbs.
+Nearby levels merge into a single **strength-rated zone**, color-coded by side — **BSL** (buy-side, above price) vs **SSL** (sell-side, below price) — with tiered strength emojis and a min-strength filter. Each zone gets a **confluence score (0–100)** rolling up stacked levels + order-block overlap + **FVG overlap (weighted by the gap's own strength score)** + **OTE-fib proximity + premium/discount extreme** (computed from the live dealing range internally — not drawn on the chart) + round-number proximity, and the zone shades from its side color toward hot amber as the score climbs.
 
 ### ⑥ Draw-on-Liquidity Gauge
 A corner banner showing the side price is most likely being drawn toward. Each level's pull is `distance-decay × type × age × freshness × confluence`, summed per side and blended with a momentum tilt. The banner shows direction, conviction %, a conviction meter, an optional **tug-of-war bar** (BSL vs SSL balance), and an optional primary-magnet **target** row (price + distance in ATR / %).
