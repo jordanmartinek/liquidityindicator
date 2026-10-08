@@ -78,7 +78,7 @@ fvgFilterOn   = input.bool(true,  "  Filter FVGs by strength", tooltip = "Score 
 fvgMinStr     = input.int(45, "    Min FVG strength % to draw", minval = 0, maxval = 100, tooltip = "Fair value gaps scoring below this are hidden (or dimmed, if 'Dim weak FVGs' is on). Raise to thin the chart further; lower to show more. Only applies when 'Filter FVGs by strength' is on.", group = G_STRUCT)
 fvgDimWeak    = input.bool(true, "    Dim weak FVGs instead of hiding", tooltip = "Rather than removing sub-threshold gaps entirely, draw them very faintly so context is kept while the strong gaps stand out. Off = weak gaps are not drawn at all.", group = G_STRUCT)
 fvgShowStr    = input.bool(true, "    Label FVG strength %", tooltip = "Print each drawn gap's strength % (plus a tag: 'inv' = followed an inversion, 'blk' = inside an order/breaker block) on the box so you can see WHY it was kept.", group = G_STRUCT)
-fvgLblStyle   = input.string("Pointer (distinct)", "    FVG label style", options = ["Pointer (distinct)","Plain text (no box)","Callout (like levels)"], tooltip = "How the FVG strength % label is drawn, so it doesn't blend into the level/cluster callouts when zoomed out. 'Pointer (distinct)': a tinted pointer tag anchored at the LEFT edge of the gap (away from the level labels on the right). 'Plain text (no box)': borderless text in the gap color — the most minimal. 'Callout (like levels)': the original left-callout box at the right edge.", group = G_STRUCT)
+fvgLblStyle   = input.string("Inside box (centered)", "    FVG label style", options = ["Inside box (centered)","Pointer (distinct)","Plain text (no box)","Callout (like levels)"], tooltip = "How the FVG strength % label is drawn, so it doesn't blend into the level/cluster callouts when zoomed out. 'Inside box (centered)': the % sits CENTERED inside the gap box itself — tied directly to its box, clearly separate from the level labels at the right edge (recommended). 'Pointer (distinct)': a tinted pointer tag at the LEFT edge of the gap. 'Plain text (no box)': borderless text in the gap color — the most minimal. 'Callout (like levels)': the original left-callout box at the right edge.", group = G_STRUCT)
 fvgSizeW      = input.float(1.0, "    Weight: gap size vs ATR", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "How much the gap's own size (displacement) counts toward its strength. Bigger gaps = stronger imbalance.", group = G_STRUCT)
 fvgVolW       = input.float(1.0, "    Weight: creation volume", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "How much the relative volume of the candle that CREATED the gap counts. High-volume displacement gaps are respected more often. Uses the Rel-volume lookback from the SFP section.", group = G_STRUCT)
 fvgBlockW     = input.float(1.0, "    Weight: inside OB / breaker", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap overlaps an order block or breaker block — a gap defended by a resting institutional zone is far more likely to hold.", group = G_STRUCT)
@@ -1894,18 +1894,22 @@ if masterOn and showFVG and (bullFVG or bearFVG)
             array.push(fvgStr, sc)
             label lb = na
             if fvgShowStr and not weak
-                // tag text; a diamond prefix sets FVG tags apart from level/cluster callouts
-                string tag = "◆ " + str.tostring(sc) + "%" + (isInv ? " inv" : "") + (inBlock ? " blk" : "")
+                string suffix = (isInv ? " inv" : "") + (inBlock ? " blk" : "")
                 float ceY = (gTop + gBot) / 2.0
-                if fvgLblStyle == "Plain text (no box)"
+                if fvgLblStyle == "Inside box (centered)"
+                    // % sits CENTERED inside the gap box itself — tied to its box, no callout,
+                    // so it can't blend with the level labels bunched at the right edge.
+                    int cx = int(math.round((bar_index[2] + bar_index + extendR) / 2.0))
+                    lb := label.new(cx, ceY, str.tostring(sc) + "%" + suffix, style = label.style_center, textcolor = color.white, size = size.small)
+                else if fvgLblStyle == "Plain text (no box)"
                     // borderless text in the gap color — most minimal, cannot blend with the solid callouts
-                    lb := label.new(bar_index + extendR, ceY, tag, style = label.style_none, textcolor = baseCol, size = size.small)
+                    lb := label.new(bar_index + extendR, ceY, "◆ " + str.tostring(sc) + "%" + suffix, style = label.style_none, textcolor = baseCol, size = size.small)
                 else if fvgLblStyle == "Callout (like levels)"
-                    lb := label.new(bar_index + extendR, ceY, tag, style = label.style_label_left, color = color.new(baseCol, 25), textcolor = color.white, size = size.small)
+                    lb := label.new(bar_index + extendR, ceY, "◆ " + str.tostring(sc) + "%" + suffix, style = label.style_label_left, color = color.new(baseCol, 25), textcolor = color.white, size = size.small)
                 else
                     // Pointer (distinct): anchored at the LEFT edge of the gap (away from the
                     // right-edge level labels) with the pointer facing right into the gap.
-                    lb := label.new(bar_index[2], ceY, tag, style = label.style_label_right, color = color.new(baseCol, 10), textcolor = color.white, size = size.small)
+                    lb := label.new(bar_index[2], ceY, "◆ " + str.tostring(sc) + "%" + suffix, style = label.style_label_right, color = color.new(baseCol, 10), textcolor = color.white, size = size.small)
             array.push(fvgLabels, lb)
             // consequent-encroachment (CE) line at the gap midpoint — the 50% price reacts to
             line ce = na
@@ -1942,10 +1946,15 @@ if array.size(fvgBoxes) > 0
         else
             box.set_right(bx, bar_index + extendR)
             label lb = array.get(fvgLabels, i)
-            // right-edge styles follow the box's right edge; the Pointer style stays anchored
-            // at the gap's left edge (where it was created), so don't move it.
-            if not na(lb) and fvgLblStyle != "Pointer (distinct)"
-                label.set_x(lb, bar_index + extendR)
+            // keep each label correctly placed as the box extends right:
+            //  • Inside box (centered): re-center over the (growing) box
+            //  • Right-edge styles (Plain / Callout): follow the right edge
+            //  • Pointer: stays anchored at the gap's left edge — don't move it
+            if not na(lb)
+                if fvgLblStyle == "Inside box (centered)"
+                    label.set_x(lb, int(math.round((box.get_left(bx) + bar_index + extendR) / 2.0)))
+                else if fvgLblStyle != "Pointer (distinct)"
+                    label.set_x(lb, bar_index + extendR)
             line ce = array.get(fvgCE, i)
             if not na(ce)
                 line.set_x2(ce, bar_index + extendR)
