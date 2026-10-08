@@ -1900,7 +1900,7 @@ if masterOn and showFVG and (bullFVG or bearFVG)
                     // % sits CENTERED inside the gap box itself — tied to its box, no callout,
                     // so it can't blend with the level labels bunched at the right edge.
                     int cx = int(math.round((bar_index[2] + bar_index + extendR) / 2.0))
-                    lb := label.new(cx, ceY, str.tostring(sc) + "%" + suffix, style = label.style_center, textcolor = color.white, size = size.small)
+                    lb := label.new(cx, ceY, str.tostring(sc) + "%" + suffix, style = label.style_text_outline, textcolor = color.white, color = color.new(baseCol, 100), size = size.small)
                 else if fvgLblStyle == "Plain text (no box)"
                     // borderless text in the gap color — most minimal, cannot blend with the solid callouts
                     lb := label.new(bar_index + extendR, ceY, "◆ " + str.tostring(sc) + "%" + suffix, style = label.style_none, textcolor = baseCol, size = size.small)
