@@ -1894,7 +1894,7 @@ if masterOn and showFVG and (bullFVG or bearFVG)
             label lb = na
             if fvgShowStr and not weak
                 string tag = str.tostring(sc) + "%" + (isInv ? " inv" : "") + (inBlock ? " blk" : "")
-                lb := label.new(bar_index + extendR, (gTop + gBot) / 2.0, tag, style = label.style_label_left, color = color.new(baseCol, 25), textcolor = color.white, size = size.tiny)
+                lb := label.new(bar_index + extendR, (gTop + gBot) / 2.0, tag, style = label.style_label_left, color = color.new(baseCol, 25), textcolor = color.white, size = size.small)
             array.push(fvgLabels, lb)
             // consequent-encroachment (CE) line at the gap midpoint — the 50% price reacts to
             line ce = na
