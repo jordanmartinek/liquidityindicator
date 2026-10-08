@@ -399,9 +399,13 @@ vwapVal = ta.vwap(hlc3)
 var float vpPOC = na
 var float vpVAH = na
 var float vpVAL = na
+// ta.highest/ta.lowest must be evaluated every bar (not inside a conditional) for a consistent
+// series; compute at global scope and read the results inside the VP block below.
+float vpHiP = ta.highest(high, vpLen)
+float vpLoP = ta.lowest(low, vpLen)
 if showVP and barstate.islast
-    float hiP = ta.highest(high, vpLen)
-    float loP = ta.lowest(low, vpLen)
+    float hiP = vpHiP
+    float loP = vpLoP
     if not na(hiP) and not na(loP) and hiP > loP
         float binW = (hiP - loP) / vpBins
         var bins = array.new<float>()
@@ -512,7 +516,9 @@ f_htfFvg() =>
     float dV = nz(volume[1], volume)
     int   bn = bar_index
     [exists ? 1 : 0, gT, gB, bull ? 1 : 0, dV, bn]
-[hfvgEx, hfvgT, hfvgB, hfvgBull, hfvgVol, hfvgBar] = htfFvgOn ? request.security(syminfo.tickerid, htfTF, f_htfFvg(), lookahead = barmerge.lookahead_off) : [0, float(na), float(na), 0, float(na), int(na)]
+// NOTE: request.security is called unconditionally (a ternary cannot return a tuple in Pine).
+// The htfFvgOn guards on htfFvgNew / registration below suppress all tracking when it's off.
+[hfvgEx, hfvgT, hfvgB, hfvgBull, hfvgVol, hfvgBar] = request.security(syminfo.tickerid, htfTF, f_htfFvg(), lookahead = barmerge.lookahead_off)
 // a gap is "new" when the reported HTF bar index advances (one registration per HTF bar)
 htfFvgNew = htfFvgOn and nz(hfvgEx) == 1 and not na(hfvgT) and not na(hfvgB) and (na(hfvgBar[1]) or hfvgBar != hfvgBar[1])
 
