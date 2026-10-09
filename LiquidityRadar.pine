@@ -74,27 +74,29 @@ showFVG    = input.bool(true,  "Fair Value Gaps (FVG)",        group = G_STRUCT)
 hideMitFVG = input.bool(true,  "  Remove invalidated FVGs",    group = G_STRUCT)
 fvgFillMode = input.string("Body close through", "  FVG invalidation", options = ["Body close through","Wick touch (50%)","Full fill (wick)"], tooltip = "Body close through: gap disappears once a candle CLOSES beyond it. Wick touch: removed at midpoint. Full fill: removed only when a wick fully engulfs it.", group = G_STRUCT)
 // --- FVG strength filter (declutter: only keep gaps price is likely to respect) ---
-fvgFilterOn   = input.bool(true,  "  Filter FVGs by strength", tooltip = "Score every fair value gap 0-100 for how likely price is to RESPECT it, and only draw the ones that clear the threshold below. Kills the flood of trivial gaps on low timeframes (e.g. the 5-minute chart) and leaves the gaps that actually matter. The score blends: gap size vs ATR, the displacement/relative-volume of the candle that created it, whether it sits inside an order block or breaker block, and whether it is an inversion (IFVG) of a prior opposite gap.", group = G_STRUCT)
+fvgFilterOn   = input.bool(true,  "  Filter FVGs by strength", tooltip = "Score every fair value gap 0-100 for how likely price is to RESPECT it, and only draw the ones that clear the threshold below. Kills the flood of trivial gaps on low timeframes (e.g. the 5-minute chart) and leaves the gaps that actually matter. The score blends: gap size vs ATR, creation volume, overlap with an order/breaker block, inversion (IFVG), ALIGNMENT WITH A HIGHER-TIMEFRAME GAP, premium/discount location in the dealing range, displacement quality (body + structure break), confluence (round number / VWAP / OTE), minus a discount if the gap has already been tested.", group = G_STRUCT)
 fvgMinStr     = input.int(45, "    Min FVG strength % to draw", minval = 0, maxval = 100, tooltip = "Fair value gaps scoring below this are hidden (or dimmed, if 'Dim weak FVGs' is on). Raise to thin the chart further; lower to show more. Only applies when 'Filter FVGs by strength' is on.", group = G_STRUCT)
 fvgDimWeak    = input.bool(true, "    Dim weak FVGs instead of hiding", tooltip = "Rather than removing sub-threshold gaps entirely, draw them very faintly so context is kept while the strong gaps stand out. Off = weak gaps are not drawn at all.", group = G_STRUCT)
-fvgShowStr    = input.bool(true, "    Label FVG strength %", tooltip = "Print each drawn gap's strength % (plus a tag: 'inv' = followed an inversion, 'blk' = inside an order/breaker block) on the box so you can see WHY it was kept.", group = G_STRUCT)
+fvgShowStr    = input.bool(true, "    Label FVG strength %", tooltip = "Print each drawn gap's strength % (plus tags: 'htf' = aligns with a higher-timeframe gap, 'inv' = followed an inversion, 'blk' = inside an order/breaker block) so you can see WHY it scored the way it did.", group = G_STRUCT)
 fvgLblStyle   = input.string("Inside box (centered)", "    FVG label style", options = ["Inside box (centered)","Pointer (distinct)","Plain text (no box)","Callout (like levels)"], tooltip = "How the FVG strength % label is drawn, so it doesn't blend into the level/cluster callouts when zoomed out. 'Inside box (centered)': the % sits CENTERED inside the gap box itself — tied directly to its box, clearly separate from the level labels at the right edge (recommended). 'Pointer (distinct)': a tinted pointer tag at the LEFT edge of the gap. 'Plain text (no box)': borderless text in the gap color — the most minimal. 'Callout (like levels)': the original left-callout box at the right edge.", group = G_STRUCT)
 fvgSizeW      = input.float(1.0, "    Weight: gap size vs ATR", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "How much the gap's own size (displacement) counts toward its strength. Bigger gaps = stronger imbalance.", group = G_STRUCT)
 fvgVolW       = input.float(1.0, "    Weight: creation volume", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "How much the relative volume of the candle that CREATED the gap counts. High-volume displacement gaps are respected more often. Uses the Rel-volume lookback from the SFP section.", group = G_STRUCT)
 fvgBlockW     = input.float(1.0, "    Weight: inside OB / breaker", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap overlaps an order block or breaker block — a gap defended by a resting institutional zone is far more likely to hold.", group = G_STRUCT)
 fvgInvW       = input.float(1.0, "    Weight: inversion (IFVG)", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap forms right after an opposite gap in the same zone was invalidated (an inverted FVG / IFVG). Inversions mark a decisive flip and tend to be respected hard on the retest.", group = G_STRUCT)
 fvgInvBars    = input.int(30, "    Inversion memory (bars)", minval = 1, maxval = 200, tooltip = "How many bars back a recently-invalidated opposite gap still counts as the parent of an inversion.", group = G_STRUCT)
+fvgHtfW       = input.float(1.0, "    Weight: HTF-gap alignment", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap overlaps a higher-timeframe fair value gap. HTF alignment is the single biggest accuracy signal — a chart-TF gap sitting inside an HTF imbalance is defended by far heavier flow. The bonus scales with the HTF gap's own strength.", group = G_STRUCT)
+fvgPdW        = input.float(1.0, "    Weight: premium/discount location", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap sits on the 'correct' side of the live dealing range: a BULLISH gap in DISCOUNT (lower half) or a BEARISH gap in PREMIUM (upper half) aligns with where institutions fill, so it is respected more often. A bullish gap in premium (or bearish in discount) earns little here.", group = G_STRUCT)
+fvgDispW      = input.float(1.0, "    Weight: displacement quality", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus for a decisive creating candle: a large real body (vs its range) and/or a move that broke recent structure (took out a swing). A gap left by conviction holds better than one from an indecisive wick.", group = G_STRUCT)
+fvgConflW     = input.float(1.0, "    Weight: confluence (round / VWAP / OTE)", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap's midpoint sits near a round number, the session VWAP, or an OTE retracement level of the dealing range — defended fair-value references that reinforce the gap.", group = G_STRUCT)
+fvgFreshDisc  = input.float(0.35, "    Tested-gap discount", minval = 0.0, maxval = 0.9, step = 0.05, tooltip = "How much to cut a gap's score once price has already probed into it (partially mitigated / 'used' liquidity). 0.35 = a tested gap scores 35% lower. A virgin, untouched gap keeps its full score. 0 = disable (freshness ignored).", group = G_STRUCT)
 // --- min-gap floor: kill micro-gaps at the source before they are ever scored/drawn ---
 fvgMinGapATR  = input.float(0.0, "  Min gap size (× ATR)", minval = 0.0, maxval = 3.0, step = 0.05, tooltip = "A gap smaller than this many ATRs is ignored entirely — never scored, drawn, or tracked. A hard noise floor that kills micro-imbalances at the source on low timeframes (e.g. the 5-minute chart), complementing the strength filter. 0 = disable (keep every gap, however small).", group = G_STRUCT)
 // --- consequent encroachment (CE) line: the 50% midpoint price reacts to most ---
 fvgShowCE     = input.bool(false, "  Show CE (50%) line on FVGs", tooltip = "Draw a dashed line at each gap's midpoint — the 'consequent encroachment' (CE). Price very often reacts to the gap's 50% rather than the full fill, so the CE is the real mitigation/entry reference ICT traders watch. Applies to drawn chart-timeframe gaps.", group = G_STRUCT)
 fvgCECol      = input.color(color.new(#ab47bc, 20), "    CE line color", group = G_STRUCT)
-// --- higher-timeframe (HTF) FVGs: surfaced in a side panel, fed into scoring, NOT drawn as boxes ---
-htfFvgOn      = input.bool(true, "  Higher-timeframe FVGs (side panel)", tooltip = "Detect fair value gaps on the HTF timeframe set above (the same '  HTF timeframe' input used for HTF swings — edit it to pick which timeframe to watch, e.g. 60 / 240 / D). An HTF gap is a far stronger magnet than any chart-TF gap, so these FEED the scoring (confluence, DOL path-clearance / resistance, and the ⭐ stacked-agreement flag) — but to keep your levels uncluttered they are NOT drawn as boxes on the chart. Instead they are listed in a compact side panel.", group = G_STRUCT)
-htfFvgKeep    = input.int(6, "    Max HTF FVGs tracked", minval = 1, maxval = 20, tooltip = "How many recent unfilled HTF gaps to keep. The panel lists the nearest ones to price.", group = G_STRUCT)
-htfFvgPanel   = input.bool(true, "    Show HTF FVG side panel", tooltip = "Show the compact table listing tracked HTF gaps (side, source timeframe, distance from price, strength %, and nearest-first ordering). Turn off to keep HTF gaps feeding the scoring silently with no panel.", group = G_STRUCT)
-htfFvgPanelPos = input.string("Bottom Right", "    HTF FVG panel position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], tooltip = "Where to anchor the HTF FVG panel. Defaults away from the DOL banner (top-right) so they don't collide.", group = G_STRUCT)
-htfFvgRows    = input.int(5, "    Max panel rows", minval = 1, maxval = 20, tooltip = "Maximum number of HTF gaps listed in the panel (nearest to price first).", group = G_STRUCT)
+// --- higher-timeframe (HTF) FVGs: detected and folded into scoring (no separate chart drawing) ---
+htfFvgOn      = input.bool(true, "  Use higher-timeframe FVGs in scoring", tooltip = "Detect fair value gaps on the HTF timeframe set above (the same '  HTF timeframe' input used for HTF swings — edit it to pick which timeframe to watch, e.g. 60 / 240 / D). HTF gaps are NOT drawn on the chart; instead they BOOST the score of any chart-TF gap that aligns with them (see 'Weight: HTF-gap alignment') and they also feed the DOL model (confluence, path-clearance / resistance, and the ⭐ stacked-agreement flag) as strong magnet zones.", group = G_STRUCT)
+htfFvgKeep    = input.int(6, "    Max HTF FVGs tracked", minval = 1, maxval = 20, tooltip = "How many recent unfilled HTF gaps to keep in memory for the alignment boost and the DOL scoring.", group = G_STRUCT)
 // --- SFP (sweep + reversal) ---
 showSFP    = input.bool(true, "Sweep + reversal markers (SFP)", tooltip = "The core validity trigger: a wick pierces a tracked level then the candle CLOSES back on the origin side (a stop-run). Marks 🎯 SFP long/short.", group = G_STRUCT)
 sfpUseVol  = input.bool(true, "  Require volume confirmation", tooltip = "Only flag a sweep as a real grab on elevated relative volume.", group = G_STRUCT)
@@ -506,8 +508,8 @@ htfPHchg = not na(htfPH) and (na(htfPH[1]) or htfPH != htfPH[1])
 htfPLchg = not na(htfPL) and (na(htfPL[1]) or htfPL != htfPL[1])
 
 // --- HTF Fair Value Gaps: detect the 3-candle gap natively on the HTF, pull back the
-// zone bounds + polarity + displacement volume in one security call. Box-less: these feed
-// the scoring and the side panel but are never drawn as boxes. ---
+// zone bounds + polarity + displacement volume in one security call. Box-less: they boost
+// aligned chart-TF gap scores and feed the DOL model, but are never drawn as boxes. ---
 f_htfFvg() =>
     bool bull = low > nz(high[2], low)
     bool bear = high < nz(low[2], high)
@@ -1034,8 +1036,8 @@ var fvgIsBull = array.new<bool>()
 var fvgStr    = array.new<float>()   // 0-100 strength score per gap
 var fvgLabels = array.new<label>()   // optional strength label per gap (na if none)
 var fvgCE     = array.new<line>()    // optional consequent-encroachment (50%) line per gap (na if none)
-// HTF (higher-timeframe) FVG state — tracked box-less (plain floats, zero draw-object cost)
-// so they feed scoring without cluttering the chart. Listed in the side panel instead.
+// HTF (higher-timeframe) FVG state — tracked box-less (plain floats, zero draw-object cost).
+// They boost the score of aligned chart-TF gaps and feed the DOL model; never drawn.
 var htfFvgTop   = array.new<float>()
 var htfFvgBot   = array.new<float>()
 var htfFvgBull  = array.new<bool>()
@@ -1047,20 +1049,24 @@ var invBot    = array.new<float>()
 var invWasBull = array.new<bool>()   // polarity of the gap that got invalidated
 var invBar    = array.new<int>()     // bar it was invalidated on
 
-// Score a fair value gap 0-100 for how likely price is to RESPECT it.
-// Blends gap size vs ATR, the displacement/relative-volume of the creating candle,
-// whether it overlaps an order block / breaker block, and whether it inverts a prior
-// opposite gap (IFVG). dispVol is the volume of the candle that created the gap.
-// Returns [score, followsInversion, insideBlock].
-f_fvgStrength(float gTop, float gBot, bool isBull, float dispVol) =>
+// Score a fair value gap 0-100 for how likely price is to RESPECT it. Blends many factors:
+//   • gap size vs ATR            • creation volume (rel-vol of the displacement candle)
+//   • inside an order/breaker     • inversion of a prior opposite gap (IFVG)
+//   • alignment with an HTF gap   • premium/discount location in the dealing range
+//   • displacement quality        • confluence (round number / VWAP / OTE)
+//   • freshness (tested gaps are discounted)
+// dispVol = volume of the creating candle; dispQual = caller-computed 0..1 candle-conviction
+// (body dominance + structure break). Pass isHtf=true to skip the HTF-alignment factor for
+// HTF gaps themselves (avoids self-matching). Returns [score, isInv, inBlock, htfAligned].
+f_fvgStrength(float gTop, float gBot, bool isBull, float dispVol, float dispQual, bool isHtf) =>
     float atrF = math.max(nz(atr), syminfo.mintick)
-    // 1) gap size vs ATR  -> 0..35
+    // 1) gap size vs ATR  -> 0..20
     float gapW   = math.min(math.abs(gTop - gBot) / atrF, 1.0)
-    float sizeSc = gapW * 35.0 * fvgSizeW
-    // 2) creation volume (relative volume of the displacement candle) -> 0..25
+    float sizeSc = gapW * 20.0 * fvgSizeW
+    // 2) creation volume (relative volume of the displacement candle) -> 0..15
     float relV   = nz(avgVol) > 0 ? dispVol / avgVol : 1.0
-    float volSc  = math.min(math.max(relV - 1.0, 0.0) / 1.5, 1.0) * 25.0 * fvgVolW
-    // 3) inside an order block or breaker block -> 0..25
+    float volSc  = math.min(math.max(relV - 1.0, 0.0) / 1.5, 1.0) * 15.0 * fvgVolW
+    // 3) inside an order block or breaker block -> 0..18
     float blockSc = 0.0
     bool  inBlock = false
     if array.size(obTop) > 0
@@ -1076,8 +1082,8 @@ f_fvgStrength(float gTop, float gBot, bool isBull, float dispVol) =>
             if not na(bt) and not na(bb) and gTop >= bb and gBot <= bt   // gap overlaps breaker
                 inBlock := true
     if inBlock
-        blockSc := 25.0 * fvgBlockW
-    // 4) inversion of a prior opposite gap in the same zone (IFVG) -> 0..25
+        blockSc := 18.0 * fvgBlockW
+    // 4) inversion of a prior opposite gap in the same zone (IFVG) -> 0..15
     float invSc = 0.0
     bool  isInv = false
     if array.size(invTop) > 0
@@ -1088,10 +1094,61 @@ f_fvgStrength(float gTop, float gBot, bool isBull, float dispVol) =>
                 if gTop >= ib and gBot <= it
                     isInv := true
     if isInv
-        invSc := 25.0 * fvgInvW
-    float raw = sizeSc + volSc + blockSc + invSc
-    int scInt = int(math.min(math.round(raw), 100))
-    [scInt, isInv, inBlock]
+        invSc := 15.0 * fvgInvW
+    // 5) HTF-gap alignment -> 0..22 (biggest signal; scales with the HTF gap's own strength)
+    float htfSc = 0.0
+    bool  htfAligned = false
+    if htfFvgOn and not isHtf and array.size(htfFvgTop) > 0
+        float bestHtf = 0.0
+        for hi = 0 to array.size(htfFvgTop) - 1
+            float ht = array.get(htfFvgTop, hi)
+            float hb = array.get(htfFvgBot, hi)
+            if gTop >= hb and gBot <= ht   // chart gap overlaps HTF gap
+                htfAligned := true
+                float hs = hi < array.size(htfFvgStr) ? array.get(htfFvgStr, hi) : 60.0
+                bestHtf := math.max(bestHtf, 0.5 + 0.5 * (nz(hs, 60.0) / 100.0))   // 0.5..1.0
+        if htfAligned
+            htfSc := 22.0 * fvgHtfW * bestHtf
+    // 6) premium/discount location in the live dealing range -> 0..12
+    //    bullish gap in discount (lower half) or bearish gap in premium (upper half) is ideal.
+    float pdSc = 0.0
+    if not na(rngHi) and not na(rngLo) and rngHi > rngLo
+        float gMid = (gTop + gBot) / 2.0
+        float pos  = math.min(1.0, math.max(0.0, (gMid - rngLo) / (rngHi - rngLo)))
+        // alignment: bull wants low pos (discount), bear wants high pos (premium)
+        float align = isBull ? (1.0 - pos) : pos
+        pdSc := math.max(0.0, (align - 0.5) * 2.0) * 12.0 * fvgPdW   // only rewards the correct half
+    // 7) displacement quality (caller-supplied 0..1) -> 0..10
+    float dispSc = math.min(math.max(nz(dispQual), 0.0), 1.0) * 10.0 * fvgDispW
+    // 8) confluence: midpoint near a round number / VWAP / OTE fib -> 0..10
+    float conflSc = 0.0
+    float gMid2 = (gTop + gBot) / 2.0
+    float tolC = math.max(atrF * 0.25, syminfo.mintick)
+    bool  conflHit = false
+    if confRound > 0
+        float nearest = math.round(gMid2 / confRound) * confRound
+        if math.abs(gMid2 - nearest) <= tolC
+            conflHit := true
+    if confVWAP and not na(vwapVal) and math.abs(gMid2 - vwapVal) <= tolC
+        conflHit := true
+    if not na(rngHi) and not na(rngLo) and rngHi > rngLo
+        float rng = rngHi - rngLo
+        bool bullLeg = rangeDir >= 0
+        float oteA = bullLeg ? (rngHi - pdFib1 * rng) : (rngLo + pdFib1 * rng)
+        float oteB = bullLeg ? (rngHi - pdFib2 * rng) : (rngLo + pdFib2 * rng)
+        float oteC = bullLeg ? (rngHi - pdFib3 * rng) : (rngLo + pdFib3 * rng)
+        if math.abs(gMid2 - oteA) <= tolC or math.abs(gMid2 - oteB) <= tolC or math.abs(gMid2 - oteC) <= tolC
+            conflHit := true
+    if conflHit
+        conflSc := 10.0 * fvgConflW
+    // sum the additive factors (capped at 100 pre-freshness)
+    float raw = math.min(sizeSc + volSc + blockSc + invSc + htfSc + pdSc + dispSc + conflSc, 100.0)
+    // 9) freshness multiplier — a gap price has already probed is 'used' liquidity, discount it
+    float freshMul = 1.0
+    if fvgFreshDisc > 0 and f_isTested((gTop + gBot) / 2.0, atrF)
+        freshMul := 1.0 - fvgFreshDisc
+    int scInt = int(math.min(math.round(raw * freshMul), 100))
+    [scInt, isInv, inBlock, htfAligned]
 
 // confluence score for a price band [loB..hiB]
 f_confScore(float mid, float loB, float hiB, int members) =>
@@ -1881,7 +1938,13 @@ if masterOn and showFVG and (bullFVG or bearFVG)
     if bigEnough
         // the displacement candle that opened the gap is the middle bar [1]
         float dispVol = nz(volume[1], volume)
-        [sc, isInv, inBlock] = f_fvgStrength(gTop, gBot, isBull, dispVol)
+        // displacement quality (0..1): body dominance of the creating candle + a structure-break
+        // bonus if that candle's close took out the most recent opposing swing.
+        float dRange = math.max(high[1] - low[1], syminfo.mintick)
+        float bodyDom = math.abs(close[1] - open[1]) / dRange                 // 0..1
+        bool  brokeStruct = isBull ? (not na(lastPH) and close[1] > lastPH) : (not na(lastPL) and close[1] < lastPL)
+        float dispQual = math.min(1.0, bodyDom * 0.7 + (brokeStruct ? 0.3 : 0.0))
+        [sc, isInv, inBlock, htfAl] = f_fvgStrength(gTop, gBot, isBull, dispVol, dispQual, false)
         bool pass = (not fvgFilterOn) or (sc >= fvgMinStr)
         if pass or fvgDimWeak
             bool weak = fvgFilterOn and sc < fvgMinStr
@@ -1894,7 +1957,7 @@ if masterOn and showFVG and (bullFVG or bearFVG)
             array.push(fvgStr, sc)
             label lb = na
             if fvgShowStr and not weak
-                string suffix = (isInv ? " inv" : "") + (inBlock ? " blk" : "")
+                string suffix = (htfAl ? " htf" : "") + (isInv ? " inv" : "") + (inBlock ? " blk" : "")
                 float ceY = (gTop + gBot) / 2.0
                 if fvgLblStyle == "Inside box (centered)"
                     // % sits CENTERED inside the gap box itself — tied to its box, no callout,
@@ -1973,7 +2036,7 @@ if array.size(invTop) > 0
             k += 1
 
 // -----------------------------------------------------------------------------
-// HIGHER-TIMEFRAME FAIR VALUE GAPS — box-less tracking (feed scoring + side panel)
+// HIGHER-TIMEFRAME FAIR VALUE GAPS — box-less tracking (boost aligned gaps + feed DOL)
 // -----------------------------------------------------------------------------
 // wipe when master/HTF-FVG off
 if (not masterOn or not htfFvgOn) and array.size(htfFvgTop) > 0
@@ -1997,7 +2060,9 @@ if masterOn and htfFvgNew
             if math.abs(array.get(htfFvgTop, di) - hT) <= tolZ and math.abs(array.get(htfFvgBot, di) - hB) <= tolZ
                 dup := true
     if hBig and not dup
-        [hsc, hInv, hBlk] = f_fvgStrength(hT, hB, hbull, nz(hfvgVol))
+        // HTF gaps: skip the HTF-alignment factor (isHtf=true) to avoid self-matching; use a
+        // neutral displacement quality since the HTF candle body isn't pulled back.
+        [hsc, hInv, hBlk, hAl] = f_fvgStrength(hT, hB, hbull, nz(hfvgVol), 0.5, true)
         array.push(htfFvgTop, hT)
         array.push(htfFvgBot, hB)
         array.push(htfFvgBull, hbull)
@@ -2032,53 +2097,8 @@ if array.size(htfFvgTop) > 0
         else
             hi2 += 1
 
-// ---- HTF FVG side panel (nearest-first, no chart boxes) ----
-if masterOn and htfFvgOn and htfFvgPanel and barstate.islast and array.size(htfFvgTop) > 0
-    float atrP = math.max(nz(atr), syminfo.mintick)
-    int nH = array.size(htfFvgTop)
-    int rowsMax = math.min(htfFvgRows, nH)
-    var table hfvgTbl = table.new(position.bottom_right, 4, 21, border_width = 1)
-    table.set_position(hfvgTbl, f_tablePos(htfFvgPanelPos))
-    table.clear(hfvgTbl, 0, 0, 3, 20)
-    // header — title row names the source timeframe, then column labels
-    table.cell(hfvgTbl, 0, 0, "HTF FVG " + htfTF, text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
-    table.cell(hfvgTbl, 1, 0, "CE", text_color = themeMuted, bgcolor = themePanelBg, text_size = size.small)
-    table.cell(hfvgTbl, 2, 0, "dist", text_color = themeMuted, bgcolor = themePanelBg, text_size = size.small)
-    table.cell(hfvgTbl, 3, 0, "str", text_color = themeMuted, bgcolor = themePanelBg, text_size = size.small)
-    // selection by nearest distance to price: repeatedly pick the unused nearest gap
-    var used = array.new<bool>()
-    array.clear(used)
-    for u = 0 to nH - 1
-        array.push(used, false)
-    int rowN = 1
-    for r = 0 to rowsMax - 1
-        float bestDist = na
-        int   bestIx = -1
-        for gi = 0 to nH - 1
-            if not array.get(used, gi)
-                float gm = (array.get(htfFvgTop, gi) + array.get(htfFvgBot, gi)) / 2.0
-                float d = math.abs(gm - close)
-                if na(bestDist) or d < bestDist
-                    bestDist := d
-                    bestIx := gi
-        if bestIx >= 0
-            array.set(used, bestIx, true)
-            float gT = array.get(htfFvgTop, bestIx)
-            float gB = array.get(htfFvgBot, bestIx)
-            bool  gbull = array.get(htfFvgBull, bestIx)
-            float gsc = array.get(htfFvgStr, bestIx)
-            float gm = (gT + gB) / 2.0
-            float dATR = math.abs(gm - close) / atrP
-            string sideStr = gbull ? "🟢 bull" : "🔴 bear"
-            color sideCol = gbull ? themeUpSolid : themeDnSolid
-            string ceStr = str.tostring(gm, format.mintick)
-            table.cell(hfvgTbl, 0, rowN, sideStr, text_color = sideCol, bgcolor = themeRowBg, text_size = size.small)
-            table.cell(hfvgTbl, 1, rowN, ceStr, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
-            table.cell(hfvgTbl, 2, rowN, str.tostring(dATR, "#.0") + "A", text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
-            table.cell(hfvgTbl, 3, rowN, str.tostring(math.round(gsc)) + "%", text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
-            rowN := rowN + 1
-    table.set_frame_color(hfvgTbl, themeBorder)
-    table.set_frame_width(hfvgTbl, themeBW)
+// (HTF FVGs are now folded into the gap SCORE — see f_fvgStrength's HTF-alignment factor —
+//  and still feed the DOL model; there is no separate HTF panel.)
 
 // -----------------------------------------------------------------------------
 // ALERTS
