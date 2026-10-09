@@ -98,6 +98,7 @@ fvgCECol      = input.color(color.new(#ab47bc, 20), "    CE line color", group =
 // --- higher-timeframe (HTF) FVGs: detected and folded into scoring (no separate chart drawing) ---
 htfFvgOn      = input.bool(true, "  Use higher-timeframe FVGs in scoring", tooltip = "Detect fair value gaps on the HTF timeframe set above (the same '  HTF timeframe' input used for HTF swings — edit it to pick which timeframe to watch, e.g. 60 / 240 / D). HTF gaps are NOT drawn on the chart; instead they BOOST the score of any chart-TF gap that aligns with them (see 'Weight: HTF-gap alignment') and they also feed the DOL model (confluence, path-clearance / resistance, and the ⭐ stacked-agreement flag) as strong magnet zones.", group = G_STRUCT)
 htfFvgKeep    = input.int(6, "    Max HTF FVGs tracked", minval = 1, maxval = 20, tooltip = "How many recent unfilled HTF gaps to keep in memory for the alignment boost and the DOL scoring.", group = G_STRUCT)
+htfFvgMaxTF   = input.int(5, "    HTF scoring only at/below (minutes)", minval = 1, maxval = 240, tooltip = "The HTF-alignment factor and its rebalanced weighting apply ONLY when the chart timeframe is at or below this many minutes (default 5 — i.e. the 1-to-5-minute charts the HTF overlay is designed for). On HIGHER chart timeframes the gap score reverts to the original full-weight model (gap size / volume / order-block / inversion) PLUS the premium-discount, displacement, confluence and freshness factors — so HTF charts keep scoring gaps the way they did before HTF alignment was added, and nothing disappears.", group = G_STRUCT)
 // --- SFP (sweep + reversal) ---
 showSFP    = input.bool(true, "Sweep + reversal markers (SFP)", tooltip = "The core validity trigger: a wick pierces a tracked level then the candle CLOSES back on the origin side (a stop-run). Marks 🎯 SFP long/short.", group = G_STRUCT)
 sfpUseVol  = input.bool(true, "  Require volume confirmation", tooltip = "Only flag a sweep as a real grab on elevated relative volume.", group = G_STRUCT)
@@ -296,6 +297,10 @@ themeBW      = uiSlimBorders ? 1 : 2
 velocity  = ta.sma(math.abs(ta.change(close)), velLen)
 secPerBar = timeframe.in_seconds(timeframe.period)
 atr       = ta.atr(14)
+
+// HTF-FVG scoring is only relevant on low timeframes (1-5 min by default). On higher chart
+// timeframes the gap score reverts to the original full-weight model (see f_fvgStrength).
+fvgHtfActive = (secPerBar / 60.0) <= htfFvgMaxTF
 
 // DOL momentum (per-bar, real history)
 dolEmaF   = ta.ema(close, 21)
@@ -1061,13 +1066,22 @@ var invBar    = array.new<int>()     // bar it was invalidated on
 // HTF gaps themselves (avoids self-matching). Returns [score, isInv, inBlock, htfAligned].
 f_fvgStrength(float gTop, float gBot, bool isBull, float dispVol, float dispQual, bool isHtf) =>
     float atrF = math.max(nz(atr), syminfo.mintick)
-    // 1) gap size vs ATR  -> 0..20
+    // HTF-alignment is a low-timeframe tool. When active (chart TF <= htfFvgMaxTF) the four base
+    // factors use REDUCED maxes so the 22-pt HTF factor fits under 100. On higher timeframes the
+    // HTF factor is OFF and the base factors use their ORIGINAL full maxes, so HTF charts score
+    // gaps exactly as they did before HTF alignment existed (nothing disappears).
+    bool  htfMode = fvgHtfActive and htfFvgOn and not isHtf
+    float wSize  = htfMode ? 20.0 : 35.0
+    float wVol   = htfMode ? 15.0 : 25.0
+    float wBlock = htfMode ? 18.0 : 25.0
+    float wInv   = htfMode ? 15.0 : 25.0
+    // 1) gap size vs ATR
     float gapW   = math.min(math.abs(gTop - gBot) / atrF, 1.0)
-    float sizeSc = gapW * 20.0 * fvgSizeW
-    // 2) creation volume (relative volume of the displacement candle) -> 0..15
+    float sizeSc = gapW * wSize * fvgSizeW
+    // 2) creation volume (relative volume of the displacement candle)
     float relV   = nz(avgVol) > 0 ? dispVol / avgVol : 1.0
-    float volSc  = math.min(math.max(relV - 1.0, 0.0) / 1.5, 1.0) * 15.0 * fvgVolW
-    // 3) inside an order block or breaker block -> 0..18
+    float volSc  = math.min(math.max(relV - 1.0, 0.0) / 1.5, 1.0) * wVol * fvgVolW
+    // 3) inside an order block or breaker block
     float blockSc = 0.0
     bool  inBlock = false
     if array.size(obTop) > 0
@@ -1083,8 +1097,8 @@ f_fvgStrength(float gTop, float gBot, bool isBull, float dispVol, float dispQual
             if not na(bt) and not na(bb) and gTop >= bb and gBot <= bt   // gap overlaps breaker
                 inBlock := true
     if inBlock
-        blockSc := 18.0 * fvgBlockW
-    // 4) inversion of a prior opposite gap in the same zone (IFVG) -> 0..15
+        blockSc := wBlock * fvgBlockW
+    // 4) inversion of a prior opposite gap in the same zone (IFVG)
     float invSc = 0.0
     bool  isInv = false
     if array.size(invTop) > 0
@@ -1095,11 +1109,12 @@ f_fvgStrength(float gTop, float gBot, bool isBull, float dispVol, float dispQual
                 if gTop >= ib and gBot <= it
                     isInv := true
     if isInv
-        invSc := 15.0 * fvgInvW
-    // 5) HTF-gap alignment -> 0..22 (biggest signal; scales with the HTF gap's own strength)
+        invSc := wInv * fvgInvW
+    // 5) HTF-gap alignment -> 0..22 (biggest signal; scales with the HTF gap's own strength).
+    // Only active on low timeframes (htfMode); on higher TFs this factor is 0.
     float htfSc = 0.0
     bool  htfAligned = false
-    if htfFvgOn and not isHtf and array.size(htfFvgTop) > 0
+    if htfMode and array.size(htfFvgTop) > 0
         float bestHtf = 0.0
         for hi = 0 to array.size(htfFvgTop) - 1
             float ht = array.get(htfFvgTop, hi)
