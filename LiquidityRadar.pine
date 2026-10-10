@@ -175,6 +175,14 @@ dolMomWt   = input.float(30, "Momentum tilt %", minval = 0, maxval = 100, step =
 dolTgtLine = input.bool(true, "Show primary-magnet target in banner", tooltip = "Adds a banner row with the strongest magnet price and its distance (ATR / %).", group = G_DOL)
 dolMeter   = input.bool(true, "Show conviction meter", group = G_DOL)
 dolTugBar  = input.bool(true, "Show tug-of-war bar (BSL vs SSL)", group = G_DOL)
+// --- multi-timeframe DOL dashboard: bias across timeframes at a glance ---
+showMTF    = input.bool(true, "MTF DOL dashboard", tooltip = "A compact table showing the DOL directional bias on several timeframes at once, so you can see higher/lower-TF alignment at a glance. Each timeframe reads a lightweight bias (trend + momentum) — a fast, robust approximation of the full DOL direction — and the panel adds an ALIGNMENT summary (e.g. 4/4 UP). It updates automatically every bar close. NOTE: this is the lightweight directional read, not the full resistance-adjusted DOL model on your main chart.", group = G_DOL)
+mtfPos     = input.string("Bottom Left", "  Dashboard position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_DOL)
+mtfTF1     = input.timeframe("15",  "  TF 1", group = G_DOL)
+mtfTF2     = input.timeframe("60",  "  TF 2", group = G_DOL)
+mtfTF3     = input.timeframe("240", "  TF 3", group = G_DOL)
+mtfTF4     = input.timeframe("D",   "  TF 4", group = G_DOL)
+mtfNeutral = input.float(0.10, "  Neutral band (|bias| below = flat)", minval = 0.0, maxval = 0.5, step = 0.02, tooltip = "If a timeframe's bias magnitude is below this, it reads NEUTRAL (—) rather than up/down.", group = G_DOL)
 // --- accuracy pass ---
 dolConfW   = input.bool(true, "Weight pull by each level's confluence score", tooltip = "A level sitting in an order block + OTE + round number pulls far harder than a lone level. Multiplies each level's DOL pull by its own confluence score - the single biggest accuracy boost.", group = G_DOL)
 dolNearBias = input.float(1.5, "Nearest-pool emphasis", minval = 0.0, maxval = 4.0, step = 0.25, tooltip = "Extra sharpening of the distance decay. Higher = the nearest untapped pool dominates the pull (price hunts the closest liquidity first). 0 = flat.", group = G_DOL)
@@ -309,6 +317,21 @@ dolTrendV = (dolEmaF - dolEmaS) / math.max(nz(atr), syminfo.mintick)
 dolRoc    = ta.roc(close, 9) / 100.0
 dolMomRaw = 0.6 * dolTrendV + 0.4 * (dolRoc * 20.0)
 dolMom    = math.max(-1.0, math.min(1.0, dolMomRaw))
+
+// ---- lightweight, self-contained directional bias for the MTF dashboard ----
+// Same trend+momentum core as dolMom but fully self-contained so it is safe to run
+// on other timeframes via request.security (a fast, robust proxy for DOL direction).
+f_tfBias() =>
+    float atrT = math.max(nz(ta.atr(14)), syminfo.mintick)
+    float trV  = (ta.ema(close, 21) - ta.ema(close, 55)) / atrT
+    float roV  = ta.roc(close, 9) / 100.0
+    math.max(-1.0, math.min(1.0, 0.6 * trV + 0.4 * (roV * 20.0)))
+
+// per-timeframe bias (auto-updates every bar via request.security)
+mtfB1 = showMTF ? request.security(syminfo.tickerid, mtfTF1, f_tfBias(), lookahead = barmerge.lookahead_off) : na
+mtfB2 = showMTF ? request.security(syminfo.tickerid, mtfTF2, f_tfBias(), lookahead = barmerge.lookahead_off) : na
+mtfB3 = showMTF ? request.security(syminfo.tickerid, mtfTF3, f_tfBias(), lookahead = barmerge.lookahead_off) : na
+mtfB4 = showMTF ? request.security(syminfo.tickerid, mtfTF4, f_tfBias(), lookahead = barmerge.lookahead_off) : na
 
 // relative volume
 avgVol = ta.sma(volume, rvolLen)
@@ -1914,6 +1937,44 @@ if barstate.islast
             table.cell(dolTbl, 0, rowN, tgtTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
         table.set_frame_color(dolTbl, color.new(dirAccent, 35))
         table.set_frame_width(dolTbl, themeBW)
+
+    // ---- MTF DOL dashboard (bias across timeframes; auto-updates via request.security) ----
+    if masterOn and showMTF
+        var table mtfTbl = table.new(position.bottom_left, 3, 6, border_width = 1)
+        table.set_position(mtfTbl, f_tablePos(mtfPos))
+        table.clear(mtfTbl, 0, 0, 2, 5)
+        table.cell(mtfTbl, 0, 0, "MTF DOL", text_color = themeHdr, bgcolor = themePanelBg, text_size = size.small)
+        table.cell(mtfTbl, 1, 0, "", bgcolor = themePanelBg)
+        table.cell(mtfTbl, 2, 0, "", bgcolor = themePanelBg)
+        int upN = 0
+        int downN = 0
+        int liveN = 0
+        for i = 0 to 3
+            string tfLbl = i == 0 ? mtfTF1 : i == 1 ? mtfTF2 : i == 2 ? mtfTF3 : mtfTF4
+            float  b     = i == 0 ? mtfB1  : i == 1 ? mtfB2  : i == 2 ? mtfB3  : mtfB4
+            bool   flat  = na(b) or math.abs(b) < mtfNeutral
+            bool   up    = not flat and b > 0
+            string arrow = flat ? "—" : (up ? "▲" : "▼")
+            color  cCol  = flat ? themeMuted : (up ? themeUpSolid : themeDnSolid)
+            int    convP = na(b) ? 0 : int(math.round(math.min(math.abs(b), 1.0) * 100))
+            if not na(b)
+                liveN := liveN + 1
+                if not flat and up
+                    upN := upN + 1
+                if not flat and not up
+                    downN := downN + 1
+            int r = i + 1
+            table.cell(mtfTbl, 0, r, tfLbl, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
+            table.cell(mtfTbl, 1, r, arrow, text_color = cCol, bgcolor = themeRowBg, text_size = size.small)
+            table.cell(mtfTbl, 2, r, str.tostring(convP) + "%", text_color = cCol, bgcolor = themeRowBg, text_size = size.small)
+        // alignment summary row
+        string alignTxt = upN == liveN and liveN > 0 ? ("ALL " + str.tostring(liveN) + " UP") : (downN == liveN and liveN > 0 ? ("ALL " + str.tostring(liveN) + " DOWN") : (str.tostring(upN) + "▲ / " + str.tostring(downN) + "▼"))
+        color alignCol = (upN == liveN and liveN > 0) ? themeUpSolid : (downN == liveN and liveN > 0) ? themeDnSolid : themeMuted
+        table.cell(mtfTbl, 0, 5, "Align", text_color = themeMuted, bgcolor = themePanelBg, text_size = size.small)
+        table.cell(mtfTbl, 1, 5, alignTxt, text_color = alignCol, bgcolor = themePanelBg, text_size = size.small)
+        table.cell(mtfTbl, 2, 5, "", bgcolor = themePanelBg)
+        table.set_frame_color(mtfTbl, themeBorder)
+        table.set_frame_width(mtfTbl, themeBW)
 
 // wipe extra pool when master/OB off
 if (not masterOn or not showOB) and array.size(xtra_boxes) + array.size(xtra_labels) > 0
