@@ -59,11 +59,18 @@ Configurable emoji tags per level class.
 ### ⑨ Tested Levels
 Flags levels a wick has already **probed** into (reacted off) but not fully swept — "used" liquidity vs a virgin, untouched level. Tested levels get a **✓** and a dotted/dimmed outline; untouched ones stay solid. (Fully swept levels are removed already.) Optionally **discount tested levels in scoring** so a probed level is treated as a slightly weaker DOL magnet. Adjustable probe depth, discount amount, and max tracked.
 
+### ⑩ FVG Execution (setups)
+Turns high-quality gaps into actionable, *wait-for-the-setup* trade plans (off by default; this is a planning/signalling overlay — it never places orders). The engine stays quiet until price **retraces back into a qualifying gap**, then runs a small state machine: **watching → armed → confirmed**.
+- **Qualification gates:** a gap can only arm if its strength ≥ a threshold, (optionally) it sits in the correct **premium/discount** half, and (optionally) its direction **agrees with the DOL bias** — so only A+, with-the-draw setups arm.
+- **Arm:** when price taps the entry (the **CE/50%** by default, or the proximal edge), the setup arms and draws **entry · stop · TP1 · TP2** with the **risk:reward**. The stop sits beyond the far edge by an ATR buffer; targets are R-multiples.
+- **Confirm:** optionally wait for a candle to **close rejecting back out** of the gap before flagging *confirmed*.
+- Only the nearest *N* setups draw lines (keeps the chart clean); all qualifying gaps still fire alerts: **FVG setup approaching / armed / confirmed**.
+
 ---
 
 ## Alerts
 
-`PD level touched`, `Liquidity swept`, `Session level touched`, `SFP fired`, `SFP long`, `SFP short`.
+`PD level touched`, `Liquidity swept`, `Session level touched`, `SFP fired`, `SFP long`, `SFP short`, `FVG setup approaching`, `FVG setup armed`, `FVG setup confirmed`.
 
 ---
 
