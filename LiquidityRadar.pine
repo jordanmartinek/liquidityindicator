@@ -27,6 +27,7 @@ var string G_DOL    = "⑥ Draw-on-Liquidity Gauge"
 var string G_STYLE  = "⑦ Style"
 var string G_EMO    = "⑧ Emoji Tags"
 var string G_TESTED = "⑨ Tested Levels"
+var string G_EXEC   = "⑩ FVG Execution (setups)"
 
 // -----------------------------------------------------------------------------
 // INPUTS — PREVIOUS-PERIOD LEVELS
@@ -247,6 +248,25 @@ testDepthATR = input.float(0.10, "  Tested probe depth (× ATR)", minval = 0.02,
 testDiscount = input.bool(true, "  Discount tested levels in scoring", tooltip = "A tested level is a slightly weaker magnet (some of its liquidity was already taken / defended), so reduce its DOL pull. Visual-only if this is off.", group = G_TESTED)
 testDiscAmt  = input.float(0.25, "    Tested pull discount", minval = 0.0, maxval = 0.9, step = 0.05, tooltip = "How much to cut a tested level's pull (0.25 = -25%). 0 = no discount.", group = G_TESTED)
 testKeep     = input.int(120, "  Max tested levels tracked", minval = 10, maxval = 500, group = G_TESTED)
+
+// -----------------------------------------------------------------------------
+// INPUTS — FVG EXECUTION (setups)
+// -----------------------------------------------------------------------------
+// Turns high-quality gaps into actionable setups: wait for price to RETURN to the gap's CE
+// (50%), then arm an entry with a stop and R-multiple targets, with alerts at each stage.
+execOn       = input.bool(false, "Enable FVG execution setups", tooltip = "Wait for the OPTIMAL setup on strong fair value gaps: the indicator stays quiet until price RETRACES back into a qualifying gap's CE (50% — the mitigation entry), then it ARMS the setup and draws an entry / stop / target with the risk:reward. Alerts fire at each stage so you don't have to watch. Nothing here places orders — it is a planning / signalling overlay.", group = G_EXEC)
+execMinStr   = input.int(70, "  Min gap strength % to arm", minval = 0, maxval = 100, tooltip = "Only gaps scoring at least this (the 0-100 FVG strength) can become setups. Higher = only A+ gaps arm. This is the primary quality gate.", group = G_EXEC)
+execNeedPD   = input.bool(true, "  Require correct premium/discount", tooltip = "Only arm a BULLISH gap when it sits in DISCOUNT (lower half of the dealing range) and a BEARISH gap when it sits in PREMIUM (upper half) — i.e. buy low / sell high relative to the range. Uncheck to arm regardless of range location.", group = G_EXEC)
+execNeedDOL  = input.bool(true, "  Require DOL bias agreement", tooltip = "Only arm a setup whose direction agrees with the current Draw-on-Liquidity bias (long setups when DOL points UP, shorts when DOL points DOWN). Keeps you trading with the dominant draw. Uncheck to arm against the bias too.", group = G_EXEC)
+execEntry    = input.string("CE (50%)", "  Entry at", options = ["CE (50%)","Proximal edge"], tooltip = "Where the entry level sits. 'CE (50%)': the gap midpoint — price often reacts there rather than at the full fill (recommended). 'Proximal edge': the near edge of the gap (the first touch).", group = G_EXEC)
+execStopATR  = input.float(0.25, "  Stop buffer beyond far edge (× ATR)", minval = 0.0, maxval = 2.0, step = 0.05, tooltip = "The stop sits beyond the FAR edge of the gap by this many ATRs (room for a stop-hunt wick). Entry-to-stop is your 1R.", group = G_EXEC)
+execTP1R     = input.float(1.0, "  TP1 (R multiple)", minval = 0.5, maxval = 10.0, step = 0.5, tooltip = "First target as a multiple of risk (entry-to-stop distance). 1.0 = 1R.", group = G_EXEC)
+execTP2R     = input.float(2.0, "  TP2 (R multiple)", minval = 0.5, maxval = 20.0, step = 0.5, tooltip = "Second target as a multiple of risk. 2.0 = 2R.", group = G_EXEC)
+execConfirm  = input.bool(false, "  Require confirmation close before 'confirmed'", tooltip = "After price taps the entry (ARMED), wait for a candle to CLOSE rejecting back out of the gap on the setup's side before flagging the setup CONFIRMED (and firing the confirmation alert). Off = the setup is treated as confirmed on the CE tap itself.", group = G_EXEC)
+execMaxShow  = input.int(2, "  Max active setups drawn", minval = 1, maxval = 6, tooltip = "How many armed setups (nearest to price first) draw their entry/stop/target lines at once, to keep the chart readable. All qualifying gaps still arm and still fire alerts.", group = G_EXEC)
+execColEntry = input.color(color.new(#42a5f5, 0), "  Entry line color", group = G_EXEC)
+execColStop  = input.color(color.new(#ef5350, 0), "  Stop line color", group = G_EXEC)
+execColTP    = input.color(color.new(#26a69a, 0), "  Target line color", group = G_EXEC)
 
 // -----------------------------------------------------------------------------
 // HELPERS
@@ -1046,6 +1066,14 @@ var fvgIsBull = array.new<bool>()
 var fvgStr    = array.new<float>()   // 0-100 strength score per gap
 var fvgLabels = array.new<label>()   // optional strength label per gap (na if none)
 var fvgCE     = array.new<line>()    // optional consequent-encroachment (50%) line per gap (na if none)
+var fvgArmed  = array.new<int>()     // execution state per gap: 0 = watching, 1 = armed (CE tapped), 2 = confirmed
+// FVG execution setup drawings (entry/stop/target lines + label), redrawn each bar from the
+// armed gaps so only the nearest active setups show. Alert flags are raised in the gap loop.
+var exec_lines  = array.new<line>()
+var exec_labels = array.new<label>()
+var bool execArmNow     = false   // a gap armed on THIS bar (for alertcondition)
+var bool execConfirmNow = false   // a gap confirmed on THIS bar
+var bool execReturnNow  = false   // price is returning into a qualifying gap (approach alert)
 // HTF (higher-timeframe) FVG state — tracked box-less (plain floats, zero draw-object cost).
 // They boost the score of aligned chart-TF gaps and feed the DOL model; never drawn.
 var htfFvgTop   = array.new<float>()
@@ -2014,6 +2042,7 @@ f_delFvgAt(int ix) =>
     array.remove(fvgStr, ix)
     array.remove(fvgLabels, ix)
     array.remove(fvgCE, ix)
+    array.remove(fvgArmed, ix)
 
 if (not masterOn or not showFVG) and array.size(fvgBoxes) > 0
     while array.size(fvgBoxes) > 0
@@ -2075,6 +2104,18 @@ if masterOn and showFVG and (bullFVG or bearFVG)
                 float ceMid = (gTop + gBot) / 2.0
                 ce := line.new(bar_index[2], ceMid, bar_index + extendR, ceMid, color = fvgCECol, style = line.style_dashed, width = 1)
             array.push(fvgCE, ce)
+            array.push(fvgArmed, 0)   // execution state starts at 'watching'
+
+// reset this bar's execution alert flags + clear the setup drawing pool (redrawn below)
+execArmNow     := false
+execConfirmNow := false
+execReturnNow  := false
+if array.size(exec_lines) > 0
+    while array.size(exec_lines) > 0
+        line.delete(array.shift(exec_lines))
+if array.size(exec_labels) > 0
+    while array.size(exec_labels) > 0
+        label.delete(array.shift(exec_labels))
 
 if array.size(fvgBoxes) > 0
     while array.size(fvgBoxes) > fvgKeep
@@ -2116,7 +2157,96 @@ if array.size(fvgBoxes) > 0
             line ce = array.get(fvgCE, i)
             if not na(ce)
                 line.set_x2(ce, bar_index + extendR)
+            // ---- execution state machine: watch -> armed -> confirmed ----
+            if execOn
+                int    st  = array.get(fvgArmed, i)
+                float  gsc = array.get(fvgStr, i)
+                float  ceP = mid
+                // qualification gates: strength, premium/discount side, DOL agreement
+                bool qStr = gsc >= execMinStr
+                bool qPD  = true
+                if execNeedPD and not na(rngHi) and not na(rngLo) and rngHi > rngLo
+                    float pos = (ceP - rngLo) / (rngHi - rngLo)
+                    qPD := isBull ? (pos <= 0.5) : (pos >= 0.5)
+                bool qDOL = (not execNeedDOL) or (isBull ? dm_dirState > 0 : dm_dirState < 0)
+                bool qualifies = qStr and qPD and qDOL
+                // price returning toward a still-watching qualifying gap (approach alert)
+                if st == 0 and qualifies
+                    bool nearing = isBull ? (low <= top and low > ceP) : (high >= bot and high < ceP)
+                    if nearing
+                        execReturnNow := true
+                // ARM when price taps the entry (CE by default, else proximal edge)
+                if st == 0 and qualifies
+                    float entryP = execEntry == "CE (50%)" ? ceP : (isBull ? top : bot)
+                    bool tapped = low <= entryP and high >= entryP
+                    if tapped
+                        array.set(fvgArmed, i, execConfirm ? 1 : 2)
+                        execArmNow := true
+                        if not execConfirm
+                            execConfirmNow := true
+                // CONFIRM an armed gap once a candle closes rejecting back out on the setup side
+                else if st == 1
+                    bool rejectClose = isBull ? (close > ceP) : (close < ceP)
+                    if rejectClose
+                        array.set(fvgArmed, i, 2)
+                        execConfirmNow := true
             i += 1
+
+// ---- draw the nearest active setups (entry / stop / TP1 / TP2 + R:R) ----
+// Only the execMaxShow armed gaps closest to price draw lines, to keep the chart readable.
+if execOn and masterOn and barstate.islast and array.size(fvgBoxes) > 0
+    float atrE = math.max(nz(atr), syminfo.mintick)
+    int drawn = 0
+    // repeatedly pick the nearest armed-but-undrawn gap
+    var drawnIx = array.new<bool>()
+    array.clear(drawnIx)
+    for di = 0 to array.size(fvgBoxes) - 1
+        array.push(drawnIx, false)
+    while drawn < execMaxShow
+        float bestD = na
+        int   bestI = -1
+        for gi = 0 to array.size(fvgBoxes) - 1
+            if array.get(fvgArmed, gi) >= 1 and not array.get(drawnIx, gi)
+                float gmid = (box.get_top(array.get(fvgBoxes, gi)) + box.get_bottom(array.get(fvgBoxes, gi))) / 2.0
+                float d = math.abs(gmid - close)
+                if na(bestD) or d < bestD
+                    bestD := d
+                    bestI := gi
+        if bestI < 0
+            break
+        array.set(drawnIx, bestI, true)
+        drawn := drawn + 1
+        box  gbx = array.get(fvgBoxes, bestI)
+        bool gBull = array.get(fvgIsBull, bestI)
+        int  gSt = array.get(fvgArmed, bestI)
+        float gT = box.get_top(gbx)
+        float gB = box.get_bottom(gbx)
+        float gMid = (gT + gB) / 2.0
+        float entryP = execEntry == "CE (50%)" ? gMid : (gBull ? gT : gB)
+        float stopP  = gBull ? (gB - execStopATR * atrE) : (gT + execStopATR * atrE)
+        float risk   = math.abs(entryP - stopP)
+        float tp1P   = gBull ? (entryP + execTP1R * risk) : (entryP - execTP1R * risk)
+        float tp2P   = gBull ? (entryP + execTP2R * risk) : (entryP - execTP2R * risk)
+        int   xL = bar_index + 2
+        int   xR = bar_index + extendR + 15
+        array.push(exec_lines, line.new(xL, entryP, xR, entryP, color = execColEntry, style = line.style_solid,  width = 2))
+        array.push(exec_lines, line.new(xL, stopP,  xR, stopP,  color = execColStop,  style = line.style_dashed, width = 1))
+        array.push(exec_lines, line.new(xL, tp1P,   xR, tp1P,   color = execColTP,    style = line.style_dotted, width = 1))
+        array.push(exec_lines, line.new(xL, tp2P,   xR, tp2P,   color = execColTP,    style = line.style_dotted, width = 1))
+        string stTxt = gSt == 2 ? "CONFIRMED" : "ARMED"
+        string dirTxt = gBull ? "LONG" : "SHORT"
+        string head = (gBull ? "▲ " : "▼ ") + dirTxt + " " + stTxt
+        array.push(exec_labels, label.new(xR, entryP, head + "  entry " + str.tostring(entryP, format.mintick) + "  R:R to TP2 " + str.tostring(execTP2R, "#.#") + ":1", style = label.style_label_left, color = color.new(execColEntry, 10), textcolor = color.white, size = size.small))
+        array.push(exec_labels, label.new(xR, stopP, "SL " + str.tostring(stopP, format.mintick), style = label.style_label_left, color = color.new(execColStop, 30), textcolor = color.white, size = size.tiny))
+        array.push(exec_labels, label.new(xR, tp1P, "TP1 " + str.tostring(tp1P, format.mintick) + " (" + str.tostring(execTP1R, "#.#") + "R)", style = label.style_label_left, color = color.new(execColTP, 30), textcolor = color.white, size = size.tiny))
+        array.push(exec_labels, label.new(xR, tp2P, "TP2 " + str.tostring(tp2P, format.mintick) + " (" + str.tostring(execTP2R, "#.#") + "R)", style = label.style_label_left, color = color.new(execColTP, 30), textcolor = color.white, size = size.tiny))
+
+// wipe execution drawings when the engine is off
+if (not execOn or not masterOn) and (array.size(exec_lines) > 0 or array.size(exec_labels) > 0)
+    while array.size(exec_lines) > 0
+        line.delete(array.shift(exec_lines))
+    while array.size(exec_labels) > 0
+        label.delete(array.shift(exec_labels))
 
 // prune inversion memory beyond its window
 if array.size(invTop) > 0
@@ -2205,3 +2335,7 @@ alertcondition(f_touch(nyH) or f_touch(nyL) or f_touch(londH) or f_touch(londL) 
 alertcondition(sfpLong or sfpShort, "SFP fired", "Sweep + reversal (liquidity grab) detected")
 alertcondition(sfpLong, "SFP long", "Bullish sweep + reversal")
 alertcondition(sfpShort, "SFP short", "Bearish sweep + reversal")
+// --- FVG execution engine ---
+alertcondition(execReturnNow,  "FVG setup approaching", "Price is returning into a qualifying fair value gap — setup may arm soon")
+alertcondition(execArmNow,     "FVG setup armed",       "Price tapped a qualifying FVG entry — setup ARMED (entry/stop/target active)")
+alertcondition(execConfirmNow, "FVG setup confirmed",   "FVG setup CONFIRMED — entry trigger met")
