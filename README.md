@@ -88,5 +88,6 @@ Turns high-quality gaps into actionable, *wait-for-the-setup* trade plans (off b
 - Written for **Pine Script v6**; `max_bars_back = 1000`.
 - A **MASTER** toggle (in ⑤) turns all drawings on/off at once.
 - Levels removed once swept keep the chart honest — only *live, untapped* liquidity is shown.
+- **No-repaint by default:** SFP markers/alerts and FVG execution setup states (arm/confirm) commit on **bar close**, so they can't flash on the forming bar and then vanish. Each has an opt-in intrabar-preview toggle. The Daily Bias daily feed uses non-repainting `lookahead_off`.
 
 *Not financial advice. For research and educational use.*
