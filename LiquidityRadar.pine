@@ -101,7 +101,10 @@ exhOn        = input.bool(true,  "  Momentum-exhaustion dynamic weighting", tool
 exhRsiLen    = input.int(14, "    RSI length", minval = 2, maxval = 50, group = G_STRUCT)
 exhDivLook   = input.int(5, "    Divergence pivot look-back (bars)", minval = 2, maxval = 30, tooltip = "Pivot distance used to detect RSI vs price divergence. Larger = only bigger, slower divergences register.", group = G_STRUCT)
 exhW         = input.float(1.0, "    Weight: exhaustion adjustment", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "How strongly live exhaustion moves a gap's effective score. The raw adjustment is up to ±18 points at full exhaustion; this scales it. 0 = disable the dynamic layer (scores stay static).", group = G_STRUCT)
-exhShow      = input.bool(true,  "    Show exhaustion gauge readout", tooltip = "Append a small ⛽ exhaustion row to the Daily Bias banner (group ⑪, must be enabled) showing the current signed exhaustion — which side's push is tiring — and whether an RSI divergence is active.", group = G_STRUCT)
+exhShow      = input.bool(true,  "    Show RSI gauge", tooltip = "Show a dedicated RSI gauge banner (its own corner) with the live RSI value, its overbought/oversold/neutral state, and whether an RSI vs price divergence is currently active. This is a pure RSI readout — it does not display or imply directional bias (that lives in the Daily Bias banner).", group = G_STRUCT)
+exhGaugePos  = input.string("Middle Right", "    RSI gauge position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], tooltip = "Where to anchor the RSI gauge banner. Defaults away from the DOL banner (top-right) and the Daily Bias banner (top-left).", group = G_STRUCT)
+exhOB        = input.int(70, "    Overbought level", minval = 50, maxval = 95, group = G_STRUCT)
+exhOS        = input.int(30, "    Oversold level", minval = 5, maxval = 50, group = G_STRUCT)
 // --- min-gap floor: kill micro-gaps at the source before they are ever scored/drawn ---
 fvgMinGapATR  = input.float(0.0, "  Min gap size (× ATR)", minval = 0.0, maxval = 3.0, step = 0.05, tooltip = "A gap smaller than this many ATRs is ignored entirely — never scored, drawn, or tracked. A hard noise floor that kills micro-imbalances at the source on low timeframes (e.g. the 5-minute chart), complementing the strength filter. 0 = disable (keep every gap, however small).", group = G_STRUCT)
 // --- consequent encroachment (CE) line: the 50% midpoint price reacts to most ---
@@ -394,10 +397,10 @@ if exhBullDiv
 if exhBearDiv
     exhScore := exhScore - 0.7
 if not na(exhRsi)
-    if exhRsi <= 30
-        exhScore := exhScore + 0.3 * math.min((30.0 - exhRsi) / 20.0, 1.0)   // oversold -> down push tiring
-    else if exhRsi >= 70
-        exhScore := exhScore - 0.3 * math.min((exhRsi - 70.0) / 20.0, 1.0)   // overbought -> up push tiring
+    if exhRsi <= exhOS
+        exhScore := exhScore + 0.3 * math.min((exhOS - exhRsi) / 20.0, 1.0)   // oversold -> down push tiring
+    else if exhRsi >= exhOB
+        exhScore := exhScore - 0.3 * math.min((exhRsi - exhOB) / 20.0, 1.0)   // overbought -> up push tiring
 exhScore := math.max(-1.0, math.min(1.0, exhScore))
 
 // Live exhaustion adjustment for a gap (points, roughly -18..+18 before the weight). A gap on
@@ -2186,23 +2189,28 @@ if masterOn and biasOn and biasBanner and barstate.islast
     string cautionTxt = dayCaution ? " ⚠ caution" : ""
     string whyTxt = dayBias == 0 ? "no clean structure" : (biasWhyStruct + biasWhySweep)
     biasSzB = biasBanSize == "Huge" ? size.large : biasBanSize == "Large" ? size.normal : size.small
-    // optional exhaustion readout row
-    bool showExhRow = exhOn and exhShow and exhScore != 0.0
-    string exhTxt = ""
-    if showExhRow
-        string exhDir = exhScore > 0 ? "↓push tiring (bullish)" : "↑push tiring (bearish)"
-        string divTxt = exhBullDiv or exhBearDiv ? " · RSI div" : ""
-        exhTxt := "⛽ " + exhDir + " " + str.tostring(math.round(math.abs(exhScore) * 100)) + "%" + divTxt
-    var table biasTbl = table.new(position.top_left, 1, 3, border_width = 1)
+    var table biasTbl = table.new(position.top_left, 1, 2, border_width = 1)
     table.set_position(biasTbl, f_tablePos(biasBanPos))
-    table.clear(biasTbl, 0, 0, 0, 2)
+    table.clear(biasTbl, 0, 0, 0, 1)
     table.cell(biasTbl, 0, 0, biasArrow + " TODAY: " + biasWord + cautionTxt, text_color = biasAccent, bgcolor = themePanelBg, text_size = biasSzB)
     table.cell(biasTbl, 0, 1, whyTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
-    if showExhRow
-        color exhCol = exhScore > 0 ? themeUpSolid : themeDnSolid
-        table.cell(biasTbl, 0, 2, exhTxt, text_color = exhCol, bgcolor = themeRowBg, text_size = size.small)
     table.set_frame_color(biasTbl, color.new(biasAccent, 35))
     table.set_frame_width(biasTbl, themeBW)
+
+// ---- dedicated RSI gauge banner (pure RSI info — NO bias framing) ----
+if masterOn and exhOn and exhShow and barstate.islast and not na(exhRsi)
+    string rsiState = exhRsi >= exhOB ? "OVERBOUGHT" : exhRsi <= exhOS ? "OVERSOLD" : "neutral"
+    color  rsiCol = exhRsi >= exhOB ? themeDnSolid : exhRsi <= exhOS ? themeUpSolid : themeTxt
+    // divergence is a factual RSI-vs-price observation, stated neutrally (no bullish/bearish)
+    string divState = exhBullDiv ? "bullish RSI divergence" : exhBearDiv ? "bearish RSI divergence" : "no divergence"
+    var table rsiTbl = table.new(position.middle_right, 1, 3, border_width = 1)
+    table.set_position(rsiTbl, f_tablePos(exhGaugePos))
+    table.clear(rsiTbl, 0, 0, 0, 2)
+    table.cell(rsiTbl, 0, 0, "📊 RSI " + str.tostring(math.round(exhRsi)), text_color = rsiCol, bgcolor = themePanelBg, text_size = size.normal)
+    table.cell(rsiTbl, 0, 1, rsiState, text_color = rsiCol, bgcolor = themeRowBg, text_size = size.small)
+    table.cell(rsiTbl, 0, 2, divState, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
+    table.set_frame_color(rsiTbl, color.new(rsiCol, 35))
+    table.set_frame_width(rsiTbl, themeBW)
 
 // wipe extra pool when master/OB off
 if (not masterOn or not showOB) and array.size(xtra_boxes) + array.size(xtra_labels) > 0
