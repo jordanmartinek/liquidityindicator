@@ -117,6 +117,7 @@ htfFvgMaxTF   = input.int(5, "    HTF scoring only at/below (minutes)", minval =
 // --- SFP (sweep + reversal) ---
 showSFP    = input.bool(true, "Sweep + reversal markers (SFP)", tooltip = "The core validity trigger: a wick pierces a tracked level then the candle CLOSES back on the origin side (a stop-run). Marks 🎯 SFP long/short.", group = G_STRUCT)
 sfpUseVol  = input.bool(true, "  Require volume confirmation", tooltip = "Only flag a sweep as a real grab on elevated relative volume.", group = G_STRUCT)
+sfpConfirm = input.bool(true, "  Confirm on bar close (no repaint)", tooltip = "An SFP is 'a wick pierces a level then the candle CLOSES back on the origin side' — a CLOSE-based event. With this on, the SFP marker/alert only fires once the bar has CLOSED, so it can't flash on the forming bar and then disappear (no repaint). Turn OFF to see a provisional intrabar preview (which may vanish before the bar closes).", group = G_STRUCT)
 rvolLen    = input.int(20, "  Rel-volume lookback", minval = 5, maxval = 200, group = G_STRUCT)
 rvolMult   = input.float(1.5, "  Min rel-volume for grab", minval = 1.0, maxval = 5.0, step = 0.1, group = G_STRUCT)
 sfpColLong  = input.color(color.new(#26a69a, 0), "  Bullish SFP color", group = G_STRUCT)
@@ -274,6 +275,7 @@ execStopATR  = input.float(0.25, "  Stop buffer beyond far edge (× ATR)", minva
 execTP1R     = input.float(1.0, "  TP1 (R multiple)", minval = 0.5, maxval = 10.0, step = 0.5, tooltip = "First target as a multiple of risk (entry-to-stop distance). 1.0 = 1R.", group = G_EXEC)
 execTP2R     = input.float(2.0, "  TP2 (R multiple)", minval = 0.5, maxval = 20.0, step = 0.5, tooltip = "Second target as a multiple of risk. 2.0 = 2R.", group = G_EXEC)
 execConfirm  = input.bool(false, "  Require confirmation close before 'confirmed'", tooltip = "After price taps the entry (ARMED), wait for a candle to CLOSE rejecting back out of the gap on the setup's side before flagging the setup CONFIRMED (and firing the confirmation alert). Off = the setup is treated as confirmed on the CE tap itself.", group = G_EXEC)
+execNoRepaint = input.bool(true, "  Commit setup states on bar close (no repaint)", tooltip = "Only advance a setup (arm / confirm) and fire its alert once the bar has CLOSED, so an intrabar tap that pulls back before close can't arm a setup and then un-arm it. Strongly recommended — without it, arm/confirm react to the still-forming candle and can flash then vanish. (Historical bars are unaffected; this only holds the live forming bar until close.)", group = G_EXEC)
 execMaxShow  = input.int(2, "  Max active setups drawn", minval = 1, maxval = 6, tooltip = "How many armed setups (nearest to price first) draw their entry/stop/target lines at once, to keep the chart readable. All qualifying gaps still arm and still fire alerts.", group = G_EXEC)
 execColEntry = input.color(color.new(#42a5f5, 0), "  Entry line color", group = G_EXEC)
 execColStop  = input.color(color.new(#ef5350, 0), "  Stop line color", group = G_EXEC)
@@ -885,11 +887,13 @@ pmlM = (removeSwept and sw_pml) ? na : pml
 // DAILY BIAS ENGINE — structural (daily candle structure + last PDH/PDL sweep)
 // -----------------------------------------------------------------------------
 // Pull the last two COMPLETED daily candles (offset [1]/[2] so they're closed, not forming).
-dH1 = request.security(syminfo.tickerid, "D", high[1],  lookahead = barmerge.lookahead_on)
-dL1 = request.security(syminfo.tickerid, "D", low[1],   lookahead = barmerge.lookahead_on)
-dC1 = request.security(syminfo.tickerid, "D", close[1], lookahead = barmerge.lookahead_on)
-dH2 = request.security(syminfo.tickerid, "D", high[2],  lookahead = barmerge.lookahead_on)
-dL2 = request.security(syminfo.tickerid, "D", low[2],   lookahead = barmerge.lookahead_on)
+// lookahead_off + the historical offset is the non-repainting pattern: we read only CLOSED
+// daily bars, and the committed daily values never change retroactively on the chart TF.
+dH1 = request.security(syminfo.tickerid, "D", high[1],  lookahead = barmerge.lookahead_off)
+dL1 = request.security(syminfo.tickerid, "D", low[1],   lookahead = barmerge.lookahead_off)
+dC1 = request.security(syminfo.tickerid, "D", close[1], lookahead = barmerge.lookahead_off)
+dH2 = request.security(syminfo.tickerid, "D", high[2],  lookahead = barmerge.lookahead_off)
+dL2 = request.security(syminfo.tickerid, "D", low[2],   lookahead = barmerge.lookahead_off)
 // Layer 1 — daily candle structure (last 1-2 completed dailies): HH+HL vs LH+LL, plus a
 // close-position tilt (where the last daily closed within its own range).
 int structBias = 0
@@ -1009,8 +1013,12 @@ if showSFP and array.size(lvLoNow) > 0
             if na(sweptLoLvl) or lv < sweptLoLvl
                 sweptLoLvl := lv
 
-bool sfpShort = showSFP and not na(sweptHiLvl) and volOK
-bool sfpLong  = showSFP and not na(sweptLoLvl) and volOK
+// confirm on bar close (no repaint) unless the user opts into the intrabar preview.
+// On historical bars barstate.isconfirmed is always true, so history is unaffected — only the
+// live forming bar is held until close.
+bool sfpConfOK = (not sfpConfirm) or barstate.isconfirmed
+bool sfpShort = showSFP and not na(sweptHiLvl) and volOK and sfpConfOK
+bool sfpLong  = showSFP and not na(sweptLoLvl) and volOK and sfpConfOK
 
 // -----------------------------------------------------------------------------
 // TESTED-STATE CAPTURE — a wick PROBES a level (enters within depth×ATR) but does NOT
@@ -2363,6 +2371,9 @@ if array.size(fvgBoxes) > 0
             // ---- execution state machine: watch -> armed -> confirmed ----
             if execOn
                 int    st  = array.get(fvgArmed, i)
+                // no-repaint gate: only advance state / fire alerts on a CLOSED bar (unless the
+                // user opts into intrabar). Historical bars are always confirmed, so unaffected.
+                bool   commitOK = (not execNoRepaint) or barstate.isconfirmed
                 // effective score = stored static base + live momentum-exhaustion adjustment
                 float  gsc = math.max(0.0, math.min(100.0, array.get(fvgStr, i) + f_exhAdj(top, bot, isBull)))
                 float  ceP = mid
@@ -2377,12 +2388,12 @@ if array.size(fvgBoxes) > 0
                 bool qBias = (not execNeedDay) or dayBias == 0 or (isBull ? dayBias > 0 : dayBias < 0)
                 bool qualifies = qStr and qPD and qDOL and qBias
                 // price returning toward a still-watching qualifying gap (approach alert)
-                if st == 0 and qualifies
+                if st == 0 and qualifies and commitOK
                     bool nearing = isBull ? (low <= top and low > ceP) : (high >= bot and high < ceP)
                     if nearing
                         execReturnNow := true
                 // ARM when price taps the entry (CE by default, else proximal edge)
-                if st == 0 and qualifies
+                if st == 0 and qualifies and commitOK
                     float entryP = execEntry == "CE (50%)" ? ceP : (isBull ? top : bot)
                     bool tapped = low <= entryP and high >= entryP
                     if tapped
@@ -2391,7 +2402,7 @@ if array.size(fvgBoxes) > 0
                         if not execConfirm
                             execConfirmNow := true
                 // CONFIRM an armed gap once a candle closes rejecting back out on the setup side
-                else if st == 1
+                else if st == 1 and commitOK
                     bool rejectClose = isBull ? (close > ceP) : (close < ceP)
                     if rejectClose
                         array.set(fvgArmed, i, 2)
