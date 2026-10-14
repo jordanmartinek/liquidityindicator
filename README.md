@@ -66,6 +66,8 @@ A **sticky, structural daily bias** meant to be a directional *anchor* rather th
 - **Bias-aligned declutter:** counter-bias FVGs are faded (or hidden), and optionally the counter-bias side's levels are faded — so the chart visually agrees with your one directional thesis for the day.
 - The FVG execution engine can **require Daily Bias agreement** to arm (NEUTRAL = both directions allowed).
 
+**Momentum-exhaustion dynamic weighting** (in group ③): a *live* layer that nudges each gap's effective score as momentum exhausts, driven primarily by **RSI divergence**. If price pushes to a new low while RSI makes a higher low (the down-push is tiring), **bullish gaps below price gain a rising bonus** (likely reversal/support) while bearish continuation gaps below are discounted — and the mirror for an exhausting up-push; overbought/oversold adds a secondary nudge. Unlike the static scoring factors (fixed at gap creation), this one **re-evaluates every bar**, so the on-chart % visibly breathes (⛽▲ / ⛽▽) and the execution engine's arming score responds live. A signed ⛽ readout appears on the Daily Bias banner. (It does not alter the DOL gauge.)
+
 ### ⑩ FVG Execution (setups)
 Turns high-quality gaps into actionable, *wait-for-the-setup* trade plans (off by default; this is a planning/signalling overlay — it never places orders). The engine stays quiet until price **retraces back into a qualifying gap**, then runs a small state machine: **watching → armed → confirmed**.
 - **Qualification gates:** a gap can only arm if its strength ≥ a threshold, (optionally) it sits in the correct **premium/discount** half, and (optionally) its direction **agrees with the DOL bias** — so only A+, with-the-draw setups arm.
