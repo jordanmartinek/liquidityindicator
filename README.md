@@ -59,6 +59,13 @@ Configurable emoji tags per level class.
 ### ⑨ Tested Levels
 Flags levels a wick has already **probed** into (reacted off) but not fully swept — "used" liquidity vs a virgin, untouched level. Tested levels get a **✓** and a dotted/dimmed outline; untouched ones stay solid. (Fully swept levels are removed already.) Optionally **discount tested levels in scoring** so a probed level is treated as a slightly weaker DOL magnet. Adjustable probe depth, discount amount, and max tracked.
 
+### ⑪ Daily Bias
+A **sticky, structural daily bias** meant to be a directional *anchor* rather than a reactive arrow. It's built from **resolved higher-timeframe structure** — the last 1–2 completed **daily candles** (higher-high/higher-low vs lower-high/lower-low, plus the last daily's close position) combined with the most recent **PDH/PDL sweep + close-confirmed reclaim/reject** (PDL swept then reclaimed → bullish; PDH swept then rejected → bearish). Because it uses daily structure and confirmed sweeps (no intraday proximity, no momentum tilt), it **leads** rather than follows, and **holds** between real events (a new daily candle or a confirmed sweep) instead of flickering on 5-minute noise.
+- **Fast flip** (default): a confirmed counter-direction PDH/PDL sweep flips the bias immediately. **Conservative:** a counter sweep only raises a *caution* flag; the bias flips only when daily structure itself breaks.
+- Shown as a clean **"TODAY: LONG / SHORT / NEUTRAL"** banner in its own corner (default top-left, away from the DOL gauge), with a one-line *why*.
+- **Bias-aligned declutter:** counter-bias FVGs are faded (or hidden), and optionally the counter-bias side's levels are faded — so the chart visually agrees with your one directional thesis for the day.
+- The FVG execution engine can **require Daily Bias agreement** to arm (NEUTRAL = both directions allowed).
+
 ### ⑩ FVG Execution (setups)
 Turns high-quality gaps into actionable, *wait-for-the-setup* trade plans (off by default; this is a planning/signalling overlay — it never places orders). The engine stays quiet until price **retraces back into a qualifying gap**, then runs a small state machine: **watching → armed → confirmed**.
 - **Qualification gates:** a gap can only arm if its strength ≥ a threshold, (optionally) it sits in the correct **premium/discount** half, and (optionally) its direction **agrees with the DOL bias** — so only A+, with-the-draw setups arm.
@@ -70,7 +77,7 @@ Turns high-quality gaps into actionable, *wait-for-the-setup* trade plans (off b
 
 ## Alerts
 
-`PD level touched`, `Liquidity swept`, `Session level touched`, `SFP fired`, `SFP long`, `SFP short`, `FVG setup approaching`, `FVG setup armed`, `FVG setup confirmed`.
+`PD level touched`, `Liquidity swept`, `Session level touched`, `SFP fired`, `SFP long`, `SFP short`, `FVG setup approaching`, `FVG setup armed`, `FVG setup confirmed`, `Daily bias flipped`.
 
 ---
 
