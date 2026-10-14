@@ -28,6 +28,7 @@ var string G_STYLE  = "⑦ Style"
 var string G_EMO    = "⑧ Emoji Tags"
 var string G_TESTED = "⑨ Tested Levels"
 var string G_EXEC   = "⑩ FVG Execution (setups)"
+var string G_BIAS   = "⑪ Daily Bias"
 
 // -----------------------------------------------------------------------------
 // INPUTS — PREVIOUS-PERIOD LEVELS
@@ -258,6 +259,7 @@ execOn       = input.bool(false, "Enable FVG execution setups", tooltip = "Wait 
 execMinStr   = input.int(70, "  Min gap strength % to arm", minval = 0, maxval = 100, tooltip = "Only gaps scoring at least this (the 0-100 FVG strength) can become setups. Higher = only A+ gaps arm. This is the primary quality gate.", group = G_EXEC)
 execNeedPD   = input.bool(true, "  Require correct premium/discount", tooltip = "Only arm a BULLISH gap when it sits in DISCOUNT (lower half of the dealing range) and a BEARISH gap when it sits in PREMIUM (upper half) — i.e. buy low / sell high relative to the range. Uncheck to arm regardless of range location.", group = G_EXEC)
 execNeedDOL  = input.bool(true, "  Require DOL bias agreement", tooltip = "Only arm a setup whose direction agrees with the current Draw-on-Liquidity bias (long setups when DOL points UP, shorts when DOL points DOWN). Keeps you trading with the dominant draw. Uncheck to arm against the bias too.", group = G_EXEC)
+execNeedDay  = input.bool(true, "  Require Daily Bias agreement", tooltip = "Only arm a setup whose direction agrees with the Daily Bias (see group ⑪): long setups when the daily bias is LONG, shorts when SHORT. When the daily bias is NEUTRAL, both directions are allowed. This is the main 'trade with the daily bias' filter.", group = G_EXEC)
 execEntry    = input.string("CE (50%)", "  Entry at", options = ["CE (50%)","Proximal edge"], tooltip = "Where the entry level sits. 'CE (50%)': the gap midpoint — price often reacts there rather than at the full fill (recommended). 'Proximal edge': the near edge of the gap (the first touch).", group = G_EXEC)
 execStopATR  = input.float(0.25, "  Stop buffer beyond far edge (× ATR)", minval = 0.0, maxval = 2.0, step = 0.05, tooltip = "The stop sits beyond the FAR edge of the gap by this many ATRs (room for a stop-hunt wick). Entry-to-stop is your 1R.", group = G_EXEC)
 execTP1R     = input.float(1.0, "  TP1 (R multiple)", minval = 0.5, maxval = 10.0, step = 0.5, tooltip = "First target as a multiple of risk (entry-to-stop distance). 1.0 = 1R.", group = G_EXEC)
@@ -269,8 +271,21 @@ execColStop  = input.color(color.new(#ef5350, 0), "  Stop line color", group = G
 execColTP    = input.color(color.new(#26a69a, 0), "  Target line color", group = G_EXEC)
 
 // -----------------------------------------------------------------------------
-// HELPERS
+// INPUTS — DAILY BIAS
 // -----------------------------------------------------------------------------
+// A sticky, structural daily bias from daily candle structure + the last PDH/PDL sweep.
+// Built from resolved HTF structure (not intraday proximity or momentum), so it LEADS rather
+// than reacts. Used as a directional anchor: it drives the bias banner, fades counter-bias
+// FVGs, and can gate which execution setups arm.
+biasOn       = input.bool(true,  "Show Daily Bias", tooltip = "A sticky daily directional read built from the last 1-2 DAILY candles (market structure + close position) and the most recent PDH/PDL sweep + reclaim/reject. Because it is derived from resolved higher-timeframe structure — not intraday proximity or momentum — it LEADS price instead of reacting to it, and it HOLDS between real events (a new daily candle or a confirmed sweep) rather than flickering on 5-minute noise.", group = G_BIAS)
+biasFast     = input.bool(true,  "  Fast flip (vs conservative)", tooltip = "FAST (default): a confirmed counter-direction PDH/PDL sweep + reclaim flips the bias immediately — catches reversals early. CONSERVATIVE (off): a counter sweep only raises a 'caution' flag; the bias doesn't actually flip until the DAILY STRUCTURE itself breaks — slower but higher-conviction.", group = G_BIAS)
+biasBanner   = input.bool(true,  "  Show bias banner", group = G_BIAS)
+biasBanPos   = input.string("Top Left", "  Bias banner position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], tooltip = "Where to anchor the Daily Bias banner. Defaults top-left so it doesn't collide with the DOL banner (top-right).", group = G_BIAS)
+biasBanSize  = input.string("Large", "  Bias banner text size", options = ["Normal","Large","Huge"], group = G_BIAS)
+// --- bias-aligned declutter ---
+biasFadeFVG  = input.bool(true,  "Fade counter-bias FVGs", tooltip = "When a daily bias is set, fair value gaps that oppose it (bearish gaps while bias is LONG, and vice-versa) are drawn FAINT so the chart visually agrees with your one directional thesis. With-bias gaps stay prominent. Bias NEUTRAL = everything shows normally.", group = G_BIAS)
+biasHideFVG  = input.bool(false, "  Hide counter-bias FVGs entirely", tooltip = "Instead of just fading them, remove counter-bias gaps from the chart completely. (They still exist in scoring — this is visual only.)", group = G_BIAS)
+biasFadeLvls = input.bool(false, "Fade counter-bias-side levels", tooltip = "Also fade the levels on the counter-bias side of price (e.g. levels above price while bias is SHORT), so the magnets you're drawn toward stand out. Off = levels are left to the normal density declutter.", group = G_BIAS)
 f_lineStyle() =>
     lineStyleI == "Dashed" ? line.style_dashed : lineStyleI == "Dotted" ? line.style_dotted : line.style_solid
 
@@ -794,6 +809,76 @@ pwhM = (removeSwept and sw_pwh) ? na : pwh
 pwlM = (removeSwept and sw_pwl) ? na : pwl
 pmhM = (removeSwept and sw_pmh) ? na : pmh
 pmlM = (removeSwept and sw_pml) ? na : pml
+
+// -----------------------------------------------------------------------------
+// DAILY BIAS ENGINE — structural (daily candle structure + last PDH/PDL sweep)
+// -----------------------------------------------------------------------------
+// Pull the last two COMPLETED daily candles (offset [1]/[2] so they're closed, not forming).
+dH1 = request.security(syminfo.tickerid, "D", high[1],  lookahead = barmerge.lookahead_on)
+dL1 = request.security(syminfo.tickerid, "D", low[1],   lookahead = barmerge.lookahead_on)
+dC1 = request.security(syminfo.tickerid, "D", close[1], lookahead = barmerge.lookahead_on)
+dH2 = request.security(syminfo.tickerid, "D", high[2],  lookahead = barmerge.lookahead_on)
+dL2 = request.security(syminfo.tickerid, "D", low[2],   lookahead = barmerge.lookahead_on)
+// Layer 1 — daily candle structure (last 1-2 completed dailies): HH+HL vs LH+LL, plus a
+// close-position tilt (where the last daily closed within its own range).
+int structBias = 0
+if not na(dH1) and not na(dH2) and not na(dL1) and not na(dL2)
+    bool hh = dH1 > dH2
+    bool hl = dL1 > dL2
+    bool lh = dH1 < dH2
+    bool ll = dL1 < dL2
+    if hh and hl
+        structBias := 1
+    else if lh and ll
+        structBias := -1
+    else
+        // mixed (inside/outside bar): break the tie with the last daily close position
+        float dRng = math.max(dH1 - dL1, syminfo.mintick)
+        float cPos = (dC1 - dL1) / dRng
+        structBias := cPos >= 0.66 ? 1 : (cPos <= 0.34 ? -1 : 0)
+// Layer 2 — last PDH/PDL sweep + close-confirmed reclaim/reject (the trigger).
+//   PDL swept then reclaimed  -> bullish (grab below, close back above)
+//   PDH swept then rejected   -> bearish (grab above, close back below)
+// sweepBias holds the most recent such event until the next one supersedes it or a new day.
+var int sweepBias = 0
+bool pdlReclaim = not na(pdl) and sw_pdl and close > pdl        // was pierced below, now closed back above
+bool pdhReject  = not na(pdh) and sw_pdh and close < pdh        // was pierced above, now closed back below
+if pdlReclaim
+    sweepBias := 1
+else if pdhReject
+    sweepBias := -1
+if newDay
+    sweepBias := 0                                              // reset each new daily candle
+// Combine the two layers into a committed daily bias that HOLDS between events.
+//   dayBias:  1 = LONG, -1 = SHORT, 0 = NEUTRAL
+//   dayCaution: true = structure vs a fresh counter sweep disagree (conservative mode holds)
+var int  dayBias    = 0
+var bool dayCaution = false
+if biasOn
+    dayCaution := false
+    bool agree = structBias != 0 and sweepBias != 0 and structBias == sweepBias
+    bool conflict = structBias != 0 and sweepBias != 0 and structBias != sweepBias
+    if agree
+        dayBias := structBias                                  // high conviction
+    else if sweepBias != 0 and structBias == 0
+        dayBias := sweepBias                                   // sweep leads a neutral structure
+    else if conflict
+        if biasFast
+            dayBias := sweepBias                               // fast: a fresh counter sweep flips it
+        else
+            dayBias := structBias                              // conservative: hold structure...
+            dayCaution := true                                 // ...but flag the brewing flip
+    else if structBias != 0
+        dayBias := structBias                                  // structure only (no fresh sweep)
+    // (both zero -> hold the previous dayBias; genuine range = stays as last committed)
+else
+    dayBias := 0
+    dayCaution := false
+// human-readable 'why' for the banner
+string biasWhyStruct = structBias > 0 ? "bullish daily" : structBias < 0 ? "bearish daily" : "mixed daily"
+string biasWhySweep  = sweepBias > 0 ? " · PDL reclaimed" : sweepBias < 0 ? " · PDH rejected" : ""
+// bias-flip event (committed value changed direction) — for the alert
+bool biasFlipNow = biasOn and dayBias != nz(dayBias[1], 0) and dayBias != 0
 
 // -----------------------------------------------------------------------------
 // SFP (sweep + reversal) DETECTION
@@ -1832,7 +1917,9 @@ if barstate.islast
                 string testTag = (showTested and lTested) ? " ✓" : ""
                 // declutter: faint if de-prioritised (beyond Top-N) or below the confidence gate
                 bool lPrimary = array.get(lv_primary, array.get(idx, startI))
-                bool lFaint = densOn and (not lPrimary or (lInWin and lp < eGate))
+                // bias-aligned: fade levels on the side price is NOT being drawn toward
+                bool lCounterBias = biasFadeLvls and biasOn and dayBias != 0 and (dayBias > 0 ? p < close : p > close)
+                bool lFaint = (densOn and (not lPrimary or (lInWin and lp < eGate))) or lCounterBias
                 color cLine = lFaint ? color.new(c, densFadeOp) : ((showTested and lTested) ? color.new(c, 55) : c)
                 string lStyle = (lFaint or (showTested and lTested)) ? line.style_dotted : f_lineStyle()
                 // faint levels shed their tags to a bare price so they recede into the background
@@ -1887,7 +1974,8 @@ if barstate.islast
                         box.set_bgcolor(bx, color.new(zbase, 92))
                     string testTagZ = zTested ? "  ✓" : ""
                     // declutter: faint zone if no Top-N member OR below the confidence gate
-                    bool zFaint = densOn and (not zPrimary or (zInWin and zPull < eGate))
+                    bool zCounterBias = biasFadeLvls and biasOn and dayBias != 0 and (dayBias > 0 ? mid < close : mid > close)
+                    bool zFaint = (densOn and (not zPrimary or (zInWin and zPull < eGate))) or zCounterBias
                     if zFaint
                         box.set_border_style(bx, line.style_dotted)
                         box.set_border_color(bx, color.new(zbase, densFadeOp))
@@ -2022,6 +2110,22 @@ if barstate.islast
         table.set_frame_color(dolTbl, color.new(dirAccent, 35))
         table.set_frame_width(dolTbl, themeBW)
 
+// ---- Daily Bias banner (its own corner, independent of the DOL gauge) ----
+if masterOn and biasOn and biasBanner and barstate.islast
+    color  biasAccent = dayBias > 0 ? themeUpSolid : dayBias < 0 ? themeDnSolid : themeMuted
+    string biasWord = dayBias > 0 ? "LONG" : dayBias < 0 ? "SHORT" : "NEUTRAL"
+    string biasArrow = dayBias > 0 ? "🔼" : dayBias < 0 ? "🔽" : "⏸"
+    string cautionTxt = dayCaution ? " ⚠ caution" : ""
+    string whyTxt = dayBias == 0 ? "no clean structure" : (biasWhyStruct + biasWhySweep)
+    biasSzB = biasBanSize == "Huge" ? size.large : biasBanSize == "Large" ? size.normal : size.small
+    var table biasTbl = table.new(position.top_left, 1, 2, border_width = 1)
+    table.set_position(biasTbl, f_tablePos(biasBanPos))
+    table.clear(biasTbl, 0, 0, 0, 1)
+    table.cell(biasTbl, 0, 0, biasArrow + " TODAY: " + biasWord + cautionTxt, text_color = biasAccent, bgcolor = themePanelBg, text_size = biasSzB)
+    table.cell(biasTbl, 0, 1, whyTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
+    table.set_frame_color(biasTbl, color.new(biasAccent, 35))
+    table.set_frame_width(biasTbl, themeBW)
+
 // wipe extra pool when master/OB off
 if (not masterOn or not showOB) and array.size(xtra_boxes) + array.size(xtra_labels) > 0
     f_clearXtra()
@@ -2069,9 +2173,13 @@ if masterOn and showFVG and (bullFVG or bearFVG)
         bool  brokeStruct = isBull ? (not na(lastPH) and close[1] > lastPH) : (not na(lastPL) and close[1] < lastPL)
         float dispQual = math.min(1.0, bodyDom * 0.7 + (brokeStruct ? 0.3 : 0.0))
         [sc, isInv, inBlock, htfAl, liqAl, swpAl] = f_fvgStrength(gTop, gBot, isBull, dispVol, dispQual, false)
+        // bias-aligned declutter: a gap opposing the committed daily bias is counter-bias.
+        bool counterBias = biasOn and dayBias != 0 and (isBull ? dayBias < 0 : dayBias > 0)
+        bool biasHide = counterBias and biasHideFVG
         bool pass = (not fvgFilterOn) or (sc >= fvgMinStr)
-        if pass or fvgDimWeak
-            bool weak = fvgFilterOn and sc < fvgMinStr
+        if (pass or fvgDimWeak) and not biasHide
+            // counter-bias gaps are drawn faint (like weak) when fading is on
+            bool weak = (fvgFilterOn and sc < fvgMinStr) or (counterBias and biasFadeFVG)
             color baseCol = isBull ? colBull : colBear
             int   fillOp  = weak ? math.min(opacityFVG + 15, 97) : opacityFVG
             int   bordOp  = weak ? 85 : 40
@@ -2169,7 +2277,9 @@ if array.size(fvgBoxes) > 0
                     float pos = (ceP - rngLo) / (rngHi - rngLo)
                     qPD := isBull ? (pos <= 0.5) : (pos >= 0.5)
                 bool qDOL = (not execNeedDOL) or (isBull ? dm_dirState > 0 : dm_dirState < 0)
-                bool qualifies = qStr and qPD and qDOL
+                // daily-bias agreement: NEUTRAL bias (dayBias == 0) allows both directions
+                bool qBias = (not execNeedDay) or dayBias == 0 or (isBull ? dayBias > 0 : dayBias < 0)
+                bool qualifies = qStr and qPD and qDOL and qBias
                 // price returning toward a still-watching qualifying gap (approach alert)
                 if st == 0 and qualifies
                     bool nearing = isBull ? (low <= top and low > ceP) : (high >= bot and high < ceP)
@@ -2339,3 +2449,4 @@ alertcondition(sfpShort, "SFP short", "Bearish sweep + reversal")
 alertcondition(execReturnNow,  "FVG setup approaching", "Price is returning into a qualifying fair value gap — setup may arm soon")
 alertcondition(execArmNow,     "FVG setup armed",       "Price tapped a qualifying FVG entry — setup ARMED (entry/stop/target active)")
 alertcondition(execConfirmNow, "FVG setup confirmed",   "FVG setup CONFIRMED — entry trigger met")
+alertcondition(biasFlipNow,    "Daily bias flipped",    "The Daily Bias direction changed")
