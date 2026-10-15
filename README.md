@@ -73,13 +73,14 @@ Turns high-quality gaps into actionable, *wait-for-the-setup* trade plans (off b
 - **Qualification gates:** a gap can only arm if its strength ≥ a threshold, (optionally) it sits in the correct **premium/discount** half, and (optionally) its direction **agrees with the DOL bias** — so only A+, with-the-draw setups arm.
 - **Arm:** when price taps the entry (the **CE/50%** by default, or the proximal edge), the setup arms and draws **entry · stop · TP1 · TP2** with the **risk:reward**. The stop sits beyond the far edge by an ATR buffer; targets are R-multiples.
 - **Confirm:** optionally wait for a candle to **close rejecting back out** of the gap before flagging *confirmed*.
-- Only the nearest *N* setups draw lines (keeps the chart clean); all qualifying gaps still fire alerts: **FVG setup approaching / armed / confirmed**.
+- Only the nearest *N* setups draw lines (keeps the chart clean); all qualifying gaps still fire alerts: **FVG setup approaching / armed / confirmed / invalidated**.
+- **Lifecycle:** an armed/confirmed setup is marked **dead** (stops drawing, no more alerts) the moment price breaches its stop level, or after a configurable **expiry** in bars — so stale setups don't linger. The approach alert fires **once per gap** (no per-bar repeats).
 
 ---
 
 ## Alerts
 
-`PD level touched`, `Liquidity swept`, `Session level touched`, `SFP fired`, `SFP long`, `SFP short`, `FVG setup approaching`, `FVG setup armed`, `FVG setup confirmed`, `Daily bias flipped`.
+`PD level touched`, `Liquidity swept`, `Session level touched`, `SFP fired`, `SFP long`, `SFP short`, `FVG setup approaching`, `FVG setup armed`, `FVG setup confirmed`, `FVG setup invalidated`, `Daily bias flipped`.
 
 ---
 

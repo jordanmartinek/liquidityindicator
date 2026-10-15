@@ -276,6 +276,8 @@ execTP1R     = input.float(1.0, "  TP1 (R multiple)", minval = 0.5, maxval = 10.
 execTP2R     = input.float(2.0, "  TP2 (R multiple)", minval = 0.5, maxval = 20.0, step = 0.5, tooltip = "Second target as a multiple of risk. 2.0 = 2R.", group = G_EXEC)
 execConfirm  = input.bool(false, "  Require confirmation close before 'confirmed'", tooltip = "After price taps the entry (ARMED), wait for a candle to CLOSE rejecting back out of the gap on the setup's side before flagging the setup CONFIRMED (and firing the confirmation alert). Off = the setup is treated as confirmed on the CE tap itself.", group = G_EXEC)
 execNoRepaint = input.bool(true, "  Commit setup states on bar close (no repaint)", tooltip = "Only advance a setup (arm / confirm) and fire its alert once the bar has CLOSED, so an intrabar tap that pulls back before close can't arm a setup and then un-arm it. Strongly recommended — without it, arm/confirm react to the still-forming candle and can flash then vanish. (Historical bars are unaffected; this only holds the live forming bar until close.)", group = G_EXEC)
+execExpiry   = input.int(40, "  Setup expiry (bars after arming)", minval = 0, maxval = 500, tooltip = "An armed/confirmed setup that neither hits its stop nor is resolved within this many bars is marked DEAD and stops drawing — stale setups don't linger forever. 0 = never expire (only a stop-out kills it).", group = G_EXEC)
+execStopKill = input.bool(true, "  Invalidate setup on stop breach", tooltip = "Mark a setup DEAD the moment price trades through its stop level (far edge of the gap + the ATR buffer). The setup stops drawing and fires the 'FVG setup invalidated' alert. This is the explicit 'the trade idea is wrong now' trigger.", group = G_EXEC)
 execMaxShow  = input.int(2, "  Max active setups drawn", minval = 1, maxval = 6, tooltip = "How many armed setups (nearest to price first) draw their entry/stop/target lines at once, to keep the chart readable. All qualifying gaps still arm and still fire alerts.", group = G_EXEC)
 execColEntry = input.color(color.new(#42a5f5, 0), "  Entry line color", group = G_EXEC)
 execColStop  = input.color(color.new(#ef5350, 0), "  Stop line color", group = G_EXEC)
@@ -1230,7 +1232,9 @@ var fvgIsBull = array.new<bool>()
 var fvgStr    = array.new<float>()   // 0-100 strength score per gap
 var fvgLabels = array.new<label>()   // optional strength label per gap (na if none)
 var fvgCE     = array.new<line>()    // optional consequent-encroachment (50%) line per gap (na if none)
-var fvgArmed  = array.new<int>()     // execution state per gap: 0 = watching, 1 = armed (CE tapped), 2 = confirmed
+var fvgArmed  = array.new<int>()     // execution state per gap: 0 watching · 1 armed · 2 confirmed · 3 dead (stop hit / expired)
+var fvgArmBar = array.new<int>()     // bar_index the gap ARMED on (for setup expiry); na while watching
+var fvgApproached = array.new<bool>() // approach alert already fired for this gap (cooldown)
 // FVG execution setup drawings (entry/stop/target lines + label), redrawn each bar from the
 // armed gaps so only the nearest active setups show. Alert flags are raised in the gap loop.
 var exec_lines  = array.new<line>()
@@ -1238,6 +1242,7 @@ var exec_labels = array.new<label>()
 var bool execArmNow     = false   // a gap armed on THIS bar (for alertcondition)
 var bool execConfirmNow = false   // a gap confirmed on THIS bar
 var bool execReturnNow  = false   // price is returning into a qualifying gap (approach alert)
+var bool execInvalidNow = false   // a setup was invalidated (stop breach / expiry) THIS bar
 // HTF (higher-timeframe) FVG state — tracked box-less (plain floats, zero draw-object cost).
 // They boost the score of aligned chart-TF gaps and feed the DOL model; never drawn.
 var htfFvgTop   = array.new<float>()
@@ -2241,6 +2246,8 @@ f_delFvgAt(int ix) =>
     array.remove(fvgLabels, ix)
     array.remove(fvgCE, ix)
     array.remove(fvgArmed, ix)
+    array.remove(fvgArmBar, ix)
+    array.remove(fvgApproached, ix)
 
 if (not masterOn or not showFVG) and array.size(fvgBoxes) > 0
     while array.size(fvgBoxes) > 0
@@ -2307,11 +2314,14 @@ if masterOn and showFVG and (bullFVG or bearFVG)
                 ce := line.new(bar_index[2], ceMid, bar_index + extendR, ceMid, color = fvgCECol, style = line.style_dashed, width = 1)
             array.push(fvgCE, ce)
             array.push(fvgArmed, 0)   // execution state starts at 'watching'
+            array.push(fvgArmBar, na) // bar it armed on (set when it arms)
+            array.push(fvgApproached, false)
 
 // reset this bar's execution alert flags + clear the setup drawing pool (redrawn below)
 execArmNow     := false
 execConfirmNow := false
 execReturnNow  := false
+execInvalidNow := false
 if array.size(exec_lines) > 0
     while array.size(exec_lines) > 0
         line.delete(array.shift(exec_lines))
@@ -2387,17 +2397,22 @@ if array.size(fvgBoxes) > 0
                 // daily-bias agreement: NEUTRAL bias (dayBias == 0) allows both directions
                 bool qBias = (not execNeedDay) or dayBias == 0 or (isBull ? dayBias > 0 : dayBias < 0)
                 bool qualifies = qStr and qPD and qDOL and qBias
-                // price returning toward a still-watching qualifying gap (approach alert)
-                if st == 0 and qualifies and commitOK
+                // the stop level for this gap (far edge + ATR buffer) — used for invalidation
+                float atrX = math.max(nz(atr), syminfo.mintick)
+                float stopLvl = isBull ? (bot - execStopATR * atrX) : (top + execStopATR * atrX)
+                // price returning toward a still-watching qualifying gap (approach alert, once per gap)
+                if st == 0 and qualifies and commitOK and not array.get(fvgApproached, i)
                     bool nearing = isBull ? (low <= top and low > ceP) : (high >= bot and high < ceP)
                     if nearing
                         execReturnNow := true
+                        array.set(fvgApproached, i, true)   // cooldown: don't re-announce this gap
                 // ARM when price taps the entry (CE by default, else proximal edge)
                 if st == 0 and qualifies and commitOK
                     float entryP = execEntry == "CE (50%)" ? ceP : (isBull ? top : bot)
                     bool tapped = low <= entryP and high >= entryP
                     if tapped
                         array.set(fvgArmed, i, execConfirm ? 1 : 2)
+                        array.set(fvgArmBar, i, bar_index)   // stamp arm bar for expiry
                         execArmNow := true
                         if not execConfirm
                             execConfirmNow := true
@@ -2407,6 +2422,14 @@ if array.size(fvgBoxes) > 0
                     if rejectClose
                         array.set(fvgArmed, i, 2)
                         execConfirmNow := true
+                // ---- lifecycle: invalidate an armed/confirmed setup on stop breach or expiry ----
+                if (st == 1 or st == 2) and commitOK
+                    bool stopHit = execStopKill and (isBull ? (low <= stopLvl) : (high >= stopLvl))
+                    int  armedBar = array.get(fvgArmBar, i)
+                    bool expired  = execExpiry > 0 and not na(armedBar) and (bar_index - armedBar) >= execExpiry
+                    if stopHit or expired
+                        array.set(fvgArmed, i, 3)            // dead — stops drawing + no more alerts
+                        execInvalidNow := true
             i += 1
 
 // ---- draw the nearest active setups (entry / stop / TP1 / TP2 + R:R) ----
@@ -2423,7 +2446,9 @@ if execOn and masterOn and barstate.islast and array.size(fvgBoxes) > 0
         float bestD = na
         int   bestI = -1
         for gi = 0 to array.size(fvgBoxes) - 1
-            if array.get(fvgArmed, gi) >= 1 and not array.get(drawnIx, gi)
+            // draw only LIVE setups (armed=1 / confirmed=2); skip dead=3 and watching=0
+            int gSt0 = array.get(fvgArmed, gi)
+            if (gSt0 == 1 or gSt0 == 2) and not array.get(drawnIx, gi)
                 float gmid = (box.get_top(array.get(fvgBoxes, gi)) + box.get_bottom(array.get(fvgBoxes, gi))) / 2.0
                 float d = math.abs(gmid - close)
                 if na(bestD) or d < bestD
@@ -2556,4 +2581,5 @@ alertcondition(sfpShort, "SFP short", "Bearish sweep + reversal")
 alertcondition(execReturnNow,  "FVG setup approaching", "Price is returning into a qualifying fair value gap — setup may arm soon")
 alertcondition(execArmNow,     "FVG setup armed",       "Price tapped a qualifying FVG entry — setup ARMED (entry/stop/target active)")
 alertcondition(execConfirmNow, "FVG setup confirmed",   "FVG setup CONFIRMED — entry trigger met")
+alertcondition(execInvalidNow, "FVG setup invalidated", "FVG setup INVALIDATED — stop breached or expired")
 alertcondition(biasFlipNow,    "Daily bias flipped",    "The Daily Bias direction changed")
