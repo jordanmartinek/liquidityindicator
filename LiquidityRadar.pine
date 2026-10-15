@@ -76,7 +76,7 @@ showFVG    = input.bool(true,  "Fair Value Gaps (FVG)",        group = G_STRUCT)
 hideMitFVG = input.bool(true,  "  Remove invalidated FVGs",    group = G_STRUCT)
 fvgFillMode = input.string("Body close through", "  FVG invalidation", options = ["Body close through","Wick touch (50%)","Full fill (wick)"], tooltip = "Body close through: gap disappears once a candle CLOSES beyond it. Wick touch: removed at midpoint. Full fill: removed only when a wick fully engulfs it.", group = G_STRUCT)
 // --- FVG strength filter (declutter: only keep gaps price is likely to respect) ---
-fvgFilterOn   = input.bool(true,  "  Filter FVGs by strength", tooltip = "Score every fair value gap 0-100 for how likely price is to RESPECT it, and only draw the ones that clear the threshold below. Kills the flood of trivial gaps on low timeframes (e.g. the 5-minute chart) and leaves the gaps that actually matter. The score blends: gap size vs ATR, creation volume, overlap with an order/breaker block, inversion (IFVG), ALIGNMENT WITH A HIGHER-TIMEFRAME GAP, premium/discount location in the dealing range, displacement quality (body + structure break), confluence (round number / VWAP / OTE), minus a discount if the gap has already been tested.", group = G_STRUCT)
+fvgFilterOn   = input.bool(true,  "  Filter FVGs by strength", tooltip = "RANK every fair value gap 0-100 (a relative QUALITY ranking, not a probability) and only draw the ones that clear the threshold below. Kills the flood of trivial gaps on low timeframes (e.g. the 5-minute chart) and leaves the gaps that actually matter. The rank is a NORMALIZED WEIGHTED AVERAGE of: gap size vs ATR, creation volume, overlap with an order/breaker block, inversion (IFVG), alignment with a higher-timeframe gap, premium/discount location, displacement quality, confluence (round number / VWAP / OTE), liquidity-pool confluence, and sweep precedence — minus a discount if the gap has already been tested. Because it is an average (not a sum), it never saturates at 100 and keeps discriminating between strong gaps; raising a factor's weight re-proportions its influence. NOTE: absolute values are lower than the old additive scale — recalibrate your min-strength thresholds.", group = G_STRUCT)
 fvgMinStr     = input.int(45, "    Min FVG strength % to draw", minval = 0, maxval = 100, tooltip = "Fair value gaps scoring below this are hidden (or dimmed, if 'Dim weak FVGs' is on). Raise to thin the chart further; lower to show more. Only applies when 'Filter FVGs by strength' is on.", group = G_STRUCT)
 fvgDimWeak    = input.bool(true, "    Dim weak FVGs instead of hiding", tooltip = "Rather than removing sub-threshold gaps entirely, draw them very faintly so context is kept while the strong gaps stand out. Off = weak gaps are not drawn at all.", group = G_STRUCT)
 fvgShowStr    = input.bool(true, "    Label FVG strength %", tooltip = "Print each drawn gap's strength % (plus tags: 'htf' = aligns with a higher-timeframe gap, 'liq' = sits on/just beyond a liquidity pool (EQ / prev-period / open / session / swing / VP), 'swp' = formed right after a same-direction sweep (SFP), 'inv' = followed an inversion, 'blk' = inside an order/breaker block) so you can see WHY it scored the way it did.", group = G_STRUCT)
@@ -1316,51 +1316,60 @@ f_gapLiqPool(float gTop, float gBot, bool isBull) =>
                 best := math.max(best, 0.60)
     best
 
-// Score a fair value gap 0-100 for how likely price is to RESPECT it. Blends many factors:
+// RANK a fair value gap 0-100 (a relative quality ranking, NOT a probability). Combines many
+// factors as a NORMALIZED WEIGHTED AVERAGE so the score spreads across 0-100 and never saturates:
 //   • gap size vs ATR            • creation volume (rel-vol of the displacement candle)
 //   • inside an order/breaker     • inversion of a prior opposite gap (IFVG)
 //   • alignment with an HTF gap   • premium/discount location in the dealing range
 //   • displacement quality        • confluence (round number / VWAP / OTE)
-//   • freshness (tested gaps are discounted)
+//   • liquidity-pool confluence   • sweep precedence (SFP -> displacement -> FVG)
+//   • freshness (tested gaps are discounted, applied as a multiplier after the average)
 // dispVol = volume of the creating candle; dispQual = caller-computed 0..1 candle-conviction
 // (body dominance + structure break). Pass isHtf=true to skip the HTF-alignment factor for
 // HTF gaps themselves (avoids self-matching). Returns [score, isInv, inBlock, htfAligned].
 f_fvgStrength(float gTop, float gBot, bool isBull, float dispVol, float dispQual, bool isHtf) =>
     float atrF = math.max(nz(atr), syminfo.mintick)
-    // HTF-alignment is a low-timeframe tool. When active (chart TF <= htfFvgMaxTF) the four base
-    // factors use REDUCED maxes so the 22-pt HTF factor fits under 100. On higher timeframes the
-    // HTF factor is OFF and the base factors use their ORIGINAL full maxes, so HTF charts score
-    // gaps exactly as they did before HTF alignment existed (nothing disappears).
+    // HTF-alignment is a low-timeframe tool: it is an APPLICABLE scoring factor only when the
+    // chart TF <= htfFvgMaxTF (htfMode). On higher timeframes it is excluded from the average
+    // entirely (not just zeroed), and gap-size importance rises, so HTF charts rank gaps on the
+    // classic factors as before.
     bool  htfMode = fvgHtfActive and htfFvgOn and not isHtf
-    float wSize  = htfMode ? 20.0 : 35.0
-    float wVol   = htfMode ? 15.0 : 25.0
-    float wBlock = htfMode ? 18.0 : 25.0
-    float wInv   = htfMode ? 15.0 : 25.0
-    // 1) gap size vs ATR
-    float gapW   = math.min(math.abs(gTop - gBot) / atrF, 1.0)
-    float sizeSc = gapW * wSize * fvgSizeW
-    // 2) creation volume (relative volume of the displacement candle)
+    // ---- NORMALIZED weighted-average model (0-100, cannot saturate) ----
+    // Each factor yields a 0..1 sub-score plus an intrinsic IMPORTANCE (its relative weight in
+    // the hierarchy). The final score is 100 × Σ(sub × importance × userW) / Σ(importance × userW)
+    // over only the APPLICABLE factors. This spreads scores across 0-100 (a perfect gap ~100, a
+    // one-factor gap low) and makes a user weight RE-PROPORTION influence rather than inflate past
+    // a cap — so the score always discriminates between strong gaps. It is a RANKING, not a probability.
+    float num = 0.0   // Σ sub × importance × userW
+    float den = 0.0   // Σ importance × userW  (applicable factors only)
+    // helper inline via accumulation: add a factor (sub 0..1, importance, userW, applicable)
+    // 1) gap size vs ATR — importance 20 (base) / 14 (htfMode, lower so HTF can lead)
+    float impSize = htfMode ? 14.0 : 20.0
+    float subSize = math.min(math.abs(gTop - gBot) / atrF, 1.0)
+    num := num + subSize * impSize * fvgSizeW
+    den := den + impSize * fvgSizeW
+    // 2) creation volume
     float relV   = nz(avgVol) > 0 ? dispVol / avgVol : 1.0
-    float volSc  = math.min(math.max(relV - 1.0, 0.0) / 1.5, 1.0) * wVol * fvgVolW
-    // 3) inside an order block or breaker block
-    float blockSc = 0.0
+    float subVol = math.min(math.max(relV - 1.0, 0.0) / 1.5, 1.0)
+    num := num + subVol * 12.0 * fvgVolW
+    den := den + 12.0 * fvgVolW
+    // 3) inside an order block or breaker block (binary)
     bool  inBlock = false
     if array.size(obTop) > 0
         for oi = 0 to array.size(obTop) - 1
             float ot = array.get(obTop, oi)
             float ob = array.get(obBot, oi)
-            if not na(ot) and not na(ob) and gTop >= ob and gBot <= ot   // gap overlaps OB
+            if not na(ot) and not na(ob) and gTop >= ob and gBot <= ot
                 inBlock := true
     if showBreaker and array.size(brkTop) > 0
         for bri = 0 to array.size(brkTop) - 1
             float bt = array.get(brkTop, bri)
             float bb = array.get(brkBot, bri)
-            if not na(bt) and not na(bb) and gTop >= bb and gBot <= bt   // gap overlaps breaker
+            if not na(bt) and not na(bb) and gTop >= bb and gBot <= bt
                 inBlock := true
-    if inBlock
-        blockSc := wBlock * fvgBlockW
-    // 4) inversion of a prior opposite gap in the same zone (IFVG)
-    float invSc = 0.0
+    num := num + (inBlock ? 1.0 : 0.0) * 16.0 * fvgBlockW
+    den := den + 16.0 * fvgBlockW
+    // 4) inversion of a prior opposite gap in the same zone (IFVG, binary)
     bool  isInv = false
     if array.size(invTop) > 0
         for ii = 0 to array.size(invTop) - 1
@@ -1369,36 +1378,35 @@ f_fvgStrength(float gTop, float gBot, bool isBull, float dispVol, float dispQual
                 float ib = array.get(invBot, ii)
                 if gTop >= ib and gBot <= it
                     isInv := true
-    if isInv
-        invSc := wInv * fvgInvW
-    // 5) HTF-gap alignment -> 0..22 (biggest signal; scales with the HTF gap's own strength).
-    // Only active on low timeframes (htfMode); on higher TFs this factor is 0.
-    float htfSc = 0.0
+    num := num + (isInv ? 1.0 : 0.0) * 14.0 * fvgInvW
+    den := den + 14.0 * fvgInvW
+    // 5) HTF-gap alignment — only an APPLICABLE factor in htfMode (else excluded from the average)
     bool  htfAligned = false
-    if htfMode and array.size(htfFvgTop) > 0
+    if htfMode
         float bestHtf = 0.0
-        for hi = 0 to array.size(htfFvgTop) - 1
-            float ht = array.get(htfFvgTop, hi)
-            float hb = array.get(htfFvgBot, hi)
-            if gTop >= hb and gBot <= ht   // chart gap overlaps HTF gap
-                htfAligned := true
-                float hs = hi < array.size(htfFvgStr) ? array.get(htfFvgStr, hi) : 60.0
-                bestHtf := math.max(bestHtf, 0.5 + 0.5 * (nz(hs, 60.0) / 100.0))   // 0.5..1.0
-        if htfAligned
-            htfSc := 22.0 * fvgHtfW * bestHtf
-    // 6) premium/discount location in the live dealing range -> 0..12
-    //    bullish gap in discount (lower half) or bearish gap in premium (upper half) is ideal.
-    float pdSc = 0.0
+        if array.size(htfFvgTop) > 0
+            for hi = 0 to array.size(htfFvgTop) - 1
+                float ht = array.get(htfFvgTop, hi)
+                float hb = array.get(htfFvgBot, hi)
+                if gTop >= hb and gBot <= ht
+                    htfAligned := true
+                    float hs = hi < array.size(htfFvgStr) ? array.get(htfFvgStr, hi) : 60.0
+                    bestHtf := math.max(bestHtf, 0.5 + 0.5 * (nz(hs, 60.0) / 100.0))   // 0.5..1.0
+        num := num + bestHtf * 22.0 * fvgHtfW
+        den := den + 22.0 * fvgHtfW
+    // 6) premium/discount location — only applicable when a dealing range exists
     if not na(rngHi) and not na(rngLo) and rngHi > rngLo
         float gMid = (gTop + gBot) / 2.0
         float pos  = math.min(1.0, math.max(0.0, (gMid - rngLo) / (rngHi - rngLo)))
-        // alignment: bull wants low pos (discount), bear wants high pos (premium)
         float align = isBull ? (1.0 - pos) : pos
-        pdSc := math.max(0.0, (align - 0.5) * 2.0) * 12.0 * fvgPdW   // only rewards the correct half
-    // 7) displacement quality (caller-supplied 0..1) -> 0..10
-    float dispSc = math.min(math.max(nz(dispQual), 0.0), 1.0) * 10.0 * fvgDispW
-    // 8) confluence: midpoint near a round number / VWAP / OTE fib -> 0..10
-    float conflSc = 0.0
+        float subPd = math.max(0.0, (align - 0.5) * 2.0)   // 0..1, correct half only
+        num := num + subPd * 12.0 * fvgPdW
+        den := den + 12.0 * fvgPdW
+    // 7) displacement quality (caller-supplied 0..1)
+    float subDisp = math.min(math.max(nz(dispQual), 0.0), 1.0)
+    num := num + subDisp * 10.0 * fvgDispW
+    den := den + 10.0 * fvgDispW
+    // 8) confluence: midpoint near a round number / VWAP / OTE fib (binary)
     float gMid2 = (gTop + gBot) / 2.0
     float tolC = math.max(atrF * 0.25, syminfo.mintick)
     bool  conflHit = false
@@ -1416,25 +1424,23 @@ f_fvgStrength(float gTop, float gBot, bool isBull, float dispVol, float dispQual
         float oteC = bullLeg ? (rngHi - pdFib3 * rng) : (rngLo + pdFib3 * rng)
         if math.abs(gMid2 - oteA) <= tolC or math.abs(gMid2 - oteB) <= tolC or math.abs(gMid2 - oteC) <= tolC
             conflHit := true
-    if conflHit
-        conflSc := 10.0 * fvgConflW
-    // 10) liquidity-pool confluence -> 0..18 (graded by the most important nearby pool:
-    //     equal highs/lows, prev-period levels, opens, sessions, swings, volume profile)
+    num := num + (conflHit ? 1.0 : 0.0) * 8.0 * fvgConflW
+    den := den + 8.0 * fvgConflW
+    // 10) liquidity-pool confluence (0..1 graded by the most important nearby pool)
     float liqPool = f_gapLiqPool(gTop, gBot, isBull)
-    float liqSc = liqPool * 18.0 * fvgLiqW
     bool  liqAligned = liqPool > 0.0
-    // 11) sweep precedence (SFP -> displacement -> FVG) -> 0..10. A same-direction SFP within
-    //     the last fvgSweepBars qualifies the gap as a post-stop-run reaction zone.
-    float sweepSc = 0.0
+    num := num + liqPool * 16.0 * fvgLiqW
+    den := den + 16.0 * fvgLiqW
+    // 11) sweep precedence (SFP -> displacement -> FVG, binary) — chart-TF gaps only
     bool  sweptBefore = false
     if not isHtf
         for sb = 0 to fvgSweepBars
             if (isBull and sfpLong[sb]) or ((not isBull) and sfpShort[sb])
                 sweptBefore := true
-    if sweptBefore
-        sweepSc := 10.0 * fvgSweepW
-    // sum the additive factors (capped at 100 pre-freshness)
-    float raw = math.min(sizeSc + volSc + blockSc + invSc + htfSc + pdSc + dispSc + conflSc + liqSc + sweepSc, 100.0)
+        num := num + (sweptBefore ? 1.0 : 0.0) * 12.0 * fvgSweepW
+        den := den + 12.0 * fvgSweepW
+    // normalized formation score 0..100 (weighted average of applicable factors; never saturates)
+    float raw = den > 0 ? (num / den) * 100.0 : 0.0
     // 9) freshness multiplier — a gap price has already probed is 'used' liquidity, discount it
     float freshMul = 1.0
     if fvgFreshDisc > 0 and f_isTested((gTop + gBot) / 2.0, atrF)
@@ -2362,10 +2368,12 @@ if array.size(fvgBoxes) > 0
             if not na(lb) and exhOn and exhW > 0
                 float baseSc = array.get(fvgStr, i)
                 float adj = f_exhAdj(top, bot, isBull)
-                int effSc = int(math.max(0.0, math.min(100.0, baseSc + adj)))
-                string exhTag = adj >= 1.0 ? " ⛽▲" : (adj <= -1.0 ? " ⛽▽" : "")
+                // show the STATIC formation rank as the primary number, with the live exhaustion
+                // context as a SEPARATE signed delta — the base score never visually mutates.
+                int    delta = int(math.round(adj))
+                string exhTag = delta >= 1 ? (" ⛽+" + str.tostring(delta)) : (delta <= -1 ? (" ⛽" + str.tostring(delta)) : "")
                 string pfx = fvgLblStyle == "Inside box (centered)" ? "" : "◆ "
-                label.set_text(lb, pfx + str.tostring(effSc) + "%" + exhTag)
+                label.set_text(lb, pfx + str.tostring(int(baseSc)) + "%" + exhTag)
             // keep each label correctly placed as the box extends right:
             //  • Inside box (centered): re-center over the (growing) box
             //  • Right-edge styles (Plain / Callout): follow the right edge
