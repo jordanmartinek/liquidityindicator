@@ -96,6 +96,8 @@ fvgLiqATR     = input.float(0.5, "      Liquidity proximity (× ATR)", minval = 
 fvgSweepW     = input.float(1.0, "    Weight: sweep precedence (SFP→FVG)", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap forms right after a liquidity sweep + reversal (SFP) in the SAME direction — the textbook ICT sweep → displacement → fair value gap sequence. A gap born out of a stop-run is a far higher-probability reaction zone.", group = G_STRUCT)
 fvgSweepBars  = input.int(3, "      Sweep look-back (bars)", minval = 1, maxval = 20, tooltip = "How many bars before the gap formed to look for a same-direction SFP/sweep that qualifies the gap for the sweep-precedence bonus.", group = G_STRUCT)
 fvgFreshDisc  = input.float(0.35, "    Tested-gap discount", minval = 0.0, maxval = 0.9, step = 0.05, tooltip = "How much to cut a gap's score once price has already probed into it (partially mitigated / 'used' liquidity). 0.35 = a tested gap scores 35% lower. A virgin, untouched gap keeps its full score. 0 = disable (freshness ignored).", group = G_STRUCT)
+fvgTrapDisc  = input.float(0.40, "    Poor-location (trapped) discount", minval = 0.0, maxval = 0.9, step = 0.05, tooltip = "Cut a gap's rank when it is TRAPPED against opposing structure in its intended direction — a BULLISH gap with major resistance (weekly/daily high, equal highs, order-block top, swing high) sitting just ABOVE it, or a BEARISH gap with support just below. Such a gap has little room to run and is a poor long/short despite otherwise scoring well. 0.40 = up to -40% when fully walled. 0 = disable (no location penalty).", group = G_STRUCT)
+fvgTrapATR   = input.float(0.75, "      Trap look-ahead (× ATR)", minval = 0.1, maxval = 3.0, step = 0.1, tooltip = "How far beyond the gap (in ATRs) to look for opposing structure that would 'trap' it. Larger = a wall farther away still counts as limiting the runway.", group = G_STRUCT)
 // --- momentum exhaustion: a DYNAMIC, live score adjustment driven by RSI divergence ---
 exhOn        = input.bool(true,  "  Momentum-exhaustion dynamic weighting", tooltip = "A LIVE layer that nudges each gap's effective score as momentum exhausts. Primary signal is RSI DIVERGENCE: if price pushes to a new low but RSI makes a HIGHER low (the down-push is running out of steam), gaps BELOW price — the likely reversal/support zones — get a rising bonus, while bearish continuation gaps below get discounted. Mirror for an exhausting up-push. Overbought/oversold adds a secondary nudge. Unlike the static factors (fixed at gap creation), this one RE-EVALUATES every bar, so scores visibly rise/fall as exhaustion builds. Affects the on-chart strength %% and the execution-engine arming score; it does not alter the DOL gauge.", group = G_STRUCT)
 exhRsiLen    = input.int(14, "    RSI length", minval = 2, maxval = 50, group = G_STRUCT)
@@ -118,6 +120,7 @@ htfFvgMaxTF   = input.int(5, "    HTF scoring only at/below (minutes)", minval =
 showSFP    = input.bool(true, "Sweep + reversal markers (SFP)", tooltip = "The core validity trigger: a wick pierces a tracked level then the candle CLOSES back on the origin side (a stop-run). Marks 🎯 SFP long/short.", group = G_STRUCT)
 sfpUseVol  = input.bool(true, "  Require volume confirmation", tooltip = "Only flag a sweep as a real grab on elevated relative volume.", group = G_STRUCT)
 sfpConfirm = input.bool(true, "  Confirm on bar close (no repaint)", tooltip = "An SFP is 'a wick pierces a level then the candle CLOSES back on the origin side' — a CLOSE-based event. With this on, the SFP marker/alert only fires once the bar has CLOSED, so it can't flash on the forming bar and then disappear (no repaint). Turn OFF to see a provisional intrabar preview (which may vanish before the bar closes).", group = G_STRUCT)
+sfpCooldown = input.int(10, "  Same-level SFP cooldown (bars)", minval = 0, maxval = 100, tooltip = "After an SFP fires on a level, suppress further SFPs on that SAME level for this many bars — so a wick repeatedly poking one high/low doesn't re-fire the signal every bar. 0 = no cooldown (every qualifying bar fires, legacy behavior).", group = G_STRUCT)
 rvolLen    = input.int(20, "  Rel-volume lookback", minval = 5, maxval = 200, group = G_STRUCT)
 rvolMult   = input.float(1.5, "  Min rel-volume for grab", minval = 1.0, maxval = 5.0, step = 0.1, group = G_STRUCT)
 sfpColLong  = input.color(color.new(#26a69a, 0), "  Bullish SFP color", group = G_STRUCT)
@@ -1000,18 +1003,30 @@ if showSFP
         for si = 0 to array.size(eqLoA) - 1
             array.push(lvLoNow, array.get(eqLoA, si))
 
+// per-level SFP fired-memory: suppress re-firing on the SAME level within sfpCooldown bars.
+var sfpFiredPx  = array.new<float>()   // price of a level that recently fired an SFP
+var sfpFiredBar = array.new<int>()     // bar it fired on
+// has an SFP fired on (a level within tol of) px inside the cooldown window?
+f_sfpOnCooldown(float px, float tol) =>
+    bool hit = false
+    if sfpCooldown > 0 and array.size(sfpFiredPx) > 0
+        for ci = 0 to array.size(sfpFiredPx) - 1
+            if math.abs(array.get(sfpFiredPx, ci) - px) <= tol and (bar_index - array.get(sfpFiredBar, ci)) < sfpCooldown
+                hit := true
+    hit
+float sfpTol = math.max(nz(atr) * 0.1, syminfo.mintick)
 float sweptHiLvl = na
 float sweptLoLvl = na
 if showSFP and array.size(lvHiNow) > 0
     for si = 0 to array.size(lvHiNow) - 1
         float lv = array.get(lvHiNow, si)
-        if high > lv and close < lv
+        if high > lv and close < lv and not f_sfpOnCooldown(lv, sfpTol)
             if na(sweptHiLvl) or lv > sweptHiLvl
                 sweptHiLvl := lv
 if showSFP and array.size(lvLoNow) > 0
     for si = 0 to array.size(lvLoNow) - 1
         float lv = array.get(lvLoNow, si)
-        if low < lv and close > lv
+        if low < lv and close > lv and not f_sfpOnCooldown(lv, sfpTol)
             if na(sweptLoLvl) or lv < sweptLoLvl
                 sweptLoLvl := lv
 
@@ -1021,6 +1036,25 @@ if showSFP and array.size(lvLoNow) > 0
 bool sfpConfOK = (not sfpConfirm) or barstate.isconfirmed
 bool sfpShort = showSFP and not na(sweptHiLvl) and volOK and sfpConfOK
 bool sfpLong  = showSFP and not na(sweptLoLvl) and volOK and sfpConfOK
+// record the fired level into the cooldown memory (so it won't re-fire for sfpCooldown bars)
+if sfpCooldown > 0 and sfpShort and not na(sweptHiLvl)
+    array.push(sfpFiredPx, sweptHiLvl)
+    array.push(sfpFiredBar, bar_index)
+if sfpCooldown > 0 and sfpLong and not na(sweptLoLvl)
+    array.push(sfpFiredPx, sweptLoLvl)
+    array.push(sfpFiredBar, bar_index)
+// prune cooldown memory beyond the window (also hard-capped so it can't grow unbounded)
+if array.size(sfpFiredPx) > 0
+    int sfi = 0
+    while sfi < array.size(sfpFiredPx)
+        if (bar_index - array.get(sfpFiredBar, sfi)) >= sfpCooldown
+            array.remove(sfpFiredPx, sfi)
+            array.remove(sfpFiredBar, sfi)
+        else
+            sfi += 1
+    while array.size(sfpFiredPx) > 50
+        array.shift(sfpFiredPx)
+        array.shift(sfpFiredBar)
 
 // -----------------------------------------------------------------------------
 // TESTED-STATE CAPTURE — a wick PROBES a level (enters within depth×ATR) but does NOT
@@ -1316,6 +1350,58 @@ f_gapLiqPool(float gTop, float gBot, bool isBull) =>
                 best := math.max(best, 0.60)
     best
 
+// How TRAPPED is a gap against opposing structure in its intended direction? Returns 0..1
+// (0 = clear runway, 1 = heavily walled). For a BULLISH gap it scans just ABOVE the gap top
+// for resistance (highs / order-block tops); for a BEARISH gap, just BELOW the gap bottom for
+// support. Only OPPOSING-side structure counts — this is the poor-location penalty.
+f_gapTrapped(float gTop, float gBot, bool isBull) =>
+    float band = math.max(nz(atr) * fvgTrapATR, syminfo.mintick)
+    // search window strictly on the opposing side, just beyond the gap edge
+    float wLo = isBull ? gTop : (gBot - band)
+    float wHi = isBull ? (gTop + band) : gBot
+    float wall = 0.0
+    if isBull
+        // resistance above: prev-period / session / swing HIGHS, equal highs, OB tops
+        if f_inBand(pwhM, wLo, wHi) or f_inBand(pmhM, wLo, wHi)
+            wall := math.max(wall, 1.0)
+        if f_inBand(pdhM, wLo, wHi)
+            wall := math.max(wall, 0.85)
+        if array.size(eqHiA) > 0
+            for i = 0 to array.size(eqHiA) - 1
+                if f_inBand(array.get(eqHiA, i), wLo, wHi)
+                    wall := math.max(wall, 0.9)
+        if f_inBand(nyH, wLo, wHi) or f_inBand(londH, wLo, wHi) or f_inBand(asiaH, wLo, wHi)
+            wall := math.max(wall, 0.6)
+        if array.size(swHi) > 0
+            for i = 0 to array.size(swHi) - 1
+                if f_inBand(array.get(swHi, i), wLo, wHi)
+                    wall := math.max(wall, 0.6)
+        if array.size(obTop) > 0
+            for i = 0 to array.size(obTop) - 1
+                if not array.get(obBull, i) and f_inBand(array.get(obTop, i), wLo, wHi)  // bearish OB above
+                    wall := math.max(wall, 0.8)
+    else
+        // support below: prev-period / session / swing LOWS, equal lows, OB bottoms
+        if f_inBand(pwlM, wLo, wHi) or f_inBand(pmlM, wLo, wHi)
+            wall := math.max(wall, 1.0)
+        if f_inBand(pdlM, wLo, wHi)
+            wall := math.max(wall, 0.85)
+        if array.size(eqLoA) > 0
+            for i = 0 to array.size(eqLoA) - 1
+                if f_inBand(array.get(eqLoA, i), wLo, wHi)
+                    wall := math.max(wall, 0.9)
+        if f_inBand(nyL, wLo, wHi) or f_inBand(londL, wLo, wHi) or f_inBand(asiaL, wLo, wHi)
+            wall := math.max(wall, 0.6)
+        if array.size(swLo) > 0
+            for i = 0 to array.size(swLo) - 1
+                if f_inBand(array.get(swLo, i), wLo, wHi)
+                    wall := math.max(wall, 0.6)
+        if array.size(obTop) > 0
+            for i = 0 to array.size(obTop) - 1
+                if array.get(obBull, i) and f_inBand(array.get(obBot, i), wLo, wHi)  // bullish OB below
+                    wall := math.max(wall, 0.8)
+    wall
+
 // RANK a fair value gap 0-100 (a relative quality ranking, NOT a probability). Combines many
 // factors as a NORMALIZED WEIGHTED AVERAGE so the score spreads across 0-100 and never saturates:
 //   • gap size vs ATR            • creation volume (rel-vol of the displacement candle)
@@ -1445,7 +1531,13 @@ f_fvgStrength(float gTop, float gBot, bool isBull, float dispVol, float dispQual
     float freshMul = 1.0
     if fvgFreshDisc > 0 and f_isTested((gTop + gBot) / 2.0, atrF)
         freshMul := 1.0 - fvgFreshDisc
-    int scInt = int(math.min(math.round(raw * freshMul), 100))
+    // 12) poor-location (trapped) multiplier — opposing structure right in the gap's path cuts
+    //     the rank proportional to how walled it is (bullish gap under resistance, etc.).
+    float trapMul = 1.0
+    if fvgTrapDisc > 0
+        float trapped = f_gapTrapped(gTop, gBot, isBull)
+        trapMul := 1.0 - fvgTrapDisc * trapped
+    int scInt = int(math.min(math.round(raw * freshMul * trapMul), 100))
     [scInt, isInv, inBlock, htfAligned, liqAligned, sweptBefore]
 
 // confluence score for a price band [loB..hiB]
