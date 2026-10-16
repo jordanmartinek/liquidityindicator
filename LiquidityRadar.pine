@@ -77,7 +77,7 @@ hideMitFVG = input.bool(true,  "  Remove invalidated FVGs",    group = G_STRUCT)
 fvgFillMode = input.string("Body close through", "  FVG invalidation", options = ["Body close through","Wick touch (50%)","Full fill (wick)"], tooltip = "Body close through: gap disappears once a candle CLOSES beyond it. Wick touch: removed at midpoint. Full fill: removed only when a wick fully engulfs it.", group = G_STRUCT)
 // --- FVG strength filter (declutter: only keep gaps price is likely to respect) ---
 fvgFilterOn   = input.bool(true,  "  Filter FVGs by strength", tooltip = "RANK every fair value gap 0-100 (a relative QUALITY ranking, not a probability) and only draw the ones that clear the threshold below. The rank = a CORE BASE (the quality every gap has: size vs ATR · creation volume · displacement · premium/discount — a clean ordinary gap lands ~40-55) PLUS BONUS points added on top only when the occasional factors fire (inside an order/breaker block, inversion/IFVG, higher-timeframe-gap alignment, round-number/VWAP/OTE confluence, liquidity-pool confluence, sweep precedence), minus a discount if the gap is already tested or poorly located. Absent bonuses never penalise — so a valid gap keeps a usable score and confluent gaps rise above ordinary ones. Typical: trivial gap <30, ordinary 40-55, confluent 65-90+.", group = G_STRUCT)
-fvgMinStr     = input.int(40, "    Min FVG strength % to draw", minval = 0, maxval = 100, tooltip = "Fair value gaps ranking below this are hidden (or dimmed, if 'Dim weak FVGs' is on). On the new core-base+bonus scale an ordinary valid gap ranks ~40-55 and confluent gaps 65-90+, so ~40 keeps genuine gaps while dimming only the trivial ones. Raise to thin the chart further; lower to show more.", group = G_STRUCT)
+fvgMinStr     = input.int(35, "    Min FVG strength % to draw", minval = 0, maxval = 100, tooltip = "Fair value gaps ranking below this are hidden (or dimmed, if 'Dim weak FVGs' is on). On the core-base+bonus scale a TYPICAL valid gap ranks ~45-60 and confluent gaps 65-90+, so ~35 keeps genuine gaps while dimming only the trivial ones. TUNE THIS to the % values you actually see on your chart: if too many gaps dim, lower it; if too many show, raise it.", group = G_STRUCT)
 fvgDimWeak    = input.bool(true, "    Dim weak FVGs instead of hiding", tooltip = "Rather than removing sub-threshold gaps entirely, draw them very faintly so context is kept while the strong gaps stand out. Off = weak gaps are not drawn at all.", group = G_STRUCT)
 fvgShowStr    = input.bool(true, "    Label FVG strength %", tooltip = "Print each drawn gap's strength % (plus tags: 'htf' = aligns with a higher-timeframe gap, 'liq' = sits on/just beyond a liquidity pool (EQ / prev-period / open / session / swing / VP), 'swp' = formed right after a same-direction sweep (SFP), 'inv' = followed an inversion, 'blk' = inside an order/breaker block) so you can see WHY it scored the way it did.", group = G_STRUCT)
 fvgLblStyle   = input.string("Inside box (centered)", "    FVG label style", options = ["Inside box (centered)","Pointer (distinct)","Plain text (no box)","Callout (like levels)"], tooltip = "How the FVG strength % label is drawn, so it doesn't blend into the level/cluster callouts when zoomed out. 'Inside box (centered)': the % sits CENTERED inside the gap box itself — tied directly to its box, clearly separate from the level labels at the right edge (recommended). 'Pointer (distinct)': a tinted pointer tag at the LEFT edge of the gap. 'Plain text (no box)': borderless text in the gap color — the most minimal. 'Callout (like levels)': the original left-callout box at the right edge.", group = G_STRUCT)
@@ -1432,32 +1432,37 @@ f_fvgStrength(float gTop, float gBot, bool isBull, float dispVol, float dispQual
     // sweep) then ADD points ON TOP only when they fire — so an absent bonus never penalises, and
     // confluent gaps rise above ordinary ones. Score = base (0..~65) + bonuses, capped at 100.
     //
-    // --- CORE base (weighted average, 0..~65) ---
+    // --- CORE base (weighted average, 0..~70) ---
+    // Sub-scores are calibrated so a TYPICAL gap reads mid-range (not near 0). On low timeframes
+    // an FVG's size is usually a small fraction of ATR and volume/displacement are unremarkable,
+    // so the old "1.0 = normal" curves floored every gap. These map a normal gap to ~0.5-0.7.
     float cNum = 0.0
     float cDen = 0.0
-    // 1) gap size vs ATR
-    float subSize = math.min(math.abs(gTop - gBot) / atrF, 1.0)
+    // 1) gap size vs ATR — a gap ~0.4×ATR already reads as good size (not 0.4)
+    float gapATRv = math.abs(gTop - gBot) / atrF
+    float subSize = math.min(gapATRv / 0.4, 1.0)
     cNum := cNum + subSize * 22.0 * fvgSizeW
     cDen := cDen + 22.0 * fvgSizeW
-    // 2) creation volume
+    // 2) creation volume — average volume (relV≈1) already reads ~0.67; a spike saturates
     float relV   = nz(avgVol) > 0 ? dispVol / avgVol : 1.0
-    float subVol = math.min(math.max(relV - 1.0, 0.0) / 1.5, 1.0)
+    float subVol = math.min(math.max(relV, 0.0) / 1.5, 1.0)
     cNum := cNum + subVol * 14.0 * fvgVolW
     cDen := cDen + 14.0 * fvgVolW
-    // 7) displacement quality (caller-supplied 0..1)
-    float subDisp = math.min(math.max(nz(dispQual), 0.0), 1.0)
+    // 7) displacement quality (caller 0..1) — floored so a normal displacement reads ~0.55+
+    float subDisp = math.min(0.35 + math.max(nz(dispQual), 0.0) * 0.65, 1.0)
     cNum := cNum + subDisp * 16.0 * fvgDispW
     cDen := cDen + 16.0 * fvgDispW
-    // 6) premium/discount location (only when a dealing range exists; else omitted from the avg)
+    // 6) premium/discount location — full correct half scores linearly 0..1; neutral 0.5 when no
+    //    range exists (so the factor never collapses the average to 0).
+    float subPd = 0.5
     if not na(rngHi) and not na(rngLo) and rngHi > rngLo
         float gMid = (gTop + gBot) / 2.0
         float pos  = math.min(1.0, math.max(0.0, (gMid - rngLo) / (rngHi - rngLo)))
-        float align = isBull ? (1.0 - pos) : pos
-        float subPd = math.max(0.0, (align - 0.5) * 2.0)   // 0..1, correct half only
-        cNum := cNum + subPd * 10.0 * fvgPdW
-        cDen := cDen + 10.0 * fvgPdW
-    // base scaled so a strong-core gap reaches ~65 (leaving headroom for bonuses up to 100)
-    float base = cDen > 0 ? (cNum / cDen) * 65.0 : 0.0
+        subPd := isBull ? (1.0 - pos) : pos      // bull wants discount (low pos), bear wants premium
+    cNum := cNum + subPd * 10.0 * fvgPdW
+    cDen := cDen + 10.0 * fvgPdW
+    // base scaled so a strong-core gap reaches ~70 (leaving headroom for bonuses up to 100)
+    float base = cDen > 0 ? (cNum / cDen) * 70.0 : 0.0
     //
     // --- BONUS points added on top (absent bonuses add nothing — they never penalise) ---
     float bonus = 0.0
