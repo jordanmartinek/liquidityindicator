@@ -75,6 +75,7 @@ Turns high-quality gaps into actionable, *wait-for-the-setup* trade plans (off b
 - **Confirm:** optionally wait for a candle to **close rejecting back out** of the gap before flagging *confirmed*.
 - Only the nearest *N* setups draw lines (keeps the chart clean); all qualifying gaps still fire alerts: **FVG setup approaching / armed / confirmed / invalidated**.
 - **Lifecycle:** an armed/confirmed setup is marked **dead** (stops drawing, no more alerts) the moment price breaches its stop level, or after a configurable **expiry** in bars — so stale setups don't linger. The approach alert fires **once per gap** (no per-bar repeats).
+- **Target feasibility & min R:R:** before arming, the engine finds the nearest **opposing liquidity pool** in the trade's direction (the realistic target) and measures reward:risk to it. A setup whose reachable target offers less than the configured **min R:R** is skipped (or just flagged `⚠ low R:R`), so you don't take a long into a wall half a unit of risk away. The actual liquidity target is drawn as a 🎯 line alongside the R-multiple TP1/TP2.
 
 ---
 

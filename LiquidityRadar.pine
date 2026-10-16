@@ -281,6 +281,8 @@ execConfirm  = input.bool(false, "  Require confirmation close before 'confirmed
 execNoRepaint = input.bool(true, "  Commit setup states on bar close (no repaint)", tooltip = "Only advance a setup (arm / confirm) and fire its alert once the bar has CLOSED, so an intrabar tap that pulls back before close can't arm a setup and then un-arm it. Strongly recommended — without it, arm/confirm react to the still-forming candle and can flash then vanish. (Historical bars are unaffected; this only holds the live forming bar until close.)", group = G_EXEC)
 execExpiry   = input.int(40, "  Setup expiry (bars after arming)", minval = 0, maxval = 500, tooltip = "An armed/confirmed setup that neither hits its stop nor is resolved within this many bars is marked DEAD and stops drawing — stale setups don't linger forever. 0 = never expire (only a stop-out kills it).", group = G_EXEC)
 execStopKill = input.bool(true, "  Invalidate setup on stop breach", tooltip = "Mark a setup DEAD the moment price trades through its stop level (far edge of the gap + the ATR buffer). The setup stops drawing and fires the 'FVG setup invalidated' alert. This is the explicit 'the trade idea is wrong now' trigger.", group = G_EXEC)
+execMinRR    = input.float(1.5, "  Min reward:risk to a liquidity target", minval = 0.0, maxval = 10.0, step = 0.25, tooltip = "Feasibility check: before arming, the engine finds the nearest OPPOSING liquidity pool in the trade's direction (the realistic target price is drawn to) and measures reward:risk from the entry to that pool vs the entry-to-stop distance (1R). A setup whose reachable target offers less than this R:R is either skipped or flagged (see below) — so you don't take a long into a wall 0.5R away. 0 = disable the feasibility check.", group = G_EXEC)
+execRRReject = input.bool(true, "    Skip setups below min R:R (else just flag)", tooltip = "ON: a setup that fails the min-R:R feasibility check does NOT arm at all. OFF: it still arms/draws but is visibly flagged 'low R:R' so you can judge it yourself.", group = G_EXEC)
 execMaxShow  = input.int(2, "  Max active setups drawn", minval = 1, maxval = 6, tooltip = "How many armed setups (nearest to price first) draw their entry/stop/target lines at once, to keep the chart readable. All qualifying gaps still arm and still fire alerts.", group = G_EXEC)
 execColEntry = input.color(color.new(#42a5f5, 0), "  Entry line color", group = G_EXEC)
 execColStop  = input.color(color.new(#ef5350, 0), "  Stop line color", group = G_EXEC)
@@ -1402,6 +1404,50 @@ f_gapTrapped(float gTop, float gBot, bool isBull) =>
                     wall := math.max(wall, 0.8)
     wall
 
+// pick the closer opposing-pool candidate (top-level; Pine has no nested functions).
+// Returns the candidate p if it is a valid target beyond fromP and nearer than the running best.
+f_closerOpp(float best, float p, float fromP, bool isBull) =>
+    float r = best
+    if not na(p)
+        if isBull and p > fromP and (na(best) or p < best)
+            r := p
+        else if (not isBull) and p < fromP and (na(best) or p > best)
+            r := p
+    r
+// Nearest OPPOSING liquidity pool in the trade's direction, used as a realistic TARGET for the
+// feasibility / R:R check. For a long (isBull) that's the nearest pool ABOVE fromP (prev-period
+// highs, equal highs, session highs, swing highs); for a short, the nearest pool BELOW. Returns
+// the target price, or na if none is tracked above/below.
+f_nextOppLiq(float fromP, bool isBull) =>
+    float best = na
+    if isBull
+        best := f_closerOpp(best, pdhM, fromP, isBull)
+        best := f_closerOpp(best, pwhM, fromP, isBull)
+        best := f_closerOpp(best, pmhM, fromP, isBull)
+        best := f_closerOpp(best, nyH, fromP, isBull)
+        best := f_closerOpp(best, londH, fromP, isBull)
+        best := f_closerOpp(best, asiaH, fromP, isBull)
+        if array.size(eqHiA) > 0
+            for i = 0 to array.size(eqHiA) - 1
+                best := f_closerOpp(best, array.get(eqHiA, i), fromP, isBull)
+        if array.size(swHi) > 0
+            for i = 0 to array.size(swHi) - 1
+                best := f_closerOpp(best, array.get(swHi, i), fromP, isBull)
+    else
+        best := f_closerOpp(best, pdlM, fromP, isBull)
+        best := f_closerOpp(best, pwlM, fromP, isBull)
+        best := f_closerOpp(best, pmlM, fromP, isBull)
+        best := f_closerOpp(best, nyL, fromP, isBull)
+        best := f_closerOpp(best, londL, fromP, isBull)
+        best := f_closerOpp(best, asiaL, fromP, isBull)
+        if array.size(eqLoA) > 0
+            for i = 0 to array.size(eqLoA) - 1
+                best := f_closerOpp(best, array.get(eqLoA, i), fromP, isBull)
+        if array.size(swLo) > 0
+            for i = 0 to array.size(swLo) - 1
+                best := f_closerOpp(best, array.get(swLo, i), fromP, isBull)
+    best
+
 // RANK a fair value gap 0-100 (a relative quality ranking, NOT a probability). CORE BASE (the
 // quality every gap has: size · volume · displacement · premium-discount → ~40-55 for a clean
 // gap) PLUS BONUS points added on top only when occasional factors fire — so absent bonuses
@@ -2509,10 +2555,18 @@ if array.size(fvgBoxes) > 0
                 bool qDOL = (not execNeedDOL) or (isBull ? dm_dirState > 0 : dm_dirState < 0)
                 // daily-bias agreement: NEUTRAL bias (dayBias == 0) allows both directions
                 bool qBias = (not execNeedDay) or dayBias == 0 or (isBull ? dayBias > 0 : dayBias < 0)
-                bool qualifies = qStr and qPD and qDOL and qBias
-                // the stop level for this gap (far edge + ATR buffer) — used for invalidation
+                // the stop level for this gap (far edge + ATR buffer) — used for invalidation + R:R
                 float atrX = math.max(nz(atr), syminfo.mintick)
                 float stopLvl = isBull ? (bot - execStopATR * atrX) : (top + execStopATR * atrX)
+                // feasibility: reward:risk to the nearest OPPOSING liquidity pool (the realistic
+                // target). If below execMinRR the setup has no room — skip it (or just flag it).
+                float entryQ = execEntry == "CE (50%)" ? ceP : (isBull ? top : bot)
+                float riskQ  = math.max(math.abs(entryQ - stopLvl), syminfo.mintick)
+                float tgtLiq = f_nextOppLiq(entryQ, isBull)
+                float feasRR = na(tgtLiq) ? na : (math.abs(tgtLiq - entryQ) / riskQ)
+                bool  lowRR  = execMinRR > 0 and not na(feasRR) and feasRR < execMinRR
+                bool  qRR    = (execMinRR <= 0) or (not execRRReject) or (not lowRR)
+                bool qualifies = qStr and qPD and qDOL and qBias and qRR
                 // price returning toward a still-watching qualifying gap (approach alert, once per gap)
                 if st == 0 and qualifies and commitOK and not array.get(fvgApproached, i)
                     bool nearing = isBull ? (low <= top and low > ceP) : (high >= bot and high < ceP)
@@ -2582,6 +2636,10 @@ if execOn and masterOn and barstate.islast and array.size(fvgBoxes) > 0
         float risk   = math.abs(entryP - stopP)
         float tp1P   = gBull ? (entryP + execTP1R * risk) : (entryP - execTP1R * risk)
         float tp2P   = gBull ? (entryP + execTP2R * risk) : (entryP - execTP2R * risk)
+        // realistic target = nearest opposing liquidity pool, and the feasible R:R to it
+        float liqT   = f_nextOppLiq(entryP, gBull)
+        float liqRR  = na(liqT) ? na : (math.abs(liqT - entryP) / math.max(risk, syminfo.mintick))
+        bool  gLowRR = execMinRR > 0 and not na(liqRR) and liqRR < execMinRR
         int   xL = bar_index + 2
         int   xR = bar_index + extendR + 15
         array.push(exec_lines, line.new(xL, entryP, xR, entryP, color = execColEntry, style = line.style_solid,  width = 2))
@@ -2590,11 +2648,16 @@ if execOn and masterOn and barstate.islast and array.size(fvgBoxes) > 0
         array.push(exec_lines, line.new(xL, tp2P,   xR, tp2P,   color = execColTP,    style = line.style_dotted, width = 1))
         string stTxt = gSt == 2 ? "CONFIRMED" : "ARMED"
         string dirTxt = gBull ? "LONG" : "SHORT"
-        string head = (gBull ? "▲ " : "▼ ") + dirTxt + " " + stTxt
-        array.push(exec_labels, label.new(xR, entryP, head + "  entry " + str.tostring(entryP, format.mintick) + "  R:R to TP2 " + str.tostring(execTP2R, "#.#") + ":1", style = label.style_label_left, color = color.new(execColEntry, 10), textcolor = color.white, size = size.small))
+        string rrTxt  = na(liqRR) ? "  (no liq target)" : ("  →liq " + str.tostring(math.round(liqRR * 10) / 10.0) + ":1" + (gLowRR ? " ⚠ low R:R" : ""))
+        string head = (gBull ? "▲ " : "▼ ") + dirTxt + " " + stTxt + rrTxt
+        array.push(exec_labels, label.new(xR, entryP, head + "  entry " + str.tostring(entryP, format.mintick), style = label.style_label_left, color = color.new(gLowRR ? execColStop : execColEntry, 10), textcolor = color.white, size = size.small))
         array.push(exec_labels, label.new(xR, stopP, "SL " + str.tostring(stopP, format.mintick), style = label.style_label_left, color = color.new(execColStop, 30), textcolor = color.white, size = size.tiny))
         array.push(exec_labels, label.new(xR, tp1P, "TP1 " + str.tostring(tp1P, format.mintick) + " (" + str.tostring(execTP1R, "#.#") + "R)", style = label.style_label_left, color = color.new(execColTP, 30), textcolor = color.white, size = size.tiny))
         array.push(exec_labels, label.new(xR, tp2P, "TP2 " + str.tostring(tp2P, format.mintick) + " (" + str.tostring(execTP2R, "#.#") + "R)", style = label.style_label_left, color = color.new(execColTP, 30), textcolor = color.white, size = size.tiny))
+        // the realistic liquidity target line (where price is actually drawn)
+        if not na(liqT)
+            array.push(exec_lines, line.new(xL, liqT, xR, liqT, color = color.new(execColTP, 0), style = line.style_solid, width = 1))
+            array.push(exec_labels, label.new(xR, liqT, "🎯 liq " + str.tostring(liqT, format.mintick), style = label.style_label_left, color = color.new(execColTP, 10), textcolor = color.white, size = size.tiny))
 
 // wipe execution drawings when the engine is off
 if (not execOn or not masterOn) and (array.size(exec_lines) > 0 or array.size(exec_labels) > 0)
