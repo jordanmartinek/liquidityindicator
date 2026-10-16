@@ -82,6 +82,7 @@ fvgDimWeak    = input.bool(true, "    Dim weak FVGs instead of hiding", tooltip 
 fvgShowStr    = input.bool(true, "    Label FVG strength %", tooltip = "Print each drawn gap's strength % (plus tags: 'htf' = aligns with a higher-timeframe gap, 'liq' = sits on/just beyond a liquidity pool (EQ / prev-period / open / session / swing / VP), 'swp' = formed right after a same-direction sweep (SFP), 'inv' = followed an inversion, 'blk' = inside an order/breaker block) so you can see WHY it scored the way it did.", group = G_STRUCT)
 fvgLblStyle   = input.string("Inside box (centered)", "    FVG label style", options = ["Inside box (centered)","Pointer (distinct)","Plain text (no box)","Callout (like levels)"], tooltip = "How the FVG strength % label is drawn, so it doesn't blend into the level/cluster callouts when zoomed out. 'Inside box (centered)': the % sits CENTERED inside the gap box itself — tied directly to its box, clearly separate from the level labels at the right edge (recommended). 'Pointer (distinct)': a tinted pointer tag at the LEFT edge of the gap. 'Plain text (no box)': borderless text in the gap color — the most minimal. 'Callout (like levels)': the original left-callout box at the right edge.", group = G_STRUCT)
 fvgKeep       = input.int(50, "    Max FVGs kept", minval = 5, maxval = 100, tooltip = "How many unfilled fair value gaps to retain before the OLDEST is dropped. Raise this to keep more / older gaps far back in history (e.g. gaps sitting above the current swing high); lower it to keep the chart light. Note: gaps older than the chart's loaded history still can't be drawn, and each gap uses a drawing-object slot shared with order blocks and cluster zones (budget is 500).", group = G_STRUCT)
+fvgRejGauge  = input.bool(true, "    Rejection gauge (live, when price is in the gap)", tooltip = "A LIVE read shown next to the % ONLY while price is at/returning into the gap: how likely price is to REJECT (bounce off) vs ACCEPT (fill through) the gap right now. Shown as ⟲NN (reject-leaning, 50-100) or ⇥NN (accept-leaning, 0-50). It blends: the STRENGTH of the move that created the gap, the STRENGTH of the pullback returning into it (fast momentum return → more likely to blow through; slow drift → more likely to reject), ABSORPTION (a wick pushing back out of the gap on the touch bar), and the CHARACTER of the candles approaching the gap (pure trend bodies → accept-leaning; wicky/indecisive → reject-leaning). This is a heuristic read, NOT a measured probability, and it is separate from the formation strength %.", group = G_STRUCT)
 fvgSizeW      = input.float(1.0, "    Weight: gap size vs ATR", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "How much the gap's own size (displacement) counts toward its strength. Bigger gaps = stronger imbalance.", group = G_STRUCT)
 fvgVolW       = input.float(1.0, "    Weight: creation volume", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "How much the relative volume of the candle that CREATED the gap counts. High-volume displacement gaps are respected more often. Uses the Rel-volume lookback from the SFP section.", group = G_STRUCT)
 fvgBlockW     = input.float(1.0, "    Weight: inside OB / breaker", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap overlaps an order block or breaker block — a gap defended by a resting institutional zone is far more likely to hold.", group = G_STRUCT)
@@ -433,6 +434,41 @@ f_exhAdj(float gTop, float gBot, bool isBull) =>
             dirMatch := -0.6
         adj := dirMatch * math.abs(exhScore) * 18.0 * exhW
     adj
+
+// LIVE rejection gauge — only meaningful when price is AT / returning INTO the gap. Returns
+// [active, rejLean] where rejLean is 0..100: 100 = strong REJECT (bounce off), 0 = strong
+// ACCEPT (fill through), 50 = neutral. Blends four factors (each nudges the lean ±):
+//   • creation strength (creatQ): a gap left by a decisive move is defended harder -> reject
+//   • pullback strength: a FAST, large-bodied return blows through -> accept; a slow drift -> reject
+//   • absorption wick: on the touching bar, a wick pushing back OUT of the gap -> reject
+//   • approach character: pure trend-body approach -> momentum -> accept; wicky approach -> reject
+// Heuristic, not a probability. Reads current + recent bars (atr/velocity already defined above).
+f_rejGauge(float gTop, float gBot, bool isBull, float creatQ) =>
+    float atrR = math.max(nz(atr), syminfo.mintick)
+    // active only while THIS bar's range overlaps the gap zone
+    bool active = high >= gBot and low <= gTop
+    float lean = 50.0
+    if active
+        // 1) creation strength — strong creation defends the gap (reject). ±15
+        lean := lean + (math.min(math.max(nz(creatQ), 0.0), 1.0) - 0.5) * 2.0 * 15.0
+        // 2) pullback strength — recent return momentum vs ATR. Fast return -> accept (-), slow -> reject (+). ±18
+        float retSpeed = math.min(nz(velocity) / (atrR * 0.5), 2.0) / 2.0   // 0..1 (1 = fast)
+        lean := lean - (retSpeed - 0.5) * 2.0 * 18.0
+        // 3) absorption wick on the touch bar — a wick pushing back OUT of the gap. ±22
+        float rng = math.max(high - low, syminfo.mintick)
+        float lowerWick = (math.min(open, close) - low) / rng    // 0..1
+        float upperWick = (high - math.max(open, close)) / rng   // 0..1
+        float absorb = isBull ? lowerWick : upperWick            // the rejecting wick for this side
+        lean := lean + (absorb - 0.2) * 22.0 / 0.8               // ~0 at a 20% wick, +22 at a full wick
+        // 4) approach character over the last 3 bars — trend bodies vs wicks (approaching, pre-touch)
+        float bodySum = 0.0
+        float rngSum  = 0.0
+        for ab = 1 to 3
+            bodySum := bodySum + math.abs(close[ab] - open[ab])
+            rngSum  := rngSum + math.max(high[ab] - low[ab], syminfo.mintick)
+        float bodyFrac = rngSum > 0 ? bodySum / rngSum : 0.5     // 1 = pure trend, 0 = pure wick
+        lean := lean - (bodyFrac - 0.5) * 2.0 * 14.0             // trend -> accept(-), wicky -> reject(+)
+    [active, int(math.max(0.0, math.min(100.0, math.round(lean))))]
 
 f_tablePos(string p) =>
     p == "Top Right" ? position.top_right : p == "Top Left" ? position.top_left : p == "Bottom Right" ? position.bottom_right : p == "Bottom Left" ? position.bottom_left : p == "Middle Left" ? position.middle_left : position.middle_right
@@ -1271,6 +1307,7 @@ var fvgCE     = array.new<line>()    // optional consequent-encroachment (50%) l
 var fvgArmed  = array.new<int>()     // execution state per gap: 0 watching · 1 armed · 2 confirmed · 3 dead (stop hit / expired)
 var fvgArmBar = array.new<int>()     // bar_index the gap ARMED on (for setup expiry); na while watching
 var fvgApproached = array.new<bool>() // approach alert already fired for this gap (cooldown)
+var fvgCreatQ = array.new<float>()   // creation displacement quality 0..1 (for the rejection gauge)
 // FVG execution setup drawings (entry/stop/target lines + label), redrawn each bar from the
 // armed gaps so only the nearest active setups show. Alert flags are raised in the gap loop.
 var exec_lines  = array.new<line>()
@@ -2405,6 +2442,7 @@ f_delFvgAt(int ix) =>
     array.remove(fvgArmed, ix)
     array.remove(fvgArmBar, ix)
     array.remove(fvgApproached, ix)
+    array.remove(fvgCreatQ, ix)
 
 if (not masterOn or not showFVG) and array.size(fvgBoxes) > 0
     while array.size(fvgBoxes) > 0
@@ -2473,6 +2511,7 @@ if masterOn and showFVG and (bullFVG or bearFVG)
             array.push(fvgArmed, 0)   // execution state starts at 'watching'
             array.push(fvgArmBar, na) // bar it armed on (set when it arms)
             array.push(fvgApproached, false)
+            array.push(fvgCreatQ, dispQual)   // creation strength for the rejection gauge
 
 // reset this bar's execution alert flags + clear the setup drawing pool (redrawn below)
 execArmNow     := false
@@ -2514,17 +2553,22 @@ if array.size(fvgBoxes) > 0
         else
             box.set_right(bx, bar_index + extendR)
             label lb = array.get(fvgLabels, i)
-            // live exhaustion: show the effective score (static base + live adjustment) with a
-            // ⛽ marker when the dynamic layer is moving it, so the % visibly breathes.
-            if not na(lb) and exhOn and exhW > 0
+            // rebuild the label each bar from the STATIC base % + live context tags (exhaustion
+            // delta + rejection gauge). The base score never visually mutates; live reads append.
+            if not na(lb) and ((exhOn and exhW > 0) or fvgRejGauge)
                 float baseSc = array.get(fvgStr, i)
-                float adj = f_exhAdj(top, bot, isBull)
-                // show the STATIC formation rank as the primary number, with the live exhaustion
-                // context as a SEPARATE signed delta — the base score never visually mutates.
-                int    delta = int(math.round(adj))
-                string exhTag = delta >= 1 ? (" ⛽+" + str.tostring(delta)) : (delta <= -1 ? (" ⛽" + str.tostring(delta)) : "")
+                string tags = ""
+                // live exhaustion context as a SEPARATE signed delta
+                if exhOn and exhW > 0
+                    int delta = int(math.round(f_exhAdj(top, bot, isBull)))
+                    tags := tags + (delta >= 1 ? (" ⛽+" + str.tostring(delta)) : (delta <= -1 ? (" ⛽" + str.tostring(delta)) : ""))
+                // live rejection gauge — only shows while price is at/in the gap
+                if fvgRejGauge
+                    [rjActive, rjLean] = f_rejGauge(top, bot, isBull, array.get(fvgCreatQ, i))
+                    if rjActive
+                        tags := tags + (rjLean >= 50 ? (" ⟲" + str.tostring(rjLean)) : (" ⇥" + str.tostring(rjLean)))
                 string pfx = fvgLblStyle == "Inside box (centered)" ? "" : "◆ "
-                label.set_text(lb, pfx + str.tostring(int(baseSc)) + "%" + exhTag)
+                label.set_text(lb, pfx + str.tostring(int(baseSc)) + "%" + tags)
             // keep each label correctly placed as the box extends right:
             //  • Inside box (centered): re-center over the (growing) box
             //  • Right-edge styles (Plain / Callout): follow the right edge
