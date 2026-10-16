@@ -29,6 +29,7 @@ var string G_EMO    = "⑧ Emoji Tags"
 var string G_TESTED = "⑨ Tested Levels"
 var string G_EXEC   = "⑩ FVG Execution (setups)"
 var string G_BIAS   = "⑪ Daily Bias"
+var string G_EMA    = "⑫ Moving Averages (EMA)"
 
 // -----------------------------------------------------------------------------
 // INPUTS — PREVIOUS-PERIOD LEVELS
@@ -305,6 +306,28 @@ biasBanSize  = input.string("Large", "  Bias banner text size", options = ["Norm
 biasFadeFVG  = input.bool(true,  "Fade counter-bias FVGs", tooltip = "When a daily bias is set, fair value gaps that oppose it (bearish gaps while bias is LONG, and vice-versa) are drawn FAINT so the chart visually agrees with your one directional thesis. With-bias gaps stay prominent. Bias NEUTRAL = everything shows normally.", group = G_BIAS)
 biasHideFVG  = input.bool(false, "  Hide counter-bias FVGs entirely", tooltip = "Instead of just fading them, remove counter-bias gaps from the chart completely. (They still exist in scoring — this is visual only.)", group = G_BIAS)
 biasFadeLvls = input.bool(false, "Fade counter-bias-side levels", tooltip = "Also fade the levels on the counter-bias side of price (e.g. levels above price while bias is SHORT), so the magnets you're drawn toward stand out. Off = levels are left to the normal density declutter.", group = G_BIAS)
+
+// -----------------------------------------------------------------------------
+// INPUTS — MOVING AVERAGES (EMA)
+// -----------------------------------------------------------------------------
+// Up to four exponential moving averages. EMA #1 is on by default at length 20; #2-#4 are off
+// by default (common 50 / 100 / 200) — toggle them on as needed.
+emaSrc   = input.source(close, "EMA source", group = G_EMA)
+emaMTF   = input.timeframe("", "EMA timeframe (blank = chart)", tooltip = "Optionally compute the EMAs on a HIGHER timeframe and overlay them on this chart (e.g. 60 / 240 / D). Blank = use the chart timeframe. Uses non-repainting historical values.", group = G_EMA)
+ema1On   = input.bool(true,  "EMA 1", inline = "e1", group = G_EMA)
+ema1Len  = input.int(20, "", minval = 1, inline = "e1", group = G_EMA)
+ema1Col  = input.color(color.new(#2962ff, 0), "", inline = "e1", group = G_EMA)
+ema2On   = input.bool(false, "EMA 2", inline = "e2", group = G_EMA)
+ema2Len  = input.int(50, "", minval = 1, inline = "e2", group = G_EMA)
+ema2Col  = input.color(color.new(#ff6d00, 0), "", inline = "e2", group = G_EMA)
+ema3On   = input.bool(false, "EMA 3", inline = "e3", group = G_EMA)
+ema3Len  = input.int(100, "", minval = 1, inline = "e3", group = G_EMA)
+ema3Col  = input.color(color.new(#26a69a, 0), "", inline = "e3", group = G_EMA)
+ema4On   = input.bool(false, "EMA 4", inline = "e4", group = G_EMA)
+ema4Len  = input.int(200, "", minval = 1, inline = "e4", group = G_EMA)
+ema4Col  = input.color(color.new(#d500f9, 0), "", inline = "e4", group = G_EMA)
+emaWidth = input.int(1, "EMA line width", minval = 1, maxval = 4, group = G_EMA)
+
 f_lineStyle() =>
     lineStyleI == "Dashed" ? line.style_dashed : lineStyleI == "Dotted" ? line.style_dotted : line.style_solid
 
@@ -359,6 +382,21 @@ atr       = ta.atr(14)
 // HTF-FVG scoring is only relevant on low timeframes (1-5 min by default). On higher chart
 // timeframes the gap score reverts to the original full-weight model (see f_fvgStrength).
 fvgHtfActive = (secPerBar / 60.0) <= htfFvgMaxTF
+
+// -----------------------------------------------------------------------------
+// MOVING AVERAGES (EMA) — up to four, optional higher-timeframe, drawn via plot()
+// -----------------------------------------------------------------------------
+string emaTF = emaMTF == "" ? timeframe.period : emaMTF
+// compute each EMA on the chosen timeframe (lookahead_off = non-repainting). Lengths are simple
+// ints so ta.ema is valid; the security call returns a single series (no tuple-in-ternary).
+emaV1 = request.security(syminfo.tickerid, emaTF, ta.ema(emaSrc, ema1Len), lookahead = barmerge.lookahead_off)
+emaV2 = request.security(syminfo.tickerid, emaTF, ta.ema(emaSrc, ema2Len), lookahead = barmerge.lookahead_off)
+emaV3 = request.security(syminfo.tickerid, emaTF, ta.ema(emaSrc, ema3Len), lookahead = barmerge.lookahead_off)
+emaV4 = request.security(syminfo.tickerid, emaTF, ta.ema(emaSrc, ema4Len), lookahead = barmerge.lookahead_off)
+plot(masterOn and ema1On ? emaV1 : na, "EMA 1", color = ema1Col, linewidth = emaWidth)
+plot(masterOn and ema2On ? emaV2 : na, "EMA 2", color = ema2Col, linewidth = emaWidth)
+plot(masterOn and ema3On ? emaV3 : na, "EMA 3", color = ema3Col, linewidth = emaWidth)
+plot(masterOn and ema4On ? emaV4 : na, "EMA 4", color = ema4Col, linewidth = emaWidth)
 
 // DOL momentum (per-bar, real history)
 dolEmaF   = ta.ema(close, 21)
