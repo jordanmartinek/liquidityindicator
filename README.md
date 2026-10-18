@@ -50,6 +50,8 @@ A corner banner showing the side price is most likely being drawn toward. Each l
 
 **Per-level confidence:** every drawn level/zone shows a **0–100 % target-likelihood** (its share of total liquidity pull), and the single most-likely target is flagged **🎯** — so you can see at a glance which level price is most likely to head toward next.
 
+**Level reaction gauge:** a *live* read shown next to a level's confidence % **only while price is at/near the level** — how likely price is to **reject/reverse off** it (`⟲NN`, 50–100) vs **sweep through** it (`⇥NN`, 0–50). This answers *what happens when price gets there*, distinct from the confidence % (*how likely it heads there*). It blends the level's importance/type, approach strength (fast momentum → sweep, slow → reject), an absorption wick on the touch bar, tested-state (a probed level is weaker → sweep), and confluence — and correctly leans **equal highs/lows toward sweep-through** since they're engineered stop liquidity. Works on both single levels and cluster zones; a live heuristic read, not a probability.
+
 ### ⑦ Style
 Theme (Refined Dark/Light, Midnight, Slate, Classic), line/label styling, FVG opacity, age-scaled line extension (older = longer), and a compact mode to hide far-from-price levels.
 
