@@ -201,6 +201,7 @@ dolConfW   = input.bool(true, "Weight pull by each level's confluence score", to
 dolNearBias = input.float(1.5, "Nearest-pool emphasis", minval = 0.0, maxval = 4.0, step = 0.25, tooltip = "Extra sharpening of the distance decay. Higher = the nearest untapped pool dominates the pull (price hunts the closest liquidity first). 0 = flat.", group = G_DOL)
 dolFreshW  = input.bool(true, "Freshness premium (untested pulls harder)", tooltip = "Levels price has NOT yet reacted off pull harder; levels already wicked into are discounted.", group = G_DOL)
 showLvlConf = input.bool(true, "Show per-level confidence % (target likelihood)", tooltip = "Each level/zone gets a 0-100 score for how likely price heads THERE next. The single most-likely target is flagged 🎯.", group = G_DOL)
+lvlRejGauge = input.bool(true, "  Level reaction gauge (reject vs sweep, live)", tooltip = "A LIVE read shown next to a level's confidence % ONLY while price is AT/near the level: how likely price is to REJECT / reverse off it (⟲NN, 50-100) vs SWEEP through it (⇥NN, 0-50). Different from the confidence % (which is 'how likely price heads TO the level') — this is 'what happens WHEN it gets there'. It blends the level's IMPORTANCE/type, the APPROACH strength (fast momentum into it → more likely to sweep through; slow → reject), an ABSORPTION wick on the touch bar, whether the level is already TESTED (weaker → sweep), and its CONFLUENCE. Equal highs/lows (engineered stop liquidity) correctly lean SWEEP-THROUGH rather than reject. Heuristic, not a probability.", group = G_DOL)
 lvlConfMode = input.string("Magnet quality", "  Confidence % basis", options = ["Magnet quality","Raw pull"], tooltip = "Magnet quality (recommended): distance is removed so the % reflects how STRONG a magnet each level is for its distance — a far but heavy pool (equal highs + order block + old + fresh) can out-score a near lone swing. Raw pull (legacy): the % is each level's share of the proximity-weighted gravity, so the nearest level almost always dominates (obvious, less useful). The 🎯 still marks the nearest strongest pull in both modes.", group = G_DOL)
 lvlConfWin  = input.int(5, "  Confidence window (levels each side)", minval = 1, maxval = 50, tooltip = "Only the N nearest levels ABOVE and N nearest BELOW price get a confidence %, and the % is normalized over just those levels. Keeps intraday reads focused on the levels price can realistically reach instead of diluting the % across far higher-timeframe levels. Lower = tighter/more decisive; higher = wider context. 🎯 still uses all levels.", group = G_DOL)
 // --- projection pass (all reuse existing pull / velocity / OB-FVG / range machinery) ---
@@ -506,6 +507,56 @@ f_rejGauge(float gTop, float gBot, bool isBull, float creatQ) =>
             rngSum  := rngSum + math.max(high[ab] - low[ab], syminfo.mintick)
         float bodyFrac = rngSum > 0 ? bodySum / rngSum : 0.5     // 1 = pure trend, 0 = pure wick
         lean := lean - (bodyFrac - 0.5) * 2.0 * 14.0             // trend -> accept(-), wicky -> reject(+)
+    [active, int(math.max(0.0, math.min(100.0, math.round(lean))))]
+
+// LIVE level-reaction gauge — only meaningful when price is AT / near the level. Returns
+// [active, rejLean] where 100 = strong REJECT/reverse off the level, 0 = strong SWEEP through,
+// 50 = neutral. A level is RESTING LIQUIDITY, so it blends:
+//   • importance/type: major levels (weekly/PDH) defend harder -> reject; minor swings less so
+//   • EQUAL highs/lows are ENGINEERED to be taken -> lean SWEEP (the key level-specific nuance)
+//   • approach strength: fast momentum into it -> sweep; slow/tentative -> reject
+//   • absorption wick on the touch bar (toward the level) -> reject
+//   • tested: an already-probed level is weaker on the next touch -> sweep
+//   • confluence (0..1): stacked / OB-FVG-backed levels react harder -> reject
+// name is the level label (e.g. "PWH","EQH","BSL"); conf01 is a 0..1 confluence strength.
+f_lvlGauge(float price, string name, bool tested, float conf01, float atrU) =>
+    float atrL = math.max(nz(atrU), syminfo.mintick)
+    bool active = math.abs(close - price) <= atrL * 0.15 or (high >= price and low <= price)
+    float lean = 50.0
+    if active
+        // 1) importance by type (mirrors the DOL hierarchy) -> reject strength 0..1
+        float imp = 0.4
+        if str.contains(name, "PWH") or str.contains(name, "PWL") or str.contains(name, "PMH") or str.contains(name, "PML")
+            imp := 1.0
+        else if str.contains(name, "PDH") or str.contains(name, "PDL")
+            imp := 0.8
+        else if str.contains(name, "Open") or str.contains(name, "Midnight")
+            imp := 0.75
+        else if str.contains(name, "POC") or str.contains(name, "VAH") or str.contains(name, "VAL")
+            imp := 0.7
+        else if str.contains(name, "Breaker")
+            imp := 0.7
+        else if str.contains(name, "NY") or str.contains(name, "London") or str.contains(name, "Asia")
+            imp := 0.5
+        lean := lean + (imp - 0.5) * 2.0 * 16.0
+        // 2) EQUAL highs/lows are engineered stop liquidity -> lean SWEEP (overrides importance)
+        if str.contains(name, "EQ")
+            lean := lean - 18.0
+        // 3) approach strength — fast into the level sweeps (-), slow rejects (+). ±16
+        float apSpeed = math.min(nz(velocity) / (atrL * 0.5), 2.0) / 2.0
+        lean := lean - (apSpeed - 0.5) * 2.0 * 16.0
+        // 4) absorption wick toward the level on the touch bar. ±20
+        float rng = math.max(high - low, syminfo.mintick)
+        float lowerWick = (math.min(open, close) - low) / rng
+        float upperWick = (high - math.max(open, close)) / rng
+        bool  above = price >= close                     // resistance above -> upper wick rejects
+        float absorb = above ? upperWick : lowerWick
+        lean := lean + (absorb - 0.2) * 20.0 / 0.8
+        // 5) tested state — a probed level is weaker next touch -> sweep. -12
+        if tested
+            lean := lean - 12.0
+        // 6) confluence — stacked / backed levels react harder -> reject. ±12
+        lean := lean + (math.min(math.max(nz(conf01), 0.0), 1.0) - 0.5) * 2.0 * 12.0
     [active, int(math.max(0.0, math.min(100.0, math.round(lean))))]
 
 f_tablePos(string p) =>
@@ -2227,9 +2278,15 @@ if barstate.islast
                 // stacked-agreement ⭐: DOL-side agrees + it's the magnet + overlaps OB/FVG (feature 8)
                 bool sideAgree = (dolDrawUp and p >= close) or (not dolDrawUp and p < close)
                 string stackTag = (projStacked and lInWin and isTop and sideAgree and f_hasOBFVG(p - atrUt * 0.05, p + atrUt * 0.05)) ? " ⭐" : ""
-                string confLvlTag = (showLvlConf and lInWin) ? ((isTop ? " 🎯" : " ") + str.tostring(math.round(lp)) + "%" + momTag + stackTag) : ""
                 // tested/virgin: probed levels get a ✓ + dotted, dimmed line (still standing, just 'used')
                 bool lTested = f_isTested(p, atrUt)
+                // live level-reaction gauge (reject vs sweep) — only while price is at/near the level
+                string lvlGaugeTag = ""
+                if lvlRejGauge and lInWin
+                    [lgActive, lgLean] = f_lvlGauge(p, array.get(lv_name, array.get(idx, startI)), lTested, 0.4, atrUt)
+                    if lgActive
+                        lvlGaugeTag := lgLean >= 50 ? (" ⟲" + str.tostring(lgLean)) : (" ⇥" + str.tostring(lgLean))
+                string confLvlTag = (showLvlConf and lInWin) ? ((isTop ? " 🎯" : " ") + str.tostring(math.round(lp)) + "%" + momTag + stackTag + lvlGaugeTag) : ""
                 string testTag = (showTested and lTested) ? " ✓" : ""
                 // declutter: faint if de-prioritised (beyond Top-N) or below the confidence gate
                 bool lPrimary = array.get(lv_primary, array.get(idx, startI))
@@ -2282,9 +2339,15 @@ if barstate.islast
                     // stacked-agreement ⭐: DOL-side agrees + it's the magnet + zone overlaps OB/FVG (feature 8)
                     bool zSideAgree = (dolDrawUp and mid >= close) or (not dolDrawUp and mid < close)
                     string zStackTag = (projStacked and zInWin and zTop and zSideAgree and f_hasOBFVG(minP - pad, maxP + pad)) ? " ⭐" : ""
-                    string lvlConfTag = (showLvlConf and zInWin) ? ((zTop ? "  🎯" : "  →") + str.tostring(math.round(zPull)) + "%" + zMomTag + zStackTag) : ""
                     // tested/virgin zone: dashed hollow border + ✓ when price has probed the zone
                     bool zTested = showTested and (f_isTested(mid, atrUz) or f_isTested(minP, atrUz) or f_isTested(maxP, atrUz))
+                    // live level-reaction gauge (reject vs sweep) for the zone, using its confluence score
+                    string zGaugeTag = ""
+                    if lvlRejGauge and zInWin
+                        [zgActive, zgLean] = f_lvlGauge(mid, names, zTested, math.min(confS / 100.0, 1.0), atrUz)
+                        if zgActive
+                            zGaugeTag := zgLean >= 50 ? (" ⟲" + str.tostring(zgLean)) : (" ⇥" + str.tostring(zgLean))
+                    string lvlConfTag = (showLvlConf and zInWin) ? ((zTop ? "  🎯" : "  →") + str.tostring(math.round(zPull)) + "%" + zMomTag + zStackTag + zGaugeTag) : ""
                     if zTested
                         box.set_border_style(bx, line.style_dashed)
                         box.set_bgcolor(bx, color.new(zbase, 92))
