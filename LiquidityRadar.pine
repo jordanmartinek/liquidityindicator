@@ -30,6 +30,7 @@ var string G_TESTED = "⑨ Tested Levels"
 var string G_EXEC   = "⑩ FVG Execution (setups)"
 var string G_BIAS   = "⑪ Daily Bias"
 var string G_EMA    = "⑫ Moving Averages (EMA)"
+var string G_ATRP   = "⑬ ATR Range Projection"
 
 // -----------------------------------------------------------------------------
 // INPUTS — PREVIOUS-PERIOD LEVELS
@@ -329,6 +330,19 @@ ema4Len  = input.int(200, "", minval = 1, inline = "e4", group = G_EMA)
 ema4Col  = input.color(color.new(#d500f9, 0), "", inline = "e4", group = G_EMA)
 emaWidth = input.int(1, "EMA line width", minval = 1, maxval = 4, group = G_EMA)
 
+// -----------------------------------------------------------------------------
+// INPUTS — ATR RANGE PROJECTION
+// -----------------------------------------------------------------------------
+// At each candle's OPEN, draw an unfilled box showing where this candle's high/low would reach
+// if it moved exactly (mult × ATR) from the open — the statistically-expected range. Fixed at
+// the open (ATR is from the prior bar), so it does not repaint.
+atrpOn    = input.bool(false, "Show ATR range projection", tooltip = "At each candle's OPEN, draw an outline from open + (mult × ATR) down to open − (mult × ATR) — where the candle would reach on a typical one-ATR move. A live 'expected range' envelope: if price is already outside the box, the move is stretched vs its average true range.", group = G_ATRP)
+atrpLen   = input.int(14, "  ATR length", minval = 1, maxval = 100, group = G_ATRP)
+atrpMult  = input.float(1.0, "  ATR multiple", minval = 0.1, maxval = 5.0, step = 0.1, tooltip = "How many ATRs each side of the open the projected high/low sits. 1.0 = one average true range.", group = G_ATRP)
+atrpHist  = input.int(1, "  Candles shown (history)", minval = 1, maxval = 50, tooltip = "How many recent projection boxes to keep. 1 = only the current/forming candle (cleanest).", group = G_ATRP)
+atrpCol   = input.color(color.new(#787b86, 0), "  Outline color", group = G_ATRP)
+atrpMid   = input.bool(true, "  Show open midline", tooltip = "Draw a faint line at the candle's open (the center of the projected range).", group = G_ATRP)
+
 f_lineStyle() =>
     lineStyleI == "Dashed" ? line.style_dashed : lineStyleI == "Dotted" ? line.style_dotted : line.style_solid
 
@@ -398,6 +412,36 @@ plot(masterOn and ema1On ? emaV1 : na, "EMA 1", color = ema1Col, linewidth = ema
 plot(masterOn and ema2On ? emaV2 : na, "EMA 2", color = ema2Col, linewidth = emaWidth)
 plot(masterOn and ema3On ? emaV3 : na, "EMA 3", color = ema3Col, linewidth = emaWidth)
 plot(masterOn and ema4On ? emaV4 : na, "EMA 4", color = ema4Col, linewidth = emaWidth)
+
+// -----------------------------------------------------------------------------
+// ATR RANGE PROJECTION — expected-range outline drawn at each candle open
+// -----------------------------------------------------------------------------
+atrpVal = ta.atr(atrpLen)
+var atrpBoxes = array.new<box>()
+var atrpLines = array.new<line>()
+if masterOn and atrpOn and barstate.isnew
+    // fixed at the OPEN using the prior bar's ATR, so the projection never repaints
+    float band = nz(atrpVal[1], atrpVal) * atrpMult
+    if not na(band) and band > 0
+        float projHi = open + band
+        float projLo = open - band
+        // span the box across the candle (its bar to the next) so it reads as an outline, not a sliver
+        box pb = box.new(bar_index, projHi, bar_index + 1, projLo, border_color = atrpCol, border_width = 1, bgcolor = color.new(atrpCol, 100))
+        array.push(atrpBoxes, pb)
+        if atrpMid
+            line ml = line.new(bar_index, open, bar_index + 1, open, color = color.new(atrpCol, 45), style = line.style_dotted, width = 1)
+            array.push(atrpLines, ml)
+    // trim history to atrpHist
+    while array.size(atrpBoxes) > atrpHist
+        box.delete(array.shift(atrpBoxes))
+    while array.size(atrpLines) > atrpHist
+        line.delete(array.shift(atrpLines))
+// wipe when toggled off
+if (not masterOn or not atrpOn) and (array.size(atrpBoxes) > 0 or array.size(atrpLines) > 0)
+    while array.size(atrpBoxes) > 0
+        box.delete(array.shift(atrpBoxes))
+    while array.size(atrpLines) > 0
+        line.delete(array.shift(atrpLines))
 
 // DOL momentum (per-bar, real history)
 dolEmaF   = ta.ema(close, 21)
