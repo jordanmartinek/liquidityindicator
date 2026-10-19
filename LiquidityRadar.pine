@@ -336,12 +336,11 @@ emaWidth = input.int(1, "EMA line width", minval = 1, maxval = 4, group = G_EMA)
 // At each candle's OPEN, draw an unfilled box showing where this candle's high/low would reach
 // if it moved exactly (mult × ATR) from the open — the statistically-expected range. Fixed at
 // the open (ATR is from the prior bar), so it does not repaint.
-atrpOn    = input.bool(false, "Show ATR range projection", tooltip = "At each candle's OPEN, draw an outline from open + (mult × ATR) down to open − (mult × ATR) — where the candle would reach on a typical one-ATR move. A live 'expected range' envelope: if price is already outside the box, the move is stretched vs its average true range.", group = G_ATRP)
+atrpOn    = input.bool(true, "Show ATR range projection (current bar)", tooltip = "Projects the CURRENTLY FORMING bar's expected HIGH and LOW: two horizontal lines at the bar's open ± (mult × ATR) — where the candle would reach on a typical one-ATR move — extending to the right of price so they're clearly visible. The lines track the live candle and are anchored to its open (using the prior bar's ATR), so they don't repaint. If price pushes past a line, the move is stretched vs its average true range.", group = G_ATRP)
 atrpLen   = input.int(14, "  ATR length", minval = 1, maxval = 100, group = G_ATRP)
 atrpMult  = input.float(1.0, "  ATR multiple", minval = 0.1, maxval = 5.0, step = 0.1, tooltip = "How many ATRs each side of the open the projected high/low sits. 1.0 = one average true range.", group = G_ATRP)
-atrpHist  = input.int(1, "  Candles shown (history)", minval = 1, maxval = 50, tooltip = "How many recent projection boxes to keep. 1 = only the current/forming candle (cleanest).", group = G_ATRP)
-atrpCol   = input.color(color.new(#787b86, 0), "  Outline color", group = G_ATRP)
-atrpMid   = input.bool(true, "  Show open midline", tooltip = "Draw a faint line at the candle's open (the center of the projected range).", group = G_ATRP)
+atrpCol   = input.color(color.new(#ffb300, 0), "  Projection color", group = G_ATRP)
+atrpMid   = input.bool(true, "  Show open midline", tooltip = "Draw a faint dotted line at the candle's open (the center of the projected range).", group = G_ATRP)
 
 f_lineStyle() =>
     lineStyleI == "Dashed" ? line.style_dashed : lineStyleI == "Dotted" ? line.style_dotted : line.style_solid
@@ -417,31 +416,52 @@ plot(masterOn and ema4On ? emaV4 : na, "EMA 4", color = ema4Col, linewidth = ema
 // ATR RANGE PROJECTION — expected-range outline drawn at each candle open
 // -----------------------------------------------------------------------------
 atrpVal = ta.atr(atrpLen)
-var atrpBoxes = array.new<box>()
-var atrpLines = array.new<line>()
-if masterOn and atrpOn and barstate.isnew
-    // fixed at the OPEN using the prior bar's ATR, so the projection never repaints
+// Projected HIGH / LOW of the CURRENTLY FORMING bar = this bar's open ± (mult × ATR). Drawn as
+// two persistent horizontal lines (+ optional open midline) that live on the forming bar and
+// extend a few bars to the right, updated every bar so they always track the live candle. The
+// projection is anchored to the bar's OPEN (fixed when the bar opened) using the prior ATR.
+var line atrpHiLn = na
+var line atrpLoLn = na
+var line atrpMidLn = na
+var label atrpHiLb = na
+var label atrpLoLb = na
+if masterOn and atrpOn
     float band = nz(atrpVal[1], atrpVal) * atrpMult
-    if not na(band) and band > 0
-        float projHi = open + band
-        float projLo = open - band
-        // span the box across the candle (its bar to the next) so it reads as an outline, not a sliver
-        box pb = box.new(bar_index, projHi, bar_index + 1, projLo, border_color = atrpCol, border_width = 1, bgcolor = color.new(atrpCol, 100))
-        array.push(atrpBoxes, pb)
-        if atrpMid
-            line ml = line.new(bar_index, open, bar_index + 1, open, color = color.new(atrpCol, 45), style = line.style_dotted, width = 1)
-            array.push(atrpLines, ml)
-    // trim history to atrpHist
-    while array.size(atrpBoxes) > atrpHist
-        box.delete(array.shift(atrpBoxes))
-    while array.size(atrpLines) > atrpHist
-        line.delete(array.shift(atrpLines))
-// wipe when toggled off
-if (not masterOn or not atrpOn) and (array.size(atrpBoxes) > 0 or array.size(atrpLines) > 0)
-    while array.size(atrpBoxes) > 0
-        box.delete(array.shift(atrpBoxes))
-    while array.size(atrpLines) > 0
-        line.delete(array.shift(atrpLines))
+    float opn  = open                       // this bar's open (fixed at the open, stable intrabar)
+    float projHi = opn + band
+    float projLo = opn - band
+    int   xL = bar_index                    // start at the forming bar
+    int   xR = bar_index + 8                // extend to the right so it's clearly visible
+    if na(atrpHiLn)
+        atrpHiLn := line.new(xL, projHi, xR, projHi, color = atrpCol, width = 2, style = line.style_solid)
+        atrpLoLn := line.new(xL, projLo, xR, projLo, color = atrpCol, width = 2, style = line.style_solid)
+        atrpMidLn := line.new(xL, opn, xR, opn, color = color.new(atrpCol, 45), width = 1, style = line.style_dotted)
+        atrpHiLb := label.new(xR, projHi, "ATR proj H", style = label.style_label_left, color = color.new(atrpCol, 20), textcolor = color.white, size = size.tiny)
+        atrpLoLb := label.new(xR, projLo, "ATR proj L", style = label.style_label_left, color = color.new(atrpCol, 20), textcolor = color.white, size = size.tiny)
+    // move/update every bar so the projection follows the forming candle
+    line.set_xy1(atrpHiLn, xL, projHi)
+    line.set_xy2(atrpHiLn, xR, projHi)
+    line.set_xy1(atrpLoLn, xL, projLo)
+    line.set_xy2(atrpLoLn, xR, projLo)
+    line.set_xy1(atrpMidLn, xL, opn)
+    line.set_xy2(atrpMidLn, xR, opn)
+    line.set_color(atrpMidLn, atrpMid ? color.new(atrpCol, 45) : color.new(atrpCol, 100))
+    label.set_xy(atrpHiLb, xR, projHi)
+    label.set_xy(atrpLoLb, xR, projLo)
+    label.set_text(atrpHiLb, "ATR H " + str.tostring(projHi, format.mintick))
+    label.set_text(atrpLoLb, "ATR L " + str.tostring(projLo, format.mintick))
+// hide the projection when toggled off (delete the persistent objects)
+if (not masterOn or not atrpOn) and not na(atrpHiLn)
+    line.delete(atrpHiLn)
+    atrpHiLn := na
+    line.delete(atrpLoLn)
+    atrpLoLn := na
+    line.delete(atrpMidLn)
+    atrpMidLn := na
+    label.delete(atrpHiLb)
+    atrpHiLb := na
+    label.delete(atrpLoLb)
+    atrpLoLb := na
 
 // DOL momentum (per-bar, real history)
 dolEmaF   = ta.ema(close, 21)
