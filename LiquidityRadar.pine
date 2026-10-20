@@ -31,6 +31,7 @@ var string G_EXEC   = "⑩ FVG Execution (setups)"
 var string G_BIAS   = "⑪ Daily Bias"
 var string G_EMA    = "⑫ Moving Averages (EMA)"
 var string G_ATRP   = "⑬ ATR Range Projection"
+var string G_REGIME = "⑭ Market Conditions (regime)"
 
 // -----------------------------------------------------------------------------
 // INPUTS — PREVIOUS-PERIOD LEVELS
@@ -344,6 +345,20 @@ atrpFastWt  = input.float(0.7, "    Fast weight (0 = base only · 1 = fast only)
 atrpMult  = input.float(1.0, "  ATR multiple", minval = 0.1, maxval = 5.0, step = 0.1, tooltip = "How many ATRs each side of the open the projected high/low sits. 1.0 = one average true range.", group = G_ATRP)
 atrpCol   = input.color(color.new(#ffb300, 0), "  Projection color", group = G_ATRP)
 atrpMid   = input.bool(true, "  Show open midline", tooltip = "Draw a faint dotted line at the candle's open (the center of the projected range).", group = G_ATRP)
+
+// -----------------------------------------------------------------------------
+// INPUTS — MARKET CONDITIONS (REGIME)
+// -----------------------------------------------------------------------------
+// Classifies the tape as DIRECTIONAL / BALANCED / UNCLEAR from transparent signals (EMA-trend
+// strength, position in the dealing range, VWAP-cross frequency) — so you stop treating the
+// middle of a chop as a clean trend. Can gate the FVG execution engine.
+regimeOn   = input.bool(true,  "Show market-conditions regime", tooltip = "Classify the current tape as DIRECTIONAL (trend + structure aligned), BALANCED (rotating in a range), or UNCLEAR, from transparent signals: EMA-trend strength, where price sits in the dealing range, and how often price is crossing VWAP. Shown as a small banner; can also gate the execution engine (below).", group = G_REGIME)
+regimeBanner = input.bool(true, "  Show regime banner", group = G_REGIME)
+regimeBanPos = input.string("Bottom Left", "  Regime banner position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_REGIME)
+regimeTrendMin = input.float(0.6, "  Trend-strength threshold (EMA sep × ATR)", minval = 0.1, maxval = 3.0, step = 0.1, tooltip = "How far the fast/slow EMAs must separate (in ATRs) for the tape to read DIRECTIONAL. Higher = stricter (only strong trends qualify).", group = G_REGIME)
+regimeChopBars = input.int(20, "  VWAP-cross window (bars)", minval = 5, maxval = 100, tooltip = "Look-back used to count how often price crosses VWAP. Many crosses in this window = chop.", group = G_REGIME)
+regimeChopN  = input.int(4, "  VWAP crosses = chop", minval = 2, maxval = 20, tooltip = "This many VWAP crosses within the window flags potential CHOP (and pulls the regime toward BALANCED/UNCLEAR).", group = G_REGIME)
+regimeGateExec = input.bool(false, "  Gate execution: suppress continuation setups mid-range", tooltip = "When ON and the regime is BALANCED/chop, the FVG execution engine will NOT arm CONTINUATION setups in the middle of the range — but still allows REVERSAL setups near the range extremes (premium/discount). This directly targets getting chopped up trading the middle of a range. OFF = the regime is informational only and never blocks a setup.", group = G_REGIME)
 
 f_lineStyle() =>
     lineStyleI == "Dashed" ? line.style_dashed : lineStyleI == "Dotted" ? line.style_dotted : line.style_solid
@@ -879,6 +894,28 @@ if showConf
 var float pdFib1 = 0.705
 var float pdFib2 = 0.788
 var float pdFib3 = 0.886
+
+// -----------------------------------------------------------------------------
+// MARKET CONDITIONS (REGIME) — DIRECTIONAL / BALANCED / UNCLEAR, from transparent signals
+// -----------------------------------------------------------------------------
+// 1) trend strength: fast/slow EMA separation vs ATR (reuses dolTrendV). 2) VWAP-cross count in
+// a window (chop). 3) position in the dealing range (middle = balance-leaning). Combined into a
+// readable state. regimeState: 1 = DIRECTIONAL, 0 = UNCLEAR, -1 = BALANCED.
+float vwapCrossRaw = (not na(vwapVal) and ((close > vwapVal and close[1] <= vwapVal) or (close < vwapVal and close[1] >= vwapVal))) ? 1.0 : 0.0
+float vwapCrosses  = math.sum(vwapCrossRaw, regimeChopBars)
+bool  regimeChop   = vwapCrosses >= regimeChopN
+float trendStrength = math.abs(nz(dolTrendV))                 // EMA separation in ATRs
+bool  regimeTrending = trendStrength >= regimeTrendMin and not regimeChop
+// position in the dealing range (0..1); 0.5 = equilibrium. Falls back to neutral if range off.
+float regimePos = (not na(rngHi) and not na(rngLo) and rngHi > rngLo) ? math.min(1.0, math.max(0.0, (close - rngLo) / (rngHi - rngLo))) : 0.5
+bool  regimeMidRange = regimePos > 0.38 and regimePos < 0.62   // rotating in the middle
+int   regimeState = 0
+if regimeTrending
+    regimeState := 1                                           // DIRECTIONAL
+else if regimeChop or regimeMidRange
+    regimeState := -1                                          // BALANCED / rotating
+else
+    regimeState := 0                                           // UNCLEAR
 
 // historical swing storage
 var swHi   = array.new<float>()
@@ -2576,6 +2613,20 @@ if masterOn and biasOn and biasBanner and barstate.islast
     table.set_frame_color(biasTbl, color.new(biasAccent, 35))
     table.set_frame_width(biasTbl, themeBW)
 
+// ---- market-conditions (regime) banner ----
+if masterOn and regimeOn and regimeBanner and barstate.islast
+    string regWord = regimeState == 1 ? "DIRECTIONAL" : regimeState == -1 ? "BALANCED" : "UNCLEAR"
+    string regEmo  = regimeState == 1 ? "➡️" : regimeState == -1 ? "↔️" : "❓"
+    color  regCol  = regimeState == 1 ? themeUpSolid : regimeState == -1 ? themeDnSolid : themeMuted
+    string chopTxt = regimeChop ? ("⚠ VWAP chop (" + str.tostring(int(vwapCrosses)) + "x)") : ("trend " + str.tostring(trendStrength, "#.0#") + " ATR")
+    var table regTbl = table.new(position.bottom_left, 1, 2, border_width = 1)
+    table.set_position(regTbl, f_tablePos(regimeBanPos))
+    table.clear(regTbl, 0, 0, 0, 1)
+    table.cell(regTbl, 0, 0, regEmo + " MARKET: " + regWord, text_color = regCol, bgcolor = themePanelBg, text_size = size.normal)
+    table.cell(regTbl, 0, 1, chopTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
+    table.set_frame_color(regTbl, color.new(regCol, 35))
+    table.set_frame_width(regTbl, themeBW)
+
 // ---- dedicated RSI gauge banner (pure RSI info — NO bias framing) ----
 if masterOn and exhOn and exhShow and barstate.islast and not na(exhRsi)
     string rsiState = exhRsi >= exhOB ? "OVERBOUGHT" : exhRsi <= exhOS ? "OVERSOLD" : "neutral"
@@ -2782,7 +2833,14 @@ if array.size(fvgBoxes) > 0
                 float feasRR = na(tgtLiq) ? na : (math.abs(tgtLiq - entryQ) / riskQ)
                 bool  lowRR  = execMinRR > 0 and not na(feasRR) and feasRR < execMinRR
                 bool  qRR    = (execMinRR <= 0) or (not execRRReject) or (not lowRR)
-                bool qualifies = qStr and qPD and qDOL and qBias and qRR
+                // regime gate: in BALANCED/chop, suppress CONTINUATION setups (gap in the middle
+                // of the range) but still allow REVERSAL setups at the extremes (bull gap in deep
+                // discount / bear gap in deep premium). Only active when regimeGateExec is on.
+                bool qRegime = true
+                if regimeOn and regimeGateExec and regimeState == -1
+                    bool atExtreme = na(rngHi) or na(rngLo) or rngHi <= rngLo ? false : (isBull ? (ceP - rngLo) / (rngHi - rngLo) <= 0.38 : (ceP - rngLo) / (rngHi - rngLo) >= 0.62)
+                    qRegime := atExtreme
+                bool qualifies = qStr and qPD and qDOL and qBias and qRR and qRegime
                 // price returning toward a still-watching qualifying gap (approach alert, once per gap)
                 if st == 0 and qualifies and commitOK and not array.get(fvgApproached, i)
                     bool nearing = isBull ? (low <= top and low > ceP) : (high >= bot and high < ceP)
