@@ -86,6 +86,7 @@ fvgShowStr    = input.bool(true, "    Label FVG strength %", tooltip = "Print ea
 fvgLblStyle   = input.string("Inside box (centered)", "    FVG label style", options = ["Inside box (centered)","Pointer (distinct)","Plain text (no box)","Callout (like levels)"], tooltip = "How the FVG strength % label is drawn, so it doesn't blend into the level/cluster callouts when zoomed out. 'Inside box (centered)': the % sits CENTERED inside the gap box itself — tied directly to its box, clearly separate from the level labels at the right edge (recommended). 'Pointer (distinct)': a tinted pointer tag at the LEFT edge of the gap. 'Plain text (no box)': borderless text in the gap color — the most minimal. 'Callout (like levels)': the original left-callout box at the right edge.", group = G_STRUCT)
 fvgKeep       = input.int(50, "    Max FVGs kept", minval = 5, maxval = 100, tooltip = "How many unfilled fair value gaps to retain before the OLDEST is dropped. Raise this to keep more / older gaps far back in history (e.g. gaps sitting above the current swing high); lower it to keep the chart light. Note: gaps older than the chart's loaded history still can't be drawn, and each gap uses a drawing-object slot shared with order blocks and cluster zones (budget is 500).", group = G_STRUCT)
 fvgRejGauge  = input.bool(true, "    Rejection gauge (live, when price is in the gap)", tooltip = "A LIVE read shown next to the % ONLY while price is at/returning into the gap: how likely price is to REJECT (bounce off) vs ACCEPT (fill through) the gap right now. Shown as ⟲NN (reject-leaning, 50-100) or ⇥NN (accept-leaning, 0-50). It blends: the STRENGTH of the move that created the gap, the STRENGTH of the pullback returning into it (fast momentum return → more likely to blow through; slow drift → more likely to reject), ABSORPTION (a wick pushing back out of the gap on the touch bar), and the CHARACTER of the candles approaching the gap (pure trend bodies → accept-leaning; wicky/indecisive → reject-leaning). This is a heuristic read, NOT a measured probability, and it is separate from the formation strength %.", group = G_STRUCT)
+fvgRetGauge  = input.bool(true, "    Return-likelihood % (will price come back?)", tooltip = "A live, directional read shown as ↩NN next to a gap's / order block's label: how likely price is to RETURN to the zone from here (distinct from the formation strength % and the live rejection gauge). It blends: PROXIMITY (closer gaps are revisited far more than distant ones, normalized by ATR), the RESISTANCE in the path between price and the zone (reuses the path-clearance engine — a clear runway back is higher, a walled one lower), DAILY-BIAS alignment (a zone on the side the daily bias points toward is more likely to be reached), and VOLUME (a high-participation zone is revisited to rebalance). Applies to both fair value gaps and order blocks. Heuristic, not a probability.", group = G_STRUCT)
 fvgSizeW      = input.float(1.0, "    Weight: gap size vs ATR", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "How much the gap's own size (displacement) counts toward its strength. Bigger gaps = stronger imbalance.", group = G_STRUCT)
 fvgVolW       = input.float(1.0, "    Weight: creation volume", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "How much the relative volume of the candle that CREATED the gap counts. High-volume displacement gaps are respected more often. Uses the Rel-volume lookback from the SFP section.", group = G_STRUCT)
 fvgBlockW     = input.float(1.0, "    Weight: inside OB / breaker", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap overlaps an order block or breaker block — a gap defended by a resting institutional zone is far more likely to hold.", group = G_STRUCT)
@@ -2026,6 +2027,34 @@ f_pathClear(float fromP, float toP, float atrU) =>
     float clr = 100.0 * math.pow(0.72, projClearW * severity)
     [math.round(clr), obstacles]
 
+// RETURN-LIKELIHOOD — how likely price is to come BACK to a zone (gap/OB) from here. 0..100.
+// Blends: proximity (closer = higher), path clearance between price and the zone (reuses
+// f_pathClear), daily-bias alignment (zone on the side the bias points toward = higher), and
+// volume (creatVol 0..1 = the zone's participation). Heuristic, not a probability.
+f_returnLikelihood(float zTop, float zBot, float creatVol) =>
+    float atrU = math.max(nz(atr), syminfo.mintick)
+    float zMid = (zTop + zBot) / 2.0
+    // 1) proximity — exponential decay with ATR distance (1 ATR away ~0.7, 4 ATR ~0.3)
+    float distATR = math.abs(zMid - close) / atrU
+    float prox = math.pow(0.85, distATR)                       // 0..1
+    // 2) path clearance between price and the zone (0..100 -> 0..1)
+    [clrScore, obsN] = f_pathClear(close, zMid, atrU)
+    float clear01 = clrScore / 100.0
+    // 3) daily-bias alignment — bias DOWN favours returning to zones BELOW price; bias UP, above.
+    //    NEUTRAL bias = neutral 0.5.
+    float biasAlign = 0.5
+    if biasOn and dayBias != 0
+        bool zoneBelow = zMid < close
+        bool favoured  = dayBias < 0 ? zoneBelow : (not zoneBelow)
+        biasAlign := favoured ? 0.85 : 0.25
+    // 4) volume — the zone's creation participation (0..1), lightly nudged by current rel-volume
+    float volF = math.min(math.max(nz(creatVol, 0.5), 0.0), 1.0)
+    float volNow = math.min(nz(rvol) / 2.0, 1.0)               // current participation 0..1
+    float volF2 = math.min(1.0, volF * 0.7 + volNow * 0.3)
+    // weighted blend -> 0..100 (proximity + clearance carry most weight)
+    float rl = (prox * 0.34 + clear01 * 0.30 + biasAlign * 0.22 + volF2 * 0.14) * 100.0
+    int(math.max(0.0, math.min(100.0, math.round(rl))))
+
 // ETA to a target price from recent velocity (independent of the countdown toggle so the
 // projETA switch works on its own). Formats per the Countdown units setting.
 f_eta(float target) =>
@@ -2487,7 +2516,9 @@ if barstate.islast
             if not na(obT) and not na(obB)
                 box obx = box.new(f_clampBar(ob0), obT, bar_index + extendR, obB, border_color = color.new(bull ? obColBull : obColBear, 20), border_width = 1, bgcolor = oc)
                 array.push(xtra_boxes, obx)
-                label olb = label.new(bar_index + extendR, (obT + obB) / 2.0, bull ? "OB▲ demand" : "OB▼ supply", style = label.style_label_left, color = color.new(bull ? obColBull : obColBear, 30), textcolor = color.white, size = size.tiny)
+                // return-likelihood % for the block (OBs form on displacement, so neutral-high creation vol)
+                string obRetTag = fvgRetGauge ? ("  ↩" + str.tostring(f_returnLikelihood(obT, obB, 0.6))) : ""
+                label olb = label.new(bar_index + extendR, (obT + obB) / 2.0, (bull ? "OB▲ demand" : "OB▼ supply") + obRetTag, style = label.style_label_left, color = color.new(bull ? obColBull : obColBear, 30), textcolor = color.white, size = size.tiny)
                 array.push(xtra_labels, olb)
 
     // confidence-momentum: snapshot this bar's values into *_prev for next bar's ▲/▼
@@ -2778,13 +2809,17 @@ if array.size(fvgBoxes) > 0
             label lb = array.get(fvgLabels, i)
             // rebuild the label each bar from the STATIC base % + live context tags (exhaustion
             // delta + rejection gauge). The base score never visually mutates; live reads append.
-            if not na(lb) and ((exhOn and exhW > 0) or fvgRejGauge)
+            if not na(lb) and ((exhOn and exhW > 0) or fvgRejGauge or fvgRetGauge)
                 float baseSc = array.get(fvgStr, i)
                 string tags = ""
                 // live exhaustion context as a SEPARATE signed delta
                 if exhOn and exhW > 0
                     int delta = int(math.round(f_exhAdj(top, bot, isBull)))
                     tags := tags + (delta >= 1 ? (" ⛽+" + str.tostring(delta)) : (delta <= -1 ? (" ⛽" + str.tostring(delta)) : ""))
+                // return-likelihood % — how likely price comes back to the gap from here
+                if fvgRetGauge
+                    int rl = f_returnLikelihood(top, bot, array.get(fvgCreatQ, i))
+                    tags := tags + " ↩" + str.tostring(rl)
                 // live rejection gauge — only shows while price is at/in the gap
                 if fvgRejGauge
                     [rjActive, rjLean] = f_rejGauge(top, bot, isBull, array.get(fvgCreatQ, i))
