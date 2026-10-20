@@ -337,7 +337,10 @@ emaWidth = input.int(1, "EMA line width", minval = 1, maxval = 4, group = G_EMA)
 // if it moved exactly (mult × ATR) from the open — the statistically-expected range. Fixed at
 // the open (ATR is from the prior bar), so it does not repaint.
 atrpOn    = input.bool(true, "Show ATR range projection (current bar)", tooltip = "Projects the CURRENTLY FORMING bar's expected HIGH and LOW: two horizontal lines at the bar's open ± (mult × ATR) — where the candle would reach on a typical one-ATR move — extending to the right of price so they're clearly visible. The lines track the live candle and are anchored to its open (using the prior bar's ATR), so they don't repaint. If price pushes past a line, the move is stretched vs its average true range.", group = G_ATRP)
-atrpLen   = input.int(14, "  ATR length", minval = 1, maxval = 100, group = G_ATRP)
+atrpLen   = input.int(14, "  ATR length (base)", minval = 1, maxval = 100, tooltip = "The base/slow ATR length. Used alone when 'Session-adaptive' is off; blended with the fast ATR when it's on.", group = G_ATRP)
+atrpAdapt = input.bool(true, "  Session-adaptive (contracts in slow periods)", tooltip = "Blend a FAST, short-length ATR into the projection so it tightens during quiet parts of the session and widens when pace picks up, instead of lagging on the slow 14-bar average. The band breathes with current volatility.", group = G_ATRP)
+atrpFastLen = input.int(5, "    Fast ATR length", minval = 1, maxval = 50, tooltip = "The short lookback that makes the band react to the CURRENT pace. Smaller = faster contraction/expansion (more responsive, a bit jumpier).", group = G_ATRP)
+atrpFastWt  = input.float(0.7, "    Fast weight (0 = base only · 1 = fast only)", minval = 0.0, maxval = 1.0, step = 0.05, tooltip = "How much the fast ATR dominates the blend. 0.7 = 70% fast / 30% base: responsive but not whippy. 1.0 = purely the fast ATR.", group = G_ATRP)
 atrpMult  = input.float(1.0, "  ATR multiple", minval = 0.1, maxval = 5.0, step = 0.1, tooltip = "How many ATRs each side of the open the projected high/low sits. 1.0 = one average true range.", group = G_ATRP)
 atrpCol   = input.color(color.new(#ffb300, 0), "  Projection color", group = G_ATRP)
 atrpMid   = input.bool(true, "  Show open midline", tooltip = "Draw a faint dotted line at the candle's open (the center of the projected range).", group = G_ATRP)
@@ -415,7 +418,11 @@ plot(masterOn and ema4On ? emaV4 : na, "EMA 4", color = ema4Col, linewidth = ema
 // -----------------------------------------------------------------------------
 // ATR RANGE PROJECTION — expected-range outline drawn at each candle open
 // -----------------------------------------------------------------------------
-atrpVal = ta.atr(atrpLen)
+// base (slow) ATR + a fast, short-length ATR; session-adaptive blends toward the fast one so the
+// band tightens in quiet periods and widens when pace picks up instead of lagging on the average.
+atrpBase = ta.atr(atrpLen)
+atrpFast = ta.atr(atrpFastLen)
+atrpVal  = atrpAdapt ? (atrpFastWt * atrpFast + (1.0 - atrpFastWt) * atrpBase) : atrpBase
 // Projected HIGH / LOW of the CURRENTLY FORMING bar = this bar's open ± (mult × ATR). Drawn as
 // two persistent horizontal lines (+ optional open midline) that live on the forming bar and
 // extend a few bars to the right, updated every bar so they always track the live candle. The
