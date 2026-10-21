@@ -87,7 +87,7 @@ fvgShowStr    = input.bool(true, "    Label FVG strength %", tooltip = "Print ea
 fvgLblStyle   = input.string("Inside box (centered)", "    FVG label style", options = ["Inside box (centered)","Pointer (distinct)","Plain text (no box)","Callout (like levels)"], tooltip = "How the FVG strength % label is drawn, so it doesn't blend into the level/cluster callouts when zoomed out. 'Inside box (centered)': the % sits CENTERED inside the gap box itself — tied directly to its box, clearly separate from the level labels at the right edge (recommended). 'Pointer (distinct)': a tinted pointer tag at the LEFT edge of the gap. 'Plain text (no box)': borderless text in the gap color — the most minimal. 'Callout (like levels)': the original left-callout box at the right edge.", group = G_STRUCT)
 fvgKeep       = input.int(50, "    Max FVGs kept", minval = 5, maxval = 100, tooltip = "How many unfilled fair value gaps to retain before the OLDEST is dropped. Raise this to keep more / older gaps far back in history (e.g. gaps sitting above the current swing high); lower it to keep the chart light. Note: gaps older than the chart's loaded history still can't be drawn, and each gap uses a drawing-object slot shared with order blocks and cluster zones (budget is 500).", group = G_STRUCT)
 fvgRejGauge  = input.bool(true, "    Rejection gauge (live, when price is in the gap)", tooltip = "A LIVE read shown next to the % ONLY while price is at/returning into the gap: how likely price is to REJECT (bounce off) vs ACCEPT (fill through) the gap right now. Shown as ⟲NN (reject-leaning, 50-100) or ⇥NN (accept-leaning, 0-50). It blends: the STRENGTH of the move that created the gap, the STRENGTH of the pullback returning into it (fast momentum return → more likely to blow through; slow drift → more likely to reject), ABSORPTION (a wick pushing back out of the gap on the touch bar), and the CHARACTER of the candles approaching the gap (pure trend bodies → accept-leaning; wicky/indecisive → reject-leaning). This is a heuristic read, NOT a measured probability, and it is separate from the formation strength %.", group = G_STRUCT)
-fvgRetGauge  = input.bool(true, "    Return-likelihood % (will price come back?)", tooltip = "A live, directional read shown as ↩NN next to a gap's / order block's label: how likely price is to RETURN to the zone from here (distinct from the formation strength % and the live rejection gauge). It blends: PROXIMITY (closer gaps are revisited far more than distant ones, normalized by ATR), the RESISTANCE in the path between price and the zone (reuses the path-clearance engine — a clear runway back is higher, a walled one lower), DAILY-BIAS alignment (a zone on the side the daily bias points toward is more likely to be reached), and VOLUME (a high-participation zone is revisited to rebalance). Applies to both fair value gaps and order blocks. Heuristic, not a probability.", group = G_STRUCT)
+fvgRetGauge  = input.bool(true, "    Return-likelihood % (will price come back?)", tooltip = "A live, directional read shown as ↩NN next to a fair value gap's label: how likely price is to RETURN to the gap from here (distinct from the formation strength % and the live rejection gauge). It blends: PROXIMITY (closer gaps are revisited far more than distant ones, normalized by ATR), the RESISTANCE in the path between price and the gap (reuses the path-clearance engine — a clear runway back is higher, a walled one lower), DAILY-BIAS alignment (a gap on the side the daily bias points toward is more likely to be reached), and VOLUME (a high-participation gap is revisited to rebalance). Heuristic, not a probability.", group = G_STRUCT)
 fvgSizeW      = input.float(1.0, "    Weight: gap size vs ATR", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "How much the gap's own size (displacement) counts toward its strength. Bigger gaps = stronger imbalance.", group = G_STRUCT)
 fvgVolW       = input.float(1.0, "    Weight: creation volume", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "How much the relative volume of the candle that CREATED the gap counts. High-volume displacement gaps are respected more often. Uses the Rel-volume lookback from the SFP section.", group = G_STRUCT)
 fvgBlockW     = input.float(1.0, "    Weight: inside OB / breaker", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap overlaps an order block or breaker block — a gap defended by a resting institutional zone is far more likely to hold.", group = G_STRUCT)
@@ -137,6 +137,9 @@ obDisp     = input.float(1.2, "  Displacement size (× ATR)", minval = 0.3, step
 obColBull  = input.color(color.new(#26a69a, 80), "  Bullish OB color", group = G_STRUCT)
 obColBear  = input.color(color.new(#ef5350, 80), "  Bearish OB color", group = G_STRUCT)
 obKeep     = input.int(8, "  Max order blocks kept", minval = 1, maxval = 40, group = G_STRUCT)
+obFilterOn = input.bool(true, "  Filter order blocks by strength", tooltip = "Score every order block 0-100 at formation (decisive displacement body + the block's zone size + whether it formed from a SWEEP + relative volume) and only draw the ones that clear the threshold below — so only high-quality blocks show. The score is printed INSIDE the block.", group = G_STRUCT)
+obMinStr   = input.int(45, "    Min OB strength % to draw", minval = 0, maxval = 100, tooltip = "Order blocks scoring below this are not drawn. A decisive, swept, high-volume block scores high; a marginal displacement scores low. Raise to show only the strongest blocks.", group = G_STRUCT)
+obShowStr  = input.bool(true, "    Show OB strength % inside the block", tooltip = "Print the 0-100 strength centered inside the order block box (like the FVG inside-box label) so there's no right-edge label clutter.", group = G_STRUCT)
 
 // -----------------------------------------------------------------------------
 // INPUTS — COUNTDOWN
@@ -1412,6 +1415,18 @@ var obTop  = array.new<float>()
 var obBot  = array.new<float>()
 var obBull = array.new<bool>()
 var obBirth = array.new<int>()
+var obStr  = array.new<float>()   // 0-100 strength per order block (displacement + size + sweep + volume)
+// strength of the order block being created this bar: displacement body, zone size, sweep origin,
+// and relative volume — a decisive, swept, high-volume block scores high. 0..100.
+f_obStrength(bool fromSweep) =>
+    float atrO = math.max(nz(atr), syminfo.mintick)
+    float bodyW = math.min(math.abs(close - open) / atrO / 1.5, 1.0)          // displacement body vs ATR -> 0..1
+    float zoneW = math.min((high[1] - low[1]) / atrO, 1.0)                    // the block's own range vs ATR
+    float volW  = math.min(math.max(nz(rvol) - 1.0, 0.0) / 1.5, 1.0)         // relative volume 0..1
+    float sweepW = fromSweep ? 1.0 : 0.0
+    // weighted: displacement is the core, sweep origin + size + volume add on
+    float raw = bodyW * 42.0 + zoneW * 20.0 + sweepW * 22.0 + volW * 16.0
+    int(math.max(0.0, math.min(100.0, math.round(raw))))
 // breaker blocks: a violated OB with flipped polarity (former demand -> supply, etc.)
 var brkTop  = array.new<float>()
 var brkBot  = array.new<float>()
@@ -1422,11 +1437,13 @@ if showOB and disp and close > open and (sfpLong or (close > high[1]))
     array.push(obBot, low[1])
     array.push(obBull, true)
     array.push(obBirth, bar_index - 1)
+    array.push(obStr, f_obStrength(sfpLong))
 if showOB and disp and close < open and (sfpShort or (close < low[1]))
     array.push(obTop, high[1])
     array.push(obBot, low[1])
     array.push(obBull, false)
     array.push(obBirth, bar_index - 1)
+    array.push(obStr, f_obStrength(sfpShort))
 if array.size(obTop) > 0
     int oi = 0
     while oi < array.size(obTop)
@@ -1443,6 +1460,7 @@ if array.size(obTop) > 0
             array.remove(obBot, oi)
             array.remove(obBull, oi)
             array.remove(obBirth, oi)
+            array.remove(obStr, oi)
         else
             oi += 1
 while array.size(obTop) > obKeep
@@ -1450,6 +1468,7 @@ while array.size(obTop) > obKeep
     array.shift(obBot)
     array.shift(obBull)
     array.shift(obBirth)
+    array.shift(obStr)
 // breaker maintenance: a breaker dies when price closes back through it (opposite of OB)
 if array.size(brkTop) > 0
     int bi = 0
@@ -2560,13 +2579,16 @@ if barstate.islast
             int   ob0 = array.get(obBirth, oi)
             float obT = array.get(obTop, oi)
             float obB = array.get(obBot, oi)
-            if not na(obT) and not na(obB)
-                box obx = box.new(f_clampBar(ob0), obT, bar_index + extendR, obB, border_color = color.new(bull ? obColBull : obColBear, 20), border_width = 1, bgcolor = oc)
+            int   obSc = oi < array.size(obStr) ? int(array.get(obStr, oi)) : 50
+            bool  obPass = (not obFilterOn) or (obSc >= obMinStr)
+            if not na(obT) and not na(obB) and obPass
+                int   ob1 = f_clampBar(ob0)
+                box obx = box.new(ob1, obT, bar_index + extendR, obB, border_color = color.new(bull ? obColBull : obColBear, 20), border_width = 1, bgcolor = oc)
                 array.push(xtra_boxes, obx)
-                // no demand/supply text — the colored box already shows it. Only draw a label when
-                // the return-likelihood gauge is on (then it carries just the ↩% tag).
-                if fvgRetGauge
-                    label olb = label.new(bar_index + extendR, (obT + obB) / 2.0, "↩" + str.tostring(f_returnLikelihood(obT, obB, 0.6)), style = label.style_label_left, color = color.new(bull ? obColBull : obColBear, 30), textcolor = color.white, size = size.tiny)
+                // strength % printed CENTERED inside the block (no right-edge label clutter)
+                if obShowStr
+                    int    obCx = int(math.round((ob1 + bar_index + extendR) / 2.0))
+                    label olb = label.new(obCx, (obT + obB) / 2.0, str.tostring(obSc) + "%", style = label.style_text_outline, textcolor = color.white, color = color.new(bull ? obColBull : obColBear, 100), size = size.small)
                     array.push(xtra_labels, olb)
 
     // confidence-momentum: snapshot this bar's values into *_prev for next bar's ▲/▼
