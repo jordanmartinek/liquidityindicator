@@ -2563,10 +2563,11 @@ if barstate.islast
             if not na(obT) and not na(obB)
                 box obx = box.new(f_clampBar(ob0), obT, bar_index + extendR, obB, border_color = color.new(bull ? obColBull : obColBear, 20), border_width = 1, bgcolor = oc)
                 array.push(xtra_boxes, obx)
-                // return-likelihood % for the block (OBs form on displacement, so neutral-high creation vol)
-                string obRetTag = fvgRetGauge ? ("  ↩" + str.tostring(f_returnLikelihood(obT, obB, 0.6))) : ""
-                label olb = label.new(bar_index + extendR, (obT + obB) / 2.0, (bull ? "OB▲ demand" : "OB▼ supply") + obRetTag, style = label.style_label_left, color = color.new(bull ? obColBull : obColBear, 30), textcolor = color.white, size = size.tiny)
-                array.push(xtra_labels, olb)
+                // no demand/supply text — the colored box already shows it. Only draw a label when
+                // the return-likelihood gauge is on (then it carries just the ↩% tag).
+                if fvgRetGauge
+                    label olb = label.new(bar_index + extendR, (obT + obB) / 2.0, "↩" + str.tostring(f_returnLikelihood(obT, obB, 0.6)), style = label.style_label_left, color = color.new(bull ? obColBull : obColBear, 30), textcolor = color.white, size = size.tiny)
+                    array.push(xtra_labels, olb)
 
     // confidence-momentum: snapshot this bar's values into *_prev for next bar's ▲/▼
     array.clear(cm_keysPrev)
