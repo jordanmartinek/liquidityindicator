@@ -33,6 +33,7 @@ var string G_EMA    = "⑫ Moving Averages (EMA)"
 var string G_ATRP   = "⑬ ATR Range Projection"
 var string G_REGIME = "⑭ Market Conditions (regime)"
 var string G_CLARITY = "⑮ Level Clarity (importance declutter)"
+var string G_ORB    = "⑯ Opening Range Breakout (ORB)"
 
 // -----------------------------------------------------------------------------
 // INPUTS — PREVIOUS-PERIOD LEVELS
@@ -377,6 +378,19 @@ clarityOn   = input.bool(false, "Level-clarity mode (label only important levels
 clarityFloor = input.string("Tier 2+ (hide minor)", "  Importance floor", options = ["All tiers","Tier 2+ (hide minor)","Tier 1 only (major)"], tooltip = "Which levels to draw at all. 'All tiers': every level (as lines). 'Tier 2+': hide minor local swings / session / relative-EQ levels. 'Tier 1 only': just the major previous-period levels + key opens — the cleanest.", group = G_CLARITY)
 clarityLblN = input.int(3, "  Labels per side (top-N by importance)", minval = 1, maxval = 12, tooltip = "Only the N most important levels ABOVE and N BELOW price get a FULL label (name · price · %%). All other drawn levels are bare lines with a small price tag, so the right edge stays clean. Importance = tier first, then nearer-to-price as the tiebreak.", group = G_CLARITY)
 clarityBare = input.bool(true, "  Bare lines get a small price tag", tooltip = "Un-labeled (non-top-N) levels still show a tiny price so you can identify them. Off = pure lines with nothing at the right edge.", group = G_CLARITY)
+
+// -----------------------------------------------------------------------------
+// INPUTS — OPENING RANGE BREAKOUT (ORB)
+// -----------------------------------------------------------------------------
+// The high/low of the opening window (default the first 5 minutes of the NY session) drawn as a
+// box, with a directional breakout-likelihood blending price action + liquidity + bias + regime.
+orbOn      = input.bool(true, "Show Opening Range (ORB)", tooltip = "Draws the HIGH and LOW of the opening window (default the first 5 minutes of the NY session) as a box, frozen once the window closes and extended across the session. A breakout is marked when price CLOSES beyond the box. A directional breakout-likelihood read blends price action, liquidity beyond the edges, the daily bias, and the market regime.", group = G_ORB)
+orbSession = input.session("0930-0935", "  Opening window (session time)", tooltip = "The opening range window. Default 0930-0935 = the first 5 minutes of the NY equities open. Works on any chart timeframe (on a 5-minute chart this is the first 5m bar; on a 1m chart, the first five 1m bars).", group = G_ORB)
+orbTZ      = input.string("America/New_York", "  Opening window timezone", options = ["America/New_York","UTC","Europe/London","Asia/Tokyo"], group = G_ORB)
+orbCol     = input.color(color.new(#42a5f5, 0), "  ORB color", group = G_ORB)
+orbExtend  = input.bool(true, "  Extend ORB across the session", group = G_ORB)
+orbScore   = input.bool(true, "  Show breakout-likelihood read", tooltip = "Show a directional 'breakout ↑NN% / ↓NN%' read on the ORB once the opening window has closed, blending: where price sits in the range + how tight the range is (price action), resting liquidity just beyond each edge and how clear the path to it is (liquidity), daily-bias alignment, and the market regime (DIRECTIONAL boosts breakout odds, BALANCED/chop lowers them — ORB breaks fake out in chop). Heuristic, not a probability.", group = G_ORB)
+orbScorePos = input.string("Middle Left", "  Breakout read position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_ORB)
 
 f_lineStyle() =>
     lineStyleI == "Dashed" ? line.style_dashed : lineStyleI == "Dotted" ? line.style_dotted : line.style_solid
@@ -3121,6 +3135,86 @@ if array.size(htfFvgTop) > 0
 
 // (HTF FVGs are now folded into the gap SCORE — see f_fvgStrength's HTF-alignment factor —
 //  and still feed the DOL model; there is no separate HTF panel.)
+
+// -----------------------------------------------------------------------------
+// OPENING RANGE BREAKOUT (ORB) — opening-window box + directional breakout-likelihood
+// -----------------------------------------------------------------------------
+// accumulate the opening window's high/low, freeze it when the window closes, draw the box, and
+// compute a directional breakout-likelihood from price action + liquidity + daily bias + regime.
+var float orbHi    = na
+var float orbLo    = na
+var int   orbStartB = na
+var bool  orbReady  = false       // window has closed -> range is frozen for the day
+var box   orbBox   = na
+var line  orbHiLn  = na
+var line  orbLoLn  = na
+var label orbLbl   = na
+bool orbInWin  = not na(time(timeframe.period, orbSession, orbTZ))
+bool orbWinNew = orbInWin and not orbInWin[1]      // first bar of the opening window (new day)
+if masterOn and orbOn
+    if orbWinNew
+        // start a fresh opening range for the new day
+        orbHi := high
+        orbLo := low
+        orbStartB := bar_index
+        orbReady := false
+    else if orbInWin
+        orbHi := math.max(nz(orbHi, high), high)
+        orbLo := math.min(nz(orbLo, low), low)
+    else if orbInWin[1] and not orbInWin
+        orbReady := true                           // window just closed -> freeze
+    // draw / update the ORB box once we have a range
+    if not na(orbHi) and not na(orbLo)
+        int xr = orbExtend ? bar_index : (na(orbStartB) ? bar_index : orbStartB + 1)
+        if na(orbBox)
+            orbBox := box.new(nz(orbStartB, bar_index), orbHi, xr, orbLo, border_color = color.new(orbCol, 30), border_width = 1, bgcolor = color.new(orbCol, 90))
+            orbHiLn := line.new(nz(orbStartB, bar_index), orbHi, xr, orbHi, color = orbCol, width = 1)
+            orbLoLn := line.new(nz(orbStartB, bar_index), orbLo, xr, orbLo, color = orbCol, width = 1)
+        box.set_lefttop(orbBox, nz(orbStartB, bar_index), orbHi)
+        box.set_rightbottom(orbBox, xr, orbLo)
+        line.set_xy1(orbHiLn, nz(orbStartB, bar_index), orbHi)
+        line.set_xy2(orbHiLn, xr, orbHi)
+        line.set_xy1(orbLoLn, nz(orbStartB, bar_index), orbLo)
+        line.set_xy2(orbLoLn, xr, orbLo)
+    // ---- breakout-likelihood (only once the range is frozen) ----
+    if orbScore and orbReady and barstate.islast and not na(orbHi) and not na(orbLo) and orbHi > orbLo
+        float atrO = math.max(nz(atr), syminfo.mintick)
+        float rng  = orbHi - orbLo
+        // PRICE ACTION: position in range (near an edge = loaded that way) + tightness
+        float posIn = math.min(1.0, math.max(0.0, (close - orbLo) / rng))   // 0 at low, 1 at high
+        float tight = math.min(atrO / rng, 1.5) / 1.5                       // tight range vs ATR -> easier break
+        // LIQUIDITY: nearest pool beyond each edge + how clear the path to it is
+        float upLiq = f_nextOppLiq(orbHi, true)
+        float dnLiq = f_nextOppLiq(orbLo, false)
+        [upClrS, upO] = f_pathClear(close, na(upLiq) ? orbHi + rng : upLiq, atrO)
+        [dnClrS, dnO] = f_pathClear(close, na(dnLiq) ? orbLo - rng : dnLiq, atrO)
+        float upMagnet = na(upLiq) ? 0.3 : 0.7
+        float dnMagnet = na(dnLiq) ? 0.3 : 0.7
+        // BIAS + REGIME: with-bias breaks are higher-prob; chop lowers breakout odds, trend raises
+        float biasUp = biasOn and dayBias > 0 ? 1.0 : (biasOn and dayBias < 0 ? 0.0 : 0.5)
+        float regimeMul = regimeState == 1 ? 1.15 : regimeState == -1 ? 0.6 : 0.9
+        // compose per-side raw scores (0..1), then scale to 100
+        float upRaw = (posIn * 0.30 + tight * 0.15 + (upClrS / 100.0) * 0.20 + upMagnet * 0.15 + biasUp * 0.20) * regimeMul
+        float dnRaw = ((1.0 - posIn) * 0.30 + tight * 0.15 + (dnClrS / 100.0) * 0.20 + dnMagnet * 0.15 + (1.0 - biasUp) * 0.20) * regimeMul
+        int upPct = int(math.max(0.0, math.min(100.0, math.round(upRaw * 100.0))))
+        int dnPct = int(math.max(0.0, math.min(100.0, math.round(dnRaw * 100.0))))
+        string brokeTxt = close > orbHi ? "  ▲ broke up" : close < orbLo ? "  ▼ broke down" : ""
+        color orbAccent = upPct >= dnPct ? themeUpSolid : themeDnSolid
+        var table orbTbl = table.new(position.middle_left, 1, 2, border_width = 1)
+        table.set_position(orbTbl, f_tablePos(orbScorePos))
+        table.clear(orbTbl, 0, 0, 0, 1)
+        table.cell(orbTbl, 0, 0, "📐 ORB breakout" + brokeTxt, text_color = orbAccent, bgcolor = themePanelBg, text_size = size.small)
+        table.cell(orbTbl, 0, 1, "▲ " + str.tostring(upPct) + "%   ▼ " + str.tostring(dnPct) + "%", text_color = themeTxt, bgcolor = themeRowBg, text_size = size.normal)
+        table.set_frame_color(orbTbl, color.new(orbAccent, 35))
+        table.set_frame_width(orbTbl, themeBW)
+// wipe the ORB drawings when off
+if (not masterOn or not orbOn) and not na(orbBox)
+    box.delete(orbBox)
+    orbBox := na
+    line.delete(orbHiLn)
+    orbHiLn := na
+    line.delete(orbLoLn)
+    orbLoLn := na
 
 // -----------------------------------------------------------------------------
 // ALERTS
