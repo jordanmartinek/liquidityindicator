@@ -32,6 +32,7 @@ var string G_BIAS   = "⑪ Daily Bias"
 var string G_EMA    = "⑫ Moving Averages (EMA)"
 var string G_ATRP   = "⑬ ATR Range Projection"
 var string G_REGIME = "⑭ Market Conditions (regime)"
+var string G_CLARITY = "⑮ Level Clarity (importance declutter)"
 
 // -----------------------------------------------------------------------------
 // INPUTS — PREVIOUS-PERIOD LEVELS
@@ -360,6 +361,19 @@ regimeTrendMin = input.float(0.6, "  Trend-strength threshold (EMA sep × ATR)",
 regimeChopBars = input.int(20, "  VWAP-cross window (bars)", minval = 5, maxval = 100, tooltip = "Look-back used to count how often price crosses VWAP. Many crosses in this window = chop.", group = G_REGIME)
 regimeChopN  = input.int(4, "  VWAP crosses = chop", minval = 2, maxval = 20, tooltip = "This many VWAP crosses within the window flags potential CHOP (and pulls the regime toward BALANCED/UNCLEAR).", group = G_REGIME)
 regimeGateExec = input.bool(false, "  Gate execution: suppress continuation setups mid-range", tooltip = "When ON and the regime is BALANCED/chop, the FVG execution engine will NOT arm CONTINUATION setups in the middle of the range — but still allows REVERSAL setups near the range extremes (premium/discount). This directly targets getting chopped up trading the middle of a range. OFF = the regime is informational only and never blocks a setup.", group = G_REGIME)
+
+// -----------------------------------------------------------------------------
+// INPUTS — LEVEL CLARITY (importance declutter)
+// -----------------------------------------------------------------------------
+// An alternative to merged cluster zones: keep every level as its OWN identifiable line, but
+// only LABEL the few most important ones so the right edge doesn't flood. Importance tiers:
+//   Tier 1 (major): PDH/PDL · PWH/PWL · PMH/PML · daily/weekly/monthly/midnight opens
+//   Tier 2 (significant): equal highs/lows · HTF swings · VP POC/VAH/VAL · breakers
+//   Tier 3 (minor): local swings · session H/L · relative-equal H/L
+clarityOn   = input.bool(false, "Level-clarity mode (label only important levels)", tooltip = "Fixes the cluster-zone problem (can't tell which level price is reacting to) WITHOUT flooding the right edge. Keeps every level as its own distinct line, but only gives the most IMPORTANT ones (by tier) a full name/%% label — the rest draw as bare lines with just a small price, so you can still see exactly where each level is. Turning this on overrides cluster merging so you always see individual levels. Pair it with the importance floor + labels-per-side below.", group = G_CLARITY)
+clarityFloor = input.string("Tier 2+ (hide minor)", "  Importance floor", options = ["All tiers","Tier 2+ (hide minor)","Tier 1 only (major)"], tooltip = "Which levels to draw at all. 'All tiers': every level (as lines). 'Tier 2+': hide minor local swings / session / relative-EQ levels. 'Tier 1 only': just the major previous-period levels + key opens — the cleanest.", group = G_CLARITY)
+clarityLblN = input.int(3, "  Labels per side (top-N by importance)", minval = 1, maxval = 12, tooltip = "Only the N most important levels ABOVE and N BELOW price get a FULL label (name · price · %%). All other drawn levels are bare lines with a small price tag, so the right edge stays clean. Importance = tier first, then nearer-to-price as the tiebreak.", group = G_CLARITY)
+clarityBare = input.bool(true, "  Bare lines get a small price tag", tooltip = "Un-labeled (non-top-N) levels still show a tiny price so you can identify them. Off = pure lines with nothing at the right edge.", group = G_CLARITY)
 
 f_lineStyle() =>
     lineStyleI == "Dashed" ? line.style_dashed : lineStyleI == "Dotted" ? line.style_dotted : line.style_solid
@@ -698,6 +712,15 @@ f_sideEmojiI(int side, float lvl) =>
     not sideColorOn ? strengthEmoji : (lvl >= close ? emojiBSL : emojiSSL)
 f_sideTagI(int side, float lvl) =>
     lvl >= close ? "BSL" : "SSL"
+
+// level importance tier for the clarity declutter: 1 = major, 2 = significant, 3 = minor
+f_lvlTier(string nm) =>
+    int t = 3
+    if str.contains(nm, "PDH") or str.contains(nm, "PDL") or str.contains(nm, "PWH") or str.contains(nm, "PWL") or str.contains(nm, "PMH") or str.contains(nm, "PML") or str.contains(nm, "Open") or str.contains(nm, "Midnight")
+        t := 1
+    else if str.contains(nm, "EQH") or str.contains(nm, "EQL") or str.contains(nm, "POC") or str.contains(nm, "VAH") or str.contains(nm, "VAL") or str.contains(nm, "Breaker")
+        t := 2
+    t
 
 f_sessName(string base, bool carried) =>
     (sessReclassify and carried) ? (base + " (swing)") : base
@@ -2371,7 +2394,7 @@ if barstate.islast
             bool  zPrimary = array.get(lv_primary, array.get(idx, gi))   // declutter: any Top-N member?
             float sumPull = zInWin ? array.get(lv_pull, array.get(idx, gi)) : 0.0
             float sumQual = zInWin ? array.get(lv_qual, array.get(idx, gi)) : 0.0
-            while clusterOn and gi + 1 < idxN and (array.get(lv_price, array.get(idx, gi + 1)) - array.get(lv_price, array.get(idx, gi))) <= mergeDist
+            while clusterOn and not clarityOn and gi + 1 < idxN and (array.get(lv_price, array.get(idx, gi + 1)) - array.get(lv_price, array.get(idx, gi))) <= mergeDist
                 gi := gi + 1
                 float p = array.get(lv_price, array.get(idx, gi))
                 sumP := sumP + p
@@ -2393,6 +2416,27 @@ if barstate.islast
             bool drawGroup = members >= minStrength
             if drawGroup and members == 1
                 float p = array.get(lv_price, array.get(idx, startI))
+                string pName = array.get(lv_name, array.get(idx, startI))
+                // ---- level-clarity mode: importance floor + top-N-by-importance labeling ----
+                int   clTier = f_lvlTier(pName)
+                int   floorTier = clarityFloor == "Tier 1 only (major)" ? 1 : clarityFloor == "Tier 2+ (hide minor)" ? 2 : 3
+                bool  claritySkip = clarityOn and clTier > floorTier     // below the importance floor -> don't draw
+                bool  clarityLabeled = true
+                if clarityOn and not claritySkip
+                    // labeled if fewer than clarityLblN same-side levels outrank it (better tier,
+                    // or equal tier but nearer to price) — so only the top-N important per side get text.
+                    bool  above0 = p >= close
+                    float dist0  = math.abs(p - close)
+                    int   outrank = 0
+                    for jj = 0 to nl - 1
+                        if not array.get(lv_nomag, jj)
+                            float pj = array.get(lv_price, jj)
+                            if (pj >= close) == above0 and not (pj == p)
+                                int tj = f_lvlTier(array.get(lv_name, jj))
+                                bool better = tj < clTier or (tj == clTier and math.abs(pj - close) < dist0)
+                                if better
+                                    outrank := outrank + 1
+                    clarityLabeled := outrank < clarityLblN
                 int  sd = array.get(lv_side, array.get(idx, startI))
                 color c = f_sideColI(sd, p, array.get(lv_col, array.get(idx, startI)))
                 string emo = sideColorOn ? f_sideEmojiI(sd, p) : array.get(lv_emo, array.get(idx, startI))
@@ -2432,14 +2476,17 @@ if barstate.islast
                 bool lFaint = (densOn and (not lPrimary or (lInWin and lp < eGate))) or lCounterBias
                 color cLine = lFaint ? color.new(c, densFadeOp) : ((showTested and lTested) ? color.new(c, 55) : c)
                 string lStyle = (lFaint or (showTested and lTested)) ? line.style_dotted : f_lineStyle()
-                // faint levels shed their tags to a bare price so they recede into the background
-                string full = lFaint ? (array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick)) : (tier + (emo == "None" ? "" : emo + " ") + array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick) + confLvlTag + testTag + f_countdown(p))
-                line ln = line.new(bar_index, p, bar_index + ext, p, color = cLine, width = lineWidth, style = lStyle)
-                color soloBg  = lFaint ? color.new(c, densFadeOp) : (outlineTags ? c : color.new(c, 85))
-                color soloTxt = lFaint ? color.new(c, math.max(densFadeOp - 30, 0)) : (outlineTags ? clustLblTxt : c)
-                label lb = label.new(bar_index + ext, p, full, style = label.style_label_left, color = soloBg, textcolor = soloTxt, size = f_labelSize())
-                array.push(pool_lines, ln)
-                array.push(pool_labels, lb)
+                // clarity mode: a non-top-N level draws as a BARE line (tiny price or nothing);
+                // a below-floor level is skipped entirely. Faint levels shed tags as before.
+                bool clarityBareLine = clarityOn and not clarityLabeled
+                string full = clarityBareLine ? (clarityBare ? str.tostring(p, format.mintick) : "") : (lFaint ? (array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick)) : (tier + (emo == "None" ? "" : emo + " ") + array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick) + confLvlTag + testTag + f_countdown(p)))
+                if not claritySkip
+                    line ln = line.new(bar_index, p, bar_index + ext, p, color = cLine, width = lineWidth, style = lStyle)
+                    color soloBg  = (lFaint or clarityBareLine) ? color.new(c, densFadeOp) : (outlineTags ? c : color.new(c, 85))
+                    color soloTxt = (lFaint or clarityBareLine) ? color.new(c, math.max(densFadeOp - 30, 0)) : (outlineTags ? clustLblTxt : c)
+                    label lb = label.new(bar_index + ext, p, full, style = label.style_label_left, color = soloBg, textcolor = soloTxt, size = clarityBareLine ? size.tiny : f_labelSize())
+                    array.push(pool_lines, ln)
+                    array.push(pool_labels, lb)
             else if drawGroup
                 float mid = sumP / members
                 float t = math.min((members - 1) / 4.0, 1.0)
