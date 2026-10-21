@@ -383,6 +383,7 @@ orbSession = input.session("0930-0935", "  Opening window (session time)", toolt
 orbTZ      = input.string("America/New_York", "  Opening window timezone", options = ["America/New_York","UTC","Europe/London","Asia/Tokyo"], group = G_ORB)
 orbCol     = input.color(color.new(#42a5f5, 0), "  ORB color", group = G_ORB)
 orbExtend  = input.bool(true, "  Extend ORB across the session", group = G_ORB)
+orbHist    = input.int(10, "  Max historical ORBs kept", minval = 1, maxval = 60, tooltip = "How many past days' opening-range boxes stay drawn on the chart for look-back analysis. Oldest is dropped when the limit is reached.", group = G_ORB)
 orbScore   = input.bool(true, "  Show breakout-likelihood read", tooltip = "Show a directional 'breakout ↑NN% / ↓NN%' read on the ORB once the opening window has closed, blending: where price sits in the range + how tight the range is (price action), resting liquidity just beyond each edge and how clear the path to it is (liquidity), daily-bias alignment, and the market regime (DIRECTIONAL boosts breakout odds, BALANCED/chop lowers them — ORB breaks fake out in chop). Heuristic, not a probability.", group = G_ORB)
 orbScorePos = input.string("Middle Left", "  Breakout read position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_ORB)
 
@@ -3043,37 +3044,56 @@ var float orbHi    = na
 var float orbLo    = na
 var int   orbStartB = na
 var bool  orbReady  = false       // window has closed -> range is frozen for the day
-var box   orbBox   = na
-var line  orbHiLn  = na
-var line  orbLoLn  = na
+// per-day CAPPED POOLS so each day keeps its own frozen ORB on the chart for look-back.
+// the CURRENT (forming) day's objects are always the LAST element of each pool; past days
+// are left frozen at their own session span and never touched again.
+var array<box>  orbBoxes = array.new<box>()
+var array<line> orbHiLns = array.new<line>()
+var array<line> orbLoLns = array.new<line>()
+var box   orbCurBox = na          // handle to the current/forming day's box
+var line  orbCurHiLn = na         // handle to the current day's high line
+var line  orbCurLoLn = na         // handle to the current day's low line
 var label orbLbl   = na
 bool orbInWin  = not na(time(timeframe.period, orbSession, orbTZ))
 bool orbWinNew = orbInWin and not orbInWin[1]      // first bar of the opening window (new day)
 if masterOn and orbOn
     if orbWinNew
+        // a new day's window opened: FINALIZE the prior day's objects by simply dropping our
+        // handles to them - they stay frozen at whatever span they had (right edge fixed).
+        orbCurBox := na
+        orbCurHiLn := na
+        orbCurLoLn := na
         // start a fresh opening range for the new day
         orbHi := high
         orbLo := low
         orbStartB := bar_index
         orbReady := false
+        // create fresh drawings for the new day and push them into the pools
+        orbCurBox  := box.new(bar_index, orbHi, bar_index, orbLo, border_color = color.new(orbCol, 30), border_width = 1, bgcolor = color.new(orbCol, 90))
+        orbCurHiLn := line.new(bar_index, orbHi, bar_index, orbHi, color = orbCol, width = 1)
+        orbCurLoLn := line.new(bar_index, orbLo, bar_index, orbLo, color = orbCol, width = 1)
+        array.push(orbBoxes, orbCurBox)
+        array.push(orbHiLns, orbCurHiLn)
+        array.push(orbLoLns, orbCurLoLn)
+        // cap the pools: drop the OLDEST day when we exceed the keep count
+        if array.size(orbBoxes) > orbHist
+            box.delete(array.shift(orbBoxes))
+            line.delete(array.shift(orbHiLns))
+            line.delete(array.shift(orbLoLns))
     else if orbInWin
         orbHi := math.max(nz(orbHi, high), high)
         orbLo := math.min(nz(orbLo, low), low)
     else if orbInWin[1] and not orbInWin
         orbReady := true                           // window just closed -> freeze
-    // draw / update the ORB box once we have a range
-    if not na(orbHi) and not na(orbLo)
+    // draw / update ONLY the CURRENT day's objects once we have a range; past days stay frozen
+    if not na(orbHi) and not na(orbLo) and not na(orbCurBox)
         int xr = orbExtend ? bar_index : (na(orbStartB) ? bar_index : orbStartB + 1)
-        if na(orbBox)
-            orbBox := box.new(nz(orbStartB, bar_index), orbHi, xr, orbLo, border_color = color.new(orbCol, 30), border_width = 1, bgcolor = color.new(orbCol, 90))
-            orbHiLn := line.new(nz(orbStartB, bar_index), orbHi, xr, orbHi, color = orbCol, width = 1)
-            orbLoLn := line.new(nz(orbStartB, bar_index), orbLo, xr, orbLo, color = orbCol, width = 1)
-        box.set_lefttop(orbBox, nz(orbStartB, bar_index), orbHi)
-        box.set_rightbottom(orbBox, xr, orbLo)
-        line.set_xy1(orbHiLn, nz(orbStartB, bar_index), orbHi)
-        line.set_xy2(orbHiLn, xr, orbHi)
-        line.set_xy1(orbLoLn, nz(orbStartB, bar_index), orbLo)
-        line.set_xy2(orbLoLn, xr, orbLo)
+        box.set_lefttop(orbCurBox, nz(orbStartB, bar_index), orbHi)
+        box.set_rightbottom(orbCurBox, xr, orbLo)
+        line.set_xy1(orbCurHiLn, nz(orbStartB, bar_index), orbHi)
+        line.set_xy2(orbCurHiLn, xr, orbHi)
+        line.set_xy1(orbCurLoLn, nz(orbStartB, bar_index), orbLo)
+        line.set_xy2(orbCurLoLn, xr, orbLo)
     // ---- breakout-likelihood (only once the range is frozen) ----
     if orbScore and orbReady and barstate.islast and not na(orbHi) and not na(orbLo) and orbHi > orbLo
         float atrO = math.max(nz(atr), syminfo.mintick)
@@ -3105,14 +3125,20 @@ if masterOn and orbOn
         table.cell(orbTbl, 0, 1, "▲ " + str.tostring(upPct) + "%   ▼ " + str.tostring(dnPct) + "%", text_color = themeTxt, bgcolor = themeRowBg, text_size = size.normal)
         table.set_frame_color(orbTbl, color.new(orbAccent, 35))
         table.set_frame_width(orbTbl, themeBW)
-// wipe the ORB drawings when off
-if (not masterOn or not orbOn) and not na(orbBox)
-    box.delete(orbBox)
-    orbBox := na
-    line.delete(orbHiLn)
-    orbHiLn := na
-    line.delete(orbLoLn)
-    orbLoLn := na
+// wipe ALL ORB drawings (every pooled day) when off
+if (not masterOn or not orbOn) and array.size(orbBoxes) > 0
+    for b in orbBoxes
+        box.delete(b)
+    for l in orbHiLns
+        line.delete(l)
+    for l in orbLoLns
+        line.delete(l)
+    array.clear(orbBoxes)
+    array.clear(orbHiLns)
+    array.clear(orbLoLns)
+    orbCurBox := na
+    orbCurHiLn := na
+    orbCurLoLn := na
 
 // -----------------------------------------------------------------------------
 // ALERTS
