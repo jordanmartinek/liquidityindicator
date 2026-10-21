@@ -37,7 +37,8 @@ Per-level "time-to-reach" estimate based on price velocity (clock time or bars),
 ### ⑤ Clustering & Confluence
 Nearby levels merge into a single **strength-rated zone**, color-coded by side — **BSL** (buy-side, above price) vs **SSL** (sell-side, below price) — with tiered strength emojis and a min-strength filter. Each zone gets a **confluence score (0–100)** rolling up stacked levels + order-block overlap + **FVG overlap (weighted by the gap's own strength score)** + **OTE-fib proximity + premium/discount extreme** (computed from the live dealing range internally — not drawn on the chart) + round-number proximity, and the zone shades from its side color toward hot amber as the score climbs.
 
-### ⑥ Draw-on-Liquidity Gauge
+### ⑥ Draw-on-Liquidity (model)
+> The DOL *banner* has been removed to reduce on-chart clutter (it overlapped with the Daily Bias banner). The DOL **gravity model** still runs under the hood — it powers the per-level confidence %, the execution engine, the stacked-agreement ⭐, and path-clearance — it simply no longer draws its own panel. Direction now lives solely in the **Daily Bias** read.
 A corner banner showing the side price is most likely being drawn toward. Each level's pull is `distance-decay × type × age × freshness × confluence`, summed per side and blended with a momentum tilt. The banner shows direction, conviction %, a conviction meter, an optional **tug-of-war bar** (BSL vs SSL balance), and an optional primary-magnet **target** row (price + distance in ATR / %).
 
 **Accuracy model:**
@@ -64,7 +65,7 @@ Flags levels a wick has already **probed** into (reacted off) but not fully swep
 ### ⑪ Daily Bias
 A **sticky, structural daily bias** meant to be a directional *anchor* rather than a reactive arrow. It's built from **resolved higher-timeframe structure** — the last 1–2 completed **daily candles** (higher-high/higher-low vs lower-high/lower-low, plus the last daily's close position) combined with the most recent **PDH/PDL sweep + close-confirmed reclaim/reject** (PDL swept then reclaimed → bullish; PDH swept then rejected → bearish). Because it uses daily structure and confirmed sweeps (no intraday proximity, no momentum tilt), it **leads** rather than follows, and **holds** between real events (a new daily candle or a confirmed sweep) instead of flickering on 5-minute noise.
 - **Fast flip** (default): a confirmed counter-direction PDH/PDL sweep flips the bias immediately. **Conservative:** a counter sweep only raises a *caution* flag; the bias flips only when daily structure itself breaks.
-- Shown as a clean **"TODAY: LONG / SHORT / NEUTRAL"** banner in its own corner (default top-left, away from the DOL gauge), with a one-line *why*.
+- Shown as a clean **"TODAY: LONG / SHORT / NEUTRAL"** read with a one-line *why*. The Daily Bias, **Market Regime**, and **RSI** reads are now **consolidated into one stacked "context" panel** (top-left) instead of three separate floating windows — each still has its own show-toggle and renders as a row when enabled.
 - **Bias-aligned declutter:** counter-bias FVGs are faded (or hidden), and optionally the counter-bias side's levels are faded — so the chart visually agrees with your one directional thesis for the day.
 - The FVG execution engine can **require Daily Bias agreement** to arm (NEUTRAL = both directions allowed).
 
