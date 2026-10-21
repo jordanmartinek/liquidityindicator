@@ -191,19 +191,13 @@ vpBins      = input.int(24, "  VP resolution (bins)", minval = 8, maxval = 60, t
 // -----------------------------------------------------------------------------
 // INPUTS — DRAW-ON-LIQUIDITY GAUGE
 // -----------------------------------------------------------------------------
-showDOL   = input.bool(true, "Show DOL gauge", tooltip = "A corner banner pointing to the side (BSL above vs SSL below) with the greater LIQUIDITY GRAVITY - a multi-factor score of where price is most likely being drawn.", group = G_DOL)
-showVerdict = input.bool(true, "One-line verdict (headline)", tooltip = "A single plain-language line at the top of the banner distilling the whole read into the sentence you act on: bias direction · dominant target + distance · confidence % · path clear/blocked · premium/equilibrium/discount. Everything else in the banner is the supporting detail.", group = G_DOL)
-dolBanPos = input.string("Top Right", "Banner position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_DOL)
-dolBull   = input.string("🔼", "Bullish draw emoji", options = ["🔼","🟢","🚀","📈","👆","🐂"], group = G_DOL)
-dolBear   = input.string("🔽", "Bearish draw emoji", options = ["🔽","🔴","🐻","📉","👇","🩸"], group = G_DOL)
-dolSize   = input.string("Large", "Banner text size", options = ["Normal","Large","Huge"], group = G_DOL)
-dolSens   = input.string("Medium", "Gravity sensitivity", options = ["Low","Medium","High"], tooltip = "How sharply nearby / important / aged / clustered liquidity dominates the pull.", group = G_DOL)
+// NOTE: the DOL *banner* was removed (it conflicted with the Daily Bias banner). The DOL
+// gravity MODEL below still runs — it powers the execution engine, the stacked-agreement ⭐,
+// path-clearance, and the per-level confidence % — it just no longer draws its own banner.
+dolSens   = input.string("Medium", "DOL gravity sensitivity", options = ["Low","Medium","High"], tooltip = "How sharply nearby / important / aged / clustered liquidity dominates the pull (feeds the per-level confidence %, execution engine, and ⭐).", group = G_DOL)
 dolUseType = input.bool(true, "Weight by level importance (type)", tooltip = "Major levels (PDH/PDL, weekly/monthly, HTF) pull harder than minor session/local levels.", group = G_DOL)
 dolUseAge  = input.bool(true, "Weight by level age (resting time)", group = G_DOL)
-dolMomWt   = input.float(30, "Momentum tilt %", minval = 0, maxval = 100, step = 5, tooltip = "How much live directional momentum biases the arrow on top of the static liquidity score.", group = G_DOL)
-dolTgtLine = input.bool(true, "Show primary-magnet target in banner", tooltip = "Adds a banner row with the strongest magnet price and its distance (ATR / %).", group = G_DOL)
-dolMeter   = input.bool(true, "Show conviction meter", group = G_DOL)
-dolTugBar  = input.bool(true, "Show tug-of-war bar (BSL vs SSL)", group = G_DOL)
+dolMomWt   = input.float(30, "Momentum tilt %", minval = 0, maxval = 100, step = 5, tooltip = "How much live directional momentum biases the liquidity pull on top of the static score.", group = G_DOL)
 // --- accuracy pass ---
 dolConfW   = input.bool(true, "Weight pull by each level's confluence score", tooltip = "A level sitting in an order block + OTE + round number pulls far harder than a lone level. Multiplies each level's DOL pull by its own confluence score - the single biggest accuracy boost.", group = G_DOL)
 dolNearBias = input.float(1.5, "Nearest-pool emphasis", minval = 0.0, maxval = 4.0, step = 0.25, tooltip = "Extra sharpening of the distance decay. Higher = the nearest untapped pool dominates the pull (price hunts the closest liquidity first). 0 = flat.", group = G_DOL)
@@ -2613,149 +2607,53 @@ if barstate.islast
             array.push(cm_keysPrev, array.get(cm_keysNow, ci))
             array.push(cm_valsPrev, array.get(cm_valsNow, ci))
 
-    // ---- DOL banner ----
-    if masterOn and showDOL and (bslStrength > 0 or sslStrength > 0)
-        float atrU2 = math.max(nz(atr), syminfo.mintick)
-        float totalG = dm_totalG
-        bool drawUp = dolDrawUp
-        string arrow = drawUp ? dolBull : dolBear
-        // balance-aware conviction (#9): magnitude of the bias, further scaled by how
-        // DECISIVE the BSL-vs-SSL split is. A near-50/50 tug-of-war reads as low
-        // confidence even when the winning side's absolute pull is large.
-        float dominance = totalG > 0 ? math.abs(bslEff - sslEff) / totalG : 0.0
-        float conv = math.round(math.min(1.0, math.abs(dm_bias)) * (0.4 + 0.6 * dominance) * 100)
-        float tgtPrice = dolTgt
-        string distTxt = ""
-        if not na(tgtPrice)
-            float dATR = math.abs(tgtPrice - close) / atrU2
-            float dPct = math.abs(tgtPrice - close) / math.max(close, syminfo.mintick) * 100.0
-            distTxt := " · " + str.tostring(tgtPrice, format.mintick) + " (" + str.tostring(dATR, "#.0") + " ATR / " + str.tostring(dPct, "#.0#") + "%)"
-        string meter = ""
-        if dolMeter
-            int filled = math.max(0, math.min(5, int(math.round(conv / 20.0))))
-            string mtr = ""
-            for seg = 1 to 5
-                mtr := mtr + (seg <= filled ? "▰" : "▱")
-            meter := " " + mtr
-        // hysteresis hint: deadband cleared toward the OTHER side but not yet committed (waiting on bar close)
-        string turnTxt = (dolStable and dm_turning) ? " ⟳" : ""
-        string dolTxt = arrow + " DOL " + (drawUp ? "UP" : "DOWN") + turnTxt + " " + str.tostring(math.round(conv)) + "%" + meter
-        // path-clearance (feature 1) + ETA (feature 2) appended to the 🎯 target row
-        string clrTxt = ""
-        if projClear and not na(tgtPrice)
-            [clrScore, obsN] = f_pathClear(close, tgtPrice, atrU2)
-            clrTxt := " · 🛣️" + str.tostring(clrScore) + (obsN > 0 ? (" (" + str.tostring(obsN) + " block" + (obsN == 1 ? "" : "s") + ")") : " clear")
-        string etaTxt = (projETA and not na(tgtPrice)) ? f_eta(tgtPrice) : ""
-        string tgtTxt = na(tgtPrice) ? "" : ("🎯 target" + distTxt + clrTxt + etaTxt)
-        string tugTxt = ""
-        if dolTugBar and totalG > 0
-            int bslPct = int(math.round(bslEff / totalG * 100.0))
-            int sslPct = 100 - bslPct
-            int sslSeg = int(math.round(sslPct / 10.0))
-            string bar = ""
-            for sg = 1 to 10
-                bar := bar + (sg <= sslSeg ? "▮" : "▯")
-            tugTxt := "SSL " + str.tostring(sslPct) + " " + bar + " " + str.tostring(bslPct) + " BSL"
-        // equilibrium / range-state (feature 3): where price sits in the live dealing range
-        string equiTxt = ""
-        if projEqui and not na(rngHi) and not na(rngLo) and rngHi > rngLo
-            float posR = (close - rngLo) / (rngHi - rngLo)
-            string state = posR >= 0.62 ? "PREMIUM" : (posR <= 0.38 ? "DISCOUNT" : "EQUILIBRIUM")
-            string emoR = posR >= 0.62 ? "🔺" : (posR <= 0.38 ? "🔻" : "⚖️")
-            equiTxt := emoR + " " + state + " " + str.tostring(math.round(posR * 100)) + "%"
-        // resistance readout: how clear the path is up vs down (0 = fully walled, 100 = open)
-        string resistTxt = ""
-        if projResist
-            resistTxt := "🧱 clear ↑" + str.tostring(math.round(upClr)) + " ↓" + str.tostring(math.round(dnClr))
-        // ---- one-line verdict: the sentence a trader acts on ----
-        string verdictTxt = ""
-        if showVerdict
-            string vDir = drawUp ? "LONG" : "SHORT"
-            string vTgt = na(tgtPrice) ? "" : (" · →" + str.tostring(tgtPrice, format.mintick) + " (" + str.tostring(math.abs(tgtPrice - close) / atrU2, "#.0") + "R~ATR)")
-            string vConf = " · " + str.tostring(math.round(conv)) + "%"
-            string vPath = ""
-            if not na(tgtPrice)
-                [vc, vo] = f_pathClear(close, tgtPrice, atrU2)
-                vPath := vo > 0 ? (" · ⚠ " + str.tostring(vo) + " block" + (vo == 1 ? "" : "s")) : " · clear"
-            string vState = ""
-            if not na(rngHi) and not na(rngLo) and rngHi > rngLo
-                float vp = (close - rngLo) / (rngHi - rngLo)
-                vState := vp >= 0.62 ? " · premium" : (vp <= 0.38 ? " · discount" : " · equilibrium")
-            verdictTxt := (drawUp ? "🔼 " : "🔽 ") + vDir + vTgt + vConf + vPath + vState
-        color dirAccent = drawUp ? themeUpSolid : themeDnSolid
-        bool showTgtRow = dolTgtLine and not na(tgtPrice)
-        bool showTugRow = dolTugBar and totalG > 0
-        bool showEquiRow = projEqui and equiTxt != ""
-        bool showResistRow = projResist and resistTxt != ""
-        bool showVerdictRow = showVerdict and verdictTxt != ""
-        dolSzB = dolSize == "Huge" ? size.large : dolSize == "Large" ? size.normal : size.small
-        var table dolTbl = table.new(position.top_right, 1, 6, border_width = 1)
-        table.set_position(dolTbl, f_tablePos(dolBanPos))
-        table.clear(dolTbl, 0, 0, 0, 5)
-        int rowN = 0
-        if showVerdictRow
-            table.cell(dolTbl, 0, rowN, verdictTxt, text_color = dirAccent, bgcolor = themePanelBg, text_size = dolSzB)
-            rowN := rowN + 1
-        table.cell(dolTbl, 0, rowN, dolTxt, text_color = dirAccent, bgcolor = showVerdictRow ? themeRowBg : themePanelBg, text_size = showVerdictRow ? size.small : dolSzB)
-        rowN := rowN + 1
-        if showTugRow
-            table.cell(dolTbl, 0, rowN, tugTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
-            rowN := rowN + 1
-        if showResistRow
-            table.cell(dolTbl, 0, rowN, resistTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
-            rowN := rowN + 1
-        if showEquiRow
-            table.cell(dolTbl, 0, rowN, equiTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)
-            rowN := rowN + 1
-        if showTgtRow
-            table.cell(dolTbl, 0, rowN, tgtTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
-        table.set_frame_color(dolTbl, color.new(dirAccent, 35))
-        table.set_frame_width(dolTbl, themeBW)
+    // (DOL banner removed — it conflicted with the Daily Bias banner. The DOL COMPUTATION
+    //  above — dm_dirState / dm_bias / bslEff / sslEff / dolTgt — is retained because the
+    //  execution engine, stacked-agreement ⭐, and path-clearance all still rely on it.)
 
-// ---- Daily Bias banner (its own corner, independent of the DOL gauge) ----
-if masterOn and biasOn and biasBanner and barstate.islast
-    color  biasAccent = dayBias > 0 ? themeUpSolid : dayBias < 0 ? themeDnSolid : themeMuted
-    string biasWord = dayBias > 0 ? "LONG" : dayBias < 0 ? "SHORT" : "NEUTRAL"
-    string biasArrow = dayBias > 0 ? "🔼" : dayBias < 0 ? "🔽" : "⏸"
-    string cautionTxt = dayCaution ? " ⚠ caution" : ""
-    string whyTxt = dayBias == 0 ? "no clean structure" : (biasWhyStruct + biasWhySweep)
-    biasSzB = biasBanSize == "Huge" ? size.large : biasBanSize == "Large" ? size.normal : size.small
-    var table biasTbl = table.new(position.top_left, 1, 2, border_width = 1)
-    table.set_position(biasTbl, f_tablePos(biasBanPos))
-    table.clear(biasTbl, 0, 0, 0, 1)
-    table.cell(biasTbl, 0, 0, biasArrow + " TODAY: " + biasWord + cautionTxt, text_color = biasAccent, bgcolor = themePanelBg, text_size = biasSzB)
-    table.cell(biasTbl, 0, 1, whyTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
-    table.set_frame_color(biasTbl, color.new(biasAccent, 35))
-    table.set_frame_width(biasTbl, themeBW)
-
-// ---- market-conditions (regime) banner ----
-if masterOn and regimeOn and regimeBanner and barstate.islast
-    string regWord = regimeState == 1 ? "DIRECTIONAL" : regimeState == -1 ? "BALANCED" : "UNCLEAR"
-    string regEmo  = regimeState == 1 ? "➡️" : regimeState == -1 ? "↔️" : "❓"
-    color  regCol  = regimeState == 1 ? themeUpSolid : regimeState == -1 ? themeDnSolid : themeMuted
-    string chopTxt = regimeChop ? ("⚠ VWAP chop (" + str.tostring(int(vwapCrosses)) + "x)") : ("trend " + str.tostring(trendStrength, "#.0#") + " ATR")
-    var table regTbl = table.new(position.bottom_left, 1, 2, border_width = 1)
-    table.set_position(regTbl, f_tablePos(regimeBanPos))
-    table.clear(regTbl, 0, 0, 0, 1)
-    table.cell(regTbl, 0, 0, regEmo + " MARKET: " + regWord, text_color = regCol, bgcolor = themePanelBg, text_size = size.normal)
-    table.cell(regTbl, 0, 1, chopTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
-    table.set_frame_color(regTbl, color.new(regCol, 35))
-    table.set_frame_width(regTbl, themeBW)
-
-// ---- dedicated RSI gauge banner (pure RSI info — NO bias framing) ----
-if masterOn and exhOn and exhShow and barstate.islast and not na(exhRsi)
-    string rsiState = exhRsi >= exhOB ? "OVERBOUGHT" : exhRsi <= exhOS ? "OVERSOLD" : "neutral"
-    color  rsiCol = exhRsi >= exhOB ? themeDnSolid : exhRsi <= exhOS ? themeUpSolid : themeTxt
-    // divergence is a factual RSI-vs-price observation, stated neutrally (no bullish/bearish)
-    string divState = exhBullDiv ? "bullish RSI divergence" : exhBearDiv ? "bearish RSI divergence" : "no divergence"
-    var table rsiTbl = table.new(position.middle_right, 1, 3, border_width = 1)
-    table.set_position(rsiTbl, f_tablePos(exhGaugePos))
-    table.clear(rsiTbl, 0, 0, 0, 2)
-    table.cell(rsiTbl, 0, 0, "📊 RSI " + str.tostring(math.round(exhRsi)), text_color = rsiCol, bgcolor = themePanelBg, text_size = size.normal)
-    table.cell(rsiTbl, 0, 1, rsiState, text_color = rsiCol, bgcolor = themeRowBg, text_size = size.small)
-    table.cell(rsiTbl, 0, 2, divState, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
-    table.set_frame_color(rsiTbl, color.new(rsiCol, 35))
-    table.set_frame_width(rsiTbl, themeBW)
+// ---- CONSOLIDATED CONTEXT PANEL (Daily Bias + Market Regime + RSI in one table) ----
+// Replaces three separate floating banners with one stacked panel, positioned top-left.
+// Each section still honours its own show-toggle; it just renders as a row here.
+if masterOn and barstate.islast
+    bool ctxBias   = biasOn and biasBanner
+    bool ctxRegime = regimeOn and regimeBanner
+    bool ctxRsi    = exhOn and exhShow and not na(exhRsi)
+    if ctxBias or ctxRegime or ctxRsi
+        // --- Daily Bias rows ---
+        color  biasAccent = dayBias > 0 ? themeUpSolid : dayBias < 0 ? themeDnSolid : themeMuted
+        string biasWord = dayBias > 0 ? "LONG" : dayBias < 0 ? "SHORT" : "NEUTRAL"
+        string biasArrow = dayBias > 0 ? "🔼" : dayBias < 0 ? "🔽" : "⏸"
+        string cautionTxt = dayCaution ? " ⚠ caution" : ""
+        string whyTxt = dayBias == 0 ? "no clean structure" : (biasWhyStruct + biasWhySweep)
+        biasSzB = biasBanSize == "Huge" ? size.large : biasBanSize == "Large" ? size.normal : size.small
+        // --- Regime row ---
+        string regWord = regimeState == 1 ? "DIRECTIONAL" : regimeState == -1 ? "BALANCED" : "UNCLEAR"
+        string regEmo  = regimeState == 1 ? "➡️" : regimeState == -1 ? "↔️" : "❓"
+        color  regCol  = regimeState == 1 ? themeUpSolid : regimeState == -1 ? themeDnSolid : themeMuted
+        string regTxt  = regEmo + " MARKET: " + regWord + (regimeChop ? ("  ⚠ VWAP chop (" + str.tostring(int(vwapCrosses)) + "x)") : ("  · trend " + str.tostring(trendStrength, "#.0#") + " ATR"))
+        // --- RSI row ---
+        string rsiState = exhRsi >= exhOB ? "OVERBOUGHT" : exhRsi <= exhOS ? "OVERSOLD" : "neutral"
+        color  rsiCol = exhRsi >= exhOB ? themeDnSolid : exhRsi <= exhOS ? themeUpSolid : themeTxt
+        string divState = exhBullDiv ? " · bullish div" : exhBearDiv ? " · bearish div" : ""
+        string rsiTxt = "📊 RSI " + str.tostring(math.round(exhRsi)) + " · " + rsiState + divState
+        // build the panel (up to 4 rows: bias title, bias why, regime, rsi) at the Daily Bias position
+        var table ctxTbl = table.new(position.top_left, 1, 4, border_width = 1)
+        table.set_position(ctxTbl, f_tablePos(biasBanPos))
+        table.clear(ctxTbl, 0, 0, 0, 3)
+        int cr = 0
+        if ctxBias
+            table.cell(ctxTbl, 0, cr, biasArrow + " TODAY: " + biasWord + cautionTxt, text_color = biasAccent, bgcolor = themePanelBg, text_size = biasSzB)
+            cr := cr + 1
+            table.cell(ctxTbl, 0, cr, whyTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
+            cr := cr + 1
+        if ctxRegime
+            table.cell(ctxTbl, 0, cr, regTxt, text_color = regCol, bgcolor = cr == 0 ? themePanelBg : themeRowBg, text_size = size.small)
+            cr := cr + 1
+        if ctxRsi
+            table.cell(ctxTbl, 0, cr, rsiTxt, text_color = rsiCol, bgcolor = cr == 0 ? themePanelBg : themeRowBg, text_size = size.small)
+            cr := cr + 1
+        table.set_frame_color(ctxTbl, color.new(biasAccent, 35))
+        table.set_frame_width(ctxTbl, themeBW)
 
 // wipe extra pool when master/OB off
 if (not masterOn or not showOB) and array.size(xtra_boxes) + array.size(xtra_labels) > 0
