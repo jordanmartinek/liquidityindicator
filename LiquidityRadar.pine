@@ -3062,6 +3062,12 @@ var bool  orbReady  = false       // window has closed -> range is frozen for th
 var array<box>  orbBoxes = array.new<box>()
 var array<line> orbHiLns = array.new<line>()
 var array<line> orbLoLns = array.new<line>()
+// (G) per-day OUTCOME pool kept IN LOCKSTEP with orbBoxes: 1 = break held, -1 = break failed,
+// 0 = no clean break / undetermined. the LAST element is always the current/forming day.
+var array<int>  orbOutcomes = array.new<int>()
+// (E) current-day failed-break state (updated on CONFIRMED bars only, after the range is frozen).
+var int   orbBreakDir = 0         // 0 none, +1 closed above orbHi, -1 closed below orbLo
+var bool  orbFailed   = false     // a confirmed break later reversed back inside the range (trap)
 var box   orbCurBox = na          // handle to the current/forming day's box
 var line  orbCurHiLn = na         // handle to the current day's high line
 var line  orbCurLoLn = na         // handle to the current day's low line
@@ -3082,6 +3088,8 @@ if masterOn and orbOn
         orbStartB := bar_index
         orbReady := false
         orbRvol := rvol                            // seed opening-window rVol on the first bar (B)
+        orbBreakDir := 0                           // (E) reset break state for the new day
+        orbFailed   := false
         // create fresh drawings for the new day and push them into the pools
         orbCurBox  := box.new(bar_index, orbHi, bar_index, orbLo, border_color = color.new(orbCol, 30), border_width = 1, bgcolor = color.new(orbCol, 90))
         orbCurHiLn := line.new(bar_index, orbHi, bar_index, orbHi, color = orbCol, width = 1)
@@ -3089,11 +3097,13 @@ if masterOn and orbOn
         array.push(orbBoxes, orbCurBox)
         array.push(orbHiLns, orbCurHiLn)
         array.push(orbLoLns, orbCurLoLn)
+        array.push(orbOutcomes, 0)                 // (G) placeholder for the new/current day, kept in lockstep
         // cap the pools: drop the OLDEST day when we exceed the keep count
         if array.size(orbBoxes) > orbHist
             box.delete(array.shift(orbBoxes))
             line.delete(array.shift(orbHiLns))
             line.delete(array.shift(orbLoLns))
+            array.shift(orbOutcomes)               // (G) keep outcomes aligned with the box pool
     else if orbInWin
         orbHi := math.max(nz(orbHi, high), high)
         orbLo := math.min(nz(orbLo, low), low)
@@ -3109,6 +3119,24 @@ if masterOn and orbOn
         line.set_xy2(orbCurHiLn, xr, orbHi)
         line.set_xy1(orbCurLoLn, nz(orbStartB, bar_index), orbLo)
         line.set_xy2(orbCurLoLn, xr, orbLo)
+    // ---- (E) FAILED-BREAK DETECTION: track the current day's break state on CONFIRMED bars only,
+    // after the range is frozen. a confirmed close beyond an edge arms the break; a later confirmed
+    // close back inside the range marks it a failed break (trap). (G) mirror the outcome into the
+    // last element of orbOutcomes so the per-day record settles to the day's final state.
+    if barstate.isconfirmed and orbReady and not na(orbHi) and not na(orbLo)
+        if orbBreakDir == 0
+            if close > orbHi
+                orbBreakDir := 1
+            else if close < orbLo
+                orbBreakDir := -1
+        else if orbBreakDir == 1 and close < orbHi
+            orbFailed := true                      // armed up, closed back inside -> failed upside break
+        else if orbBreakDir == -1 and close > orbLo
+            orbFailed := true                      // armed down, closed back inside -> failed downside break
+        // (G) write this day's running outcome into its (last) slot: -1 failed, 1 held, 0 no clean break
+        if array.size(orbOutcomes) > 0
+            int outVal = orbFailed ? -1 : (orbBreakDir != 0 ? 1 : 0)
+            array.set(orbOutcomes, array.size(orbOutcomes) - 1, outVal)
     // ---- breakout-likelihood (only once the range is frozen) ----
     if orbScore and orbReady and barstate.islast and not na(orbHi) and not na(orbLo) and orbHi > orbLo
         float atrO = math.max(nz(atr), syminfo.mintick)
@@ -3161,14 +3189,32 @@ if masterOn and orbOn
         float confRaw = math.max(0.0, math.min(1.0, netMag / 40.0)) * (regimeState == 1 ? 1.0 : regimeState == -1 ? 0.6 : 0.8) * (0.7 + 0.3 * volFactor)
         string confTxt = confRaw >= 0.66 ? "High" : confRaw >= 0.33 ? "Med" : "Low"
         string netTxt  = "net " + netArrow + " +" + str.tostring(netMag) + "   conf: " + confTxt
-        string brokeTxt = close > orbHi ? "  ▲ broke up" : close < orbLo ? "  ▼ broke down" : ""
+        // (E) surface the failed-break state in the header: a trap takes priority over a raw break tag
+        string brokeTxt = orbFailed ? "  ⚠ failed break" : (close > orbHi ? "  ▲ broke up" : close < orbLo ? "  ▼ broke down" : "")
+        // (G) ON-CHART HIT-RATE TALLY: tally PAST days' recorded outcomes (exclude the last/current,
+        // still-settling element, like the width-percentile does). held = 1, failed = -1, skip 0.
+        // honest small-sample read, NOT a probability.
+        int held   = 0
+        int failed = 0
+        int nOut = array.size(orbOutcomes)
+        if nOut >= 2
+            for i = 0 to nOut - 2                                           // skip last = current forming day
+                int ov = array.get(orbOutcomes, i)
+                if ov == 1
+                    held += 1
+                else if ov == -1
+                    failed += 1
+        int decided = held + failed
+        int holdRate = decided > 0 ? int(math.round(100.0 * held / decided)) : 0
+        string tallyTxt = decided > 0 ? "recent breaks held " + str.tostring(holdRate) + "% (" + str.tostring(held) + "/" + str.tostring(decided) + ")" : "recent breaks held: calibrating…"
         color orbAccent = upPct >= dnPct ? themeUpSolid : themeDnSolid
-        var table orbTbl = table.new(position.middle_left, 1, 3, border_width = 1)
+        var table orbTbl = table.new(position.middle_left, 1, 4, border_width = 1)
         table.set_position(orbTbl, f_tablePos(orbScorePos))
-        table.clear(orbTbl, 0, 0, 0, 2)
+        table.clear(orbTbl, 0, 0, 0, 3)
         table.cell(orbTbl, 0, 0, "📐 ORB breakout" + brokeTxt, text_color = orbAccent, bgcolor = themePanelBg, text_size = size.small)
         table.cell(orbTbl, 0, 1, "▲ " + str.tostring(upPct) + "%   ▼ " + str.tostring(dnPct) + "%", text_color = themeTxt, bgcolor = themeRowBg, text_size = size.normal)
         table.cell(orbTbl, 0, 2, netTxt, text_color = orbAccent, bgcolor = themeRowBg, text_size = size.small)
+        table.cell(orbTbl, 0, 3, tallyTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)   // (G) calibration read
         table.set_frame_color(orbTbl, color.new(orbAccent, 35))
         table.set_frame_width(orbTbl, themeBW)
 // wipe ALL ORB drawings (every pooled day) when off
@@ -3182,6 +3228,7 @@ if (not masterOn or not orbOn) and array.size(orbBoxes) > 0
     array.clear(orbBoxes)
     array.clear(orbHiLns)
     array.clear(orbLoLns)
+    array.clear(orbOutcomes)      // (G) reset outcomes with the pools
     orbCurBox := na
     orbCurHiLn := na
     orbCurLoLn := na
