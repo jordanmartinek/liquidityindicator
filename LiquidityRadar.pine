@@ -384,6 +384,7 @@ orbTZ      = input.string("America/New_York", "  Opening window timezone", optio
 orbCol     = input.color(color.new(#42a5f5, 0), "  ORB color", group = G_ORB)
 orbExtend  = input.bool(true, "  Extend ORB across the session", group = G_ORB)
 orbHist    = input.int(10, "  Max historical ORBs kept", minval = 1, maxval = 60, tooltip = "How many past days' opening-range boxes stay drawn on the chart for look-back analysis. Oldest is dropped when the limit is reached.", group = G_ORB)
+orbCalN = input.int(40, "  Calibration sample (days)", minval = 2, maxval = 120, tooltip = "How many past days of ORB gauge predictions to keep for the accuracy read-out (separate from the drawn boxes). Larger = a more meaningful hit-rate, but still a small-sample recent tally, not a probability.", group = G_ORB)
 orbScore   = input.bool(true, "  Show breakout-likelihood read", tooltip = "Show a directional 'breakout ↑NN% / ↓NN%' read on the ORB once the opening window has closed, blending: where price sits in the range + how tight the range is (price action), resting liquidity just beyond each edge and how clear the path to it is (liquidity), daily-bias alignment, and the market regime (DIRECTIONAL boosts breakout odds, BALANCED/chop lowers them — ORB breaks fake out in chop). Heuristic, not a probability.", group = G_ORB)
 orbScorePos = input.string("Middle Left", "  Breakout read position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_ORB)
 
@@ -2118,6 +2119,50 @@ f_returnLikelihood(float zTop, float zBot, float creatVol) =>
     float rl = (prox * 0.34 + clear01 * 0.30 + biasAlign * 0.22 + volF2 * 0.14) * 100.0
     int(math.max(0.0, math.min(100.0, math.round(rl))))
 
+// (H) ORB breakout-likelihood CORE: the exact A-D per-side blend, refactored to a module-level
+// helper so BOTH the live display AND the no-look-ahead prediction snapshot call the SAME math
+// and therefore produce byte-for-byte identical [upPct, dnPct]. Depends only on already-computed
+// globals (close / atr / regimeState / dayBias / biasOn) plus the passed range + rVol + box pool;
+// it reads NO future data, so it is safe to evaluate on a confirmed historical bar. The weights
+// and expressions below are IDENTICAL to the original inline block (A-D) and must stay in sync.
+f_orbPredict(float oHi, float oLo, float oRvol, array<box> boxes) =>
+    float atrO = math.max(nz(atr), syminfo.mintick)
+    float rng  = oHi - oLo
+    // PRICE ACTION: position in range (near an edge = loaded that way) + tightness (A)
+    float posIn = math.min(1.0, math.max(0.0, (close - oLo) / rng))     // 0 at low, 1 at high
+    float tight = math.min(atrO / rng, 1.5) / 1.5                       // ATR-based fallback (day one)
+    float widthFactor = tight                                          // default to fallback
+    int nBoxes = array.size(boxes)
+    if nBoxes >= 2
+        array<float> pastRng = array.new<float>()
+        for i = 0 to nBoxes - 2                                         // skip last = current forming day
+            box pb = array.get(boxes, i)
+            array.push(pastRng, box.get_top(pb) - box.get_bottom(pb))
+        float medRng = f_medianArr(pastRng)
+        if not na(medRng) and medRng > 0
+            float ratio = rng / medRng
+            widthFactor := math.max(0.0, math.min(1.0, 1.5 - ratio))   // 0.5x->1.0, 1.0x->0.5, >=1.5x->0.0
+    // (B) RELATIVE-VOLUME factor (soft)
+    float volFactor = math.max(0.0, math.min(1.0, (nz(oRvol, 1.0) - 0.8) / 1.2))
+    // LIQUIDITY: nearest pool beyond each edge + how clear the path to it is
+    float upLiq = f_nextOppLiq(oHi, true)
+    float dnLiq = f_nextOppLiq(oLo, false)
+    [upClrS, upO] = f_pathClear(close, na(upLiq) ? oHi + rng : upLiq, atrO)
+    [dnClrS, dnO] = f_pathClear(close, na(dnLiq) ? oLo - rng : dnLiq, atrO)
+    // (C) DISTANCE-scaled liquidity magnet
+    float upDist = na(upLiq) ? na : (upLiq - oHi) / atrO
+    float dnDist = na(dnLiq) ? na : (oLo - dnLiq) / atrO
+    float upMagnet = na(upLiq) ? 0.3 : math.max(0.3, math.min(1.0, 1.0 - upDist / 3.0))
+    float dnMagnet = na(dnLiq) ? 0.3 : math.max(0.3, math.min(1.0, 1.0 - dnDist / 3.0))
+    // BIAS + REGIME
+    float biasUp = biasOn and dayBias > 0 ? 1.0 : (biasOn and dayBias < 0 ? 0.0 : 0.5)
+    float regimeMul = regimeState == 1 ? 1.15 : regimeState == -1 ? 0.6 : 0.9
+    float upRaw = (posIn * 0.28 + widthFactor * 0.12 + (upClrS / 100.0) * 0.18 + upMagnet * 0.12 + biasUp * 0.18 + volFactor * 0.12) * regimeMul
+    float dnRaw = ((1.0 - posIn) * 0.28 + widthFactor * 0.12 + (dnClrS / 100.0) * 0.18 + dnMagnet * 0.12 + (1.0 - biasUp) * 0.18 + volFactor * 0.12) * regimeMul
+    int upPct = int(math.max(0.0, math.min(100.0, math.round(upRaw * 100.0))))
+    int dnPct = int(math.max(0.0, math.min(100.0, math.round(dnRaw * 100.0))))
+    [upPct, dnPct]
+
 // ETA to a target price from recent velocity (independent of the countdown toggle so the
 // projETA switch works on its own). Formats per the Countdown units setting.
 f_eta(float target) =>
@@ -3065,6 +3110,15 @@ var array<line> orbLoLns = array.new<line>()
 // (G) per-day OUTCOME pool kept IN LOCKSTEP with orbBoxes: 1 = break held, -1 = break failed,
 // 0 = no clean break / undetermined. the LAST element is always the current/forming day.
 var array<int>  orbOutcomes = array.new<int>()
+// (H) PREDICTION-CALIBRATION log: a SEPARATE pool from the drawn boxes, capped by orbCalN (not
+// orbHist), so the gauge's accuracy read-out can use a bigger recent sample without cluttering the
+// chart. The three arrays below are kept IN LOCKSTEP (one entry per logged day); the LAST element
+// is the current/forming day. predSide/predPct are SNAPSHOTTED ONCE per day at the freeze and never
+// overwritten (no look-ahead); realized settles to the day's break direction as it plays out.
+var array<int>   orbPredSide = array.new<int>()   // predicted side at freeze: +1 up / -1 down
+var array<int>   orbPredPct  = array.new<int>()   // predicted % (leading side's number) at freeze
+var array<int>   orbRealized = array.new<int>()   // realized break dir: +1 up / -1 down / 0 none
+var bool orbPredLogged = false                    // guard: snapshotted THIS day's prediction yet?
 // (E) current-day failed-break state (updated on CONFIRMED bars only, after the range is frozen).
 var int   orbBreakDir = 0         // 0 none, +1 closed above orbHi, -1 closed below orbLo
 var bool  orbFailed   = false     // a confirmed break later reversed back inside the range (trap)
@@ -3090,6 +3144,7 @@ if masterOn and orbOn
         orbRvol := rvol                            // seed opening-window rVol on the first bar (B)
         orbBreakDir := 0                           // (E) reset break state for the new day
         orbFailed   := false
+        orbPredLogged := false                     // (H) allow exactly one prediction snapshot this day
         // create fresh drawings for the new day and push them into the pools
         orbCurBox  := box.new(bar_index, orbHi, bar_index, orbLo, border_color = color.new(orbCol, 30), border_width = 1, bgcolor = color.new(orbCol, 90))
         orbCurHiLn := line.new(bar_index, orbHi, bar_index, orbHi, color = orbCol, width = 1)
@@ -3119,6 +3174,25 @@ if masterOn and orbOn
         line.set_xy2(orbCurHiLn, xr, orbHi)
         line.set_xy1(orbCurLoLn, nz(orbStartB, bar_index), orbLo)
         line.set_xy2(orbCurLoLn, xr, orbLo)
+    // ---- (H) PREDICTION SNAPSHOT (no look-ahead): the FIRST confirmed bar at/after the range
+    // freezes, capture the gauge's predicted side + % and push a realized placeholder, ONCE per day.
+    // We call the SAME f_orbPredict helper the display uses, evaluated on this confirmed bar from
+    // state that is already final for the day (orbHi/orbLo are frozen once orbReady is true and the
+    // window has closed). The orbPredLogged guard ensures we never overwrite it, so the graded
+    // number is exactly what the gauge showed at freeze and never peeks at the day's outcome.
+    if barstate.isconfirmed and orbReady and not orbPredLogged and not na(orbHi) and not na(orbLo) and orbHi > orbLo
+        [pUp, pDn] = f_orbPredict(orbHi, orbLo, orbRvol, orbBoxes)
+        int predSide = pUp >= pDn ? 1 : -1
+        int predPct  = math.max(pUp, pDn)
+        array.push(orbPredSide, predSide)
+        array.push(orbPredPct,  predPct)
+        array.push(orbRealized, 0)                 // placeholder, settled in the E block below
+        orbPredLogged := true
+        // cap all three IN LOCKSTEP by orbCalN (independent of the drawn-box pool / orbHist)
+        if array.size(orbPredSide) > orbCalN
+            array.shift(orbPredSide)
+            array.shift(orbPredPct)
+            array.shift(orbRealized)
     // ---- (E) FAILED-BREAK DETECTION: track the current day's break state on CONFIRMED bars only,
     // after the range is frozen. a confirmed close beyond an edge arms the break; a later confirmed
     // close back inside the range marks it a failed break (trap). (G) mirror the outcome into the
@@ -3137,6 +3211,11 @@ if masterOn and orbOn
         if array.size(orbOutcomes) > 0
             int outVal = orbFailed ? -1 : (orbBreakDir != 0 ? 1 : 0)
             array.set(orbOutcomes, array.size(orbOutcomes) - 1, outVal)
+        // (H) settle THIS day's realized break DIRECTION into the last calibration slot (only after a
+        // prediction has been logged, so predSide/realized indices stay aligned). +1/-1/0; it freezes
+        // once the next day pushes a new last element.
+        if orbPredLogged and array.size(orbRealized) > 0
+            array.set(orbRealized, array.size(orbRealized) - 1, orbBreakDir)
     // ---- breakout-likelihood (only once the range is frozen) ----
     if orbScore and orbReady and barstate.islast and not na(orbHi) and not na(orbLo) and orbHi > orbLo
         float atrO = math.max(nz(atr), syminfo.mintick)
@@ -3207,14 +3286,53 @@ if masterOn and orbOn
         int decided = held + failed
         int holdRate = decided > 0 ? int(math.round(100.0 * held / decided)) : 0
         string tallyTxt = decided > 0 ? "recent breaks held " + str.tostring(holdRate) + "% (" + str.tostring(held) + "/" + str.tostring(decided) + ")" : "recent breaks held: calibrating…"
+        // (H) PREDICTION-CALIBRATION READ-OUT: did the gauge call the break DIRECTION right, and does
+        // a HIGHER predicted % actually buy more accuracy? Tally PAST logged days only (exclude the
+        // last/current, still-settling element). A day is CORRECT when realized != 0 and realized ==
+        // predSide (broke in the predicted direction). realized == 0 (no clean break) = UNDECIDED and
+        // excluded. Buckets split on a fixed confidence threshold of 65% (matches the existing band).
+        // Honest small-sample recent tally, NOT a probability.
+        int CAL_HI = 65
+        int decidedH  = 0
+        int correctH  = 0
+        int hiDec     = 0
+        int hiCorrect = 0
+        int loDec     = 0
+        int loCorrect = 0
+        int nCal = array.size(orbRealized)
+        if nCal >= 2
+            for i = 0 to nCal - 2                                           // skip last = current forming day
+                int rz = array.get(orbRealized, i)
+                if rz != 0
+                    int ps = array.get(orbPredSide, i)
+                    int pp = array.get(orbPredPct, i)
+                    bool ok = rz == ps
+                    decidedH += 1
+                    if ok
+                        correctH += 1
+                    if pp >= CAL_HI
+                        hiDec += 1
+                        if ok
+                            hiCorrect += 1
+                    else
+                        loDec += 1
+                        if ok
+                            loCorrect += 1
+        int hitRate = decidedH > 0 ? int(math.round(100.0 * correctH / decidedH)) : 0
+        int hiRate  = hiDec > 0 ? int(math.round(100.0 * hiCorrect / hiDec)) : 0
+        int loRate  = loDec > 0 ? int(math.round(100.0 * loCorrect / loDec)) : 0
+        string hitTxt = decidedH > 0 ? "gauge right " + str.tostring(hitRate) + "% (" + str.tostring(correctH) + "/" + str.tostring(decidedH) + ")" : "gauge accuracy: calibrating…"
+        string bucketTxt = "≥65%: " + (hiDec > 0 ? str.tostring(hiRate) + "% (" + str.tostring(hiCorrect) + "/" + str.tostring(hiDec) + ")" : "—") + "  ·  <65%: " + (loDec > 0 ? str.tostring(loRate) + "% (" + str.tostring(loCorrect) + "/" + str.tostring(loDec) + ")" : "—")
         color orbAccent = upPct >= dnPct ? themeUpSolid : themeDnSolid
-        var table orbTbl = table.new(position.middle_left, 1, 4, border_width = 1)
+        var table orbTbl = table.new(position.middle_left, 1, 6, border_width = 1)
         table.set_position(orbTbl, f_tablePos(orbScorePos))
-        table.clear(orbTbl, 0, 0, 0, 3)
+        table.clear(orbTbl, 0, 0, 0, 5)
         table.cell(orbTbl, 0, 0, "📐 ORB breakout" + brokeTxt, text_color = orbAccent, bgcolor = themePanelBg, text_size = size.small)
         table.cell(orbTbl, 0, 1, "▲ " + str.tostring(upPct) + "%   ▼ " + str.tostring(dnPct) + "%", text_color = themeTxt, bgcolor = themeRowBg, text_size = size.normal)
         table.cell(orbTbl, 0, 2, netTxt, text_color = orbAccent, bgcolor = themeRowBg, text_size = size.small)
         table.cell(orbTbl, 0, 3, tallyTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)   // (G) calibration read
+        table.cell(orbTbl, 0, 4, hitTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)     // (H) directional hit-rate
+        table.cell(orbTbl, 0, 5, bucketTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)  // (H) bucketed calibration
         table.set_frame_color(orbTbl, color.new(orbAccent, 35))
         table.set_frame_width(orbTbl, themeBW)
 // wipe ALL ORB drawings (every pooled day) when off
@@ -3229,6 +3347,10 @@ if (not masterOn or not orbOn) and array.size(orbBoxes) > 0
     array.clear(orbHiLns)
     array.clear(orbLoLns)
     array.clear(orbOutcomes)      // (G) reset outcomes with the pools
+    array.clear(orbPredSide)      // (H) reset prediction-calibration log with the pools
+    array.clear(orbPredPct)
+    array.clear(orbRealized)
+    orbPredLogged := false
     orbCurBox := na
     orbCurHiLn := na
     orbCurLoLn := na
