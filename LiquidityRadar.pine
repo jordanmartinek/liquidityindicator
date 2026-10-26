@@ -387,6 +387,13 @@ orbHist    = input.int(10, "  Max historical ORBs kept", minval = 1, maxval = 60
 orbCalN = input.int(40, "  Calibration sample (days)", minval = 2, maxval = 120, tooltip = "How many past days of ORB gauge predictions to keep for the accuracy read-out (separate from the drawn boxes). Larger = a more meaningful hit-rate, but still a small-sample recent tally, not a probability.", group = G_ORB)
 orbScore   = input.bool(true, "  Show breakout-likelihood read", tooltip = "Show a directional 'breakout ↑NN% / ↓NN%' read on the ORB once the opening window has closed, blending: where price sits in the range + how tight the range is (price action), resting liquidity just beyond each edge and how clear the path to it is (liquidity), daily-bias alignment, and the market regime (DIRECTIONAL boosts breakout odds, BALANCED/chop lowers them — ORB breaks fake out in chop). Heuristic, not a probability.", group = G_ORB)
 orbScorePos = input.string("Middle Left", "  Breakout read position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_ORB)
+// (I) BREAK-QUALITY GATES: filter noise pokes out of the ORB break detection so the realized
+// "breaks held" rate reflects conviction breaks, not one-tick fakeouts. Defaults are a mild
+// filter (0.10 ATR buffer, single qualifying close, volume ignored) so behaviour is close to
+// legacy but slightly stricter; the user tunes them up to cut more fakeouts.
+orbBrkBuf  = input.float(0.10, "  Break buffer (× ATR beyond edge)", minval = 0.0, maxval = 2.0, step = 0.05, tooltip = "A close must clear the opening-range edge by this many ATRs before it counts as a break — so a one-tick poke beyond the high/low no longer registers as a breakout. Raising this filters noise and lifts the realized 'breaks held' rate (at the cost of registering real breaks a touch later). 0 = legacy behaviour (any close beyond the edge). On the 5-minute chart ~0.10-0.25 cuts most fakeouts.", group = G_ORB)
+orbBrkBars = input.int(1, "  Break confirmation (consecutive closes)", minval = 1, maxval = 5, tooltip = "How many CONSECUTIVE confirmed closes beyond the buffered edge are required before a break is registered. 1 = a single qualifying close (legacy). 2+ filters flash-breaks that immediately reverse, raising the hold rate.", group = G_ORB)
+orbBrkVol  = input.bool(false, "  Require volume on the break", tooltip = "Only register a break when the breakout bar's relative volume is elevated (at/above the SFP 'Min rel-volume for grab' threshold). A break on conviction holds; a low-volume drift-through tends to fail. Off = volume is ignored for break detection.", group = G_ORB)
 
 f_lineStyle() =>
     lineStyleI == "Dashed" ? line.style_dashed : lineStyleI == "Dotted" ? line.style_dotted : line.style_solid
@@ -3122,6 +3129,8 @@ var bool orbPredLogged = false                    // guard: snapshotted THIS day
 // (E) current-day failed-break state (updated on CONFIRMED bars only, after the range is frozen).
 var int   orbBreakDir = 0         // 0 none, +1 closed above orbHi, -1 closed below orbLo
 var bool  orbFailed   = false     // a confirmed break later reversed back inside the range (trap)
+var int   orbUpRun    = 0         // (I) consecutive qualifying up-break closes (reset each day)
+var int   orbDnRun    = 0         // (I) consecutive qualifying down-break closes (reset each day)
 var box   orbCurBox = na          // handle to the current/forming day's box
 var line  orbCurHiLn = na         // handle to the current day's high line
 var line  orbCurLoLn = na         // handle to the current day's low line
@@ -3144,6 +3153,8 @@ if masterOn and orbOn
         orbRvol := rvol                            // seed opening-window rVol on the first bar (B)
         orbBreakDir := 0                           // (E) reset break state for the new day
         orbFailed   := false
+        orbUpRun    := 0                           // (I) reset break-quality run-length counters
+        orbDnRun    := 0
         orbPredLogged := false                     // (H) allow exactly one prediction snapshot this day
         // create fresh drawings for the new day and push them into the pools
         orbCurBox  := box.new(bar_index, orbHi, bar_index, orbLo, border_color = color.new(orbCol, 30), border_width = 1, bgcolor = color.new(orbCol, 90))
@@ -3198,15 +3209,29 @@ if masterOn and orbOn
     // close back inside the range marks it a failed break (trap). (G) mirror the outcome into the
     // last element of orbOutcomes so the per-day record settles to the day's final state.
     if barstate.isconfirmed and orbReady and not na(orbHi) and not na(orbLo)
+        // (I) BREAK-QUALITY GATES: a close must clear the edge by orbBrkBuf ATRs (buffer), on
+        // elevated rVol if orbBrkVol is on (volume), for orbBrkBars consecutive confirmed closes
+        // (multi-bar confirmation) before the break arms. this keeps noise pokes out of
+        // orbBreakDir, so the (G) held/failed outcomes and (H) calibration all consume a cleaner
+        // signal. the failed-break test is buffered the same way so a one-tick wiggle back inside
+        // doesn't instantly flip a real break to "failed".
+        float orbBrkAbs = orbBrkBuf * math.max(nz(atr), syminfo.mintick)
+        bool  orbVolOk  = not orbBrkVol or rvol >= rvolMult
+        bool  orbUpQual = close > orbHi + orbBrkAbs and orbVolOk
+        bool  orbDnQual = close < orbLo - orbBrkAbs and orbVolOk
         if orbBreakDir == 0
-            if close > orbHi
+            // run-length: count CONSECUTIVE qualifying closes on each side; arm once a run
+            // reaches orbBrkBars. only one side can be beyond its edge on a given close.
+            orbUpRun := orbUpQual ? orbUpRun + 1 : 0
+            orbDnRun := orbDnQual ? orbDnRun + 1 : 0
+            if orbUpRun >= orbBrkBars
                 orbBreakDir := 1
-            else if close < orbLo
+            else if orbDnRun >= orbBrkBars
                 orbBreakDir := -1
-        else if orbBreakDir == 1 and close < orbHi
-            orbFailed := true                      // armed up, closed back inside -> failed upside break
-        else if orbBreakDir == -1 and close > orbLo
-            orbFailed := true                      // armed down, closed back inside -> failed downside break
+        else if orbBreakDir == 1 and close < orbHi - orbBrkAbs
+            orbFailed := true                      // armed up, closed back inside (past buffer) -> failed upside break
+        else if orbBreakDir == -1 and close > orbLo + orbBrkAbs
+            orbFailed := true                      // armed down, closed back inside (past buffer) -> failed downside break
         // (G) write this day's running outcome into its (last) slot: -1 failed, 1 held, 0 no clean break
         if array.size(orbOutcomes) > 0
             int outVal = orbFailed ? -1 : (orbBreakDir != 0 ? 1 : 0)
@@ -3268,8 +3293,10 @@ if masterOn and orbOn
         float confRaw = math.max(0.0, math.min(1.0, netMag / 40.0)) * (regimeState == 1 ? 1.0 : regimeState == -1 ? 0.6 : 0.8) * (0.7 + 0.3 * volFactor)
         string confTxt = confRaw >= 0.66 ? "High" : confRaw >= 0.33 ? "Med" : "Low"
         string netTxt  = "net " + netArrow + " +" + str.tostring(netMag) + "   conf: " + confTxt
-        // (E) surface the failed-break state in the header: a trap takes priority over a raw break tag
-        string brokeTxt = orbFailed ? "  ⚠ failed break" : (close > orbHi ? "  ▲ broke up" : close < orbLo ? "  ▼ broke down" : "")
+        // (E)/(I) surface the break state in the header: a trap takes priority, then the QUALIFIED
+        // break direction (orbBreakDir, set only on a quality break) instead of a raw close-beyond-edge,
+        // so the header stays honest vs the new break-quality gates.
+        string brokeTxt = orbFailed ? "  ⚠ failed break" : (orbBreakDir == 1 ? "  ▲ broke up" : orbBreakDir == -1 ? "  ▼ broke down" : "")
         // (G) ON-CHART HIT-RATE TALLY: tally PAST days' recorded outcomes (exclude the last/current,
         // still-settling element, like the width-percentile does). held = 1, failed = -1, skip 0.
         // honest small-sample read, NOT a probability.
