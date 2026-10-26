@@ -394,6 +394,14 @@ orbScorePos = input.string("Middle Left", "  Breakout read position", options = 
 orbBrkBuf  = input.float(0.10, "  Break buffer (× ATR beyond edge)", minval = 0.0, maxval = 2.0, step = 0.05, tooltip = "A close must clear the opening-range edge by this many ATRs before it counts as a break — so a one-tick poke beyond the high/low no longer registers as a breakout. Raising this filters noise and lifts the realized 'breaks held' rate (at the cost of registering real breaks a touch later). 0 = legacy behaviour (any close beyond the edge). On the 5-minute chart ~0.10-0.25 cuts most fakeouts.", group = G_ORB)
 orbBrkBars = input.int(1, "  Break confirmation (consecutive closes)", minval = 1, maxval = 5, tooltip = "How many CONSECUTIVE confirmed closes beyond the buffered edge are required before a break is registered. 1 = a single qualifying close (legacy). 2+ filters flash-breaks that immediately reverse, raising the hold rate.", group = G_ORB)
 orbBrkVol  = input.bool(false, "  Require volume on the break", tooltip = "Only register a break when the breakout bar's relative volume is elevated (at/above the SFP 'Min rel-volume for grab' threshold). A break on conviction holds; a low-volume drift-through tends to fail. Off = volume is ignored for break detection.", group = G_ORB)
+// (J)/(K)/(L)/(M) toggle: fold nearby FVGs + opening-window sweeps into the breakout read as ONE
+// de-correlated beyond-edge term per side (launchpad fuel + sweep bias, discounted by an interior
+// containing gap). When off the beyond-edge term is zeroed symmetrically on BOTH sides (no
+// directional distortion). The weight set is NEVER made conditional — only the term's value is.
+orbUseFvg = input.bool(true, "  Use FVGs + sweeps in the breakout read", tooltip = "Fold nearby fair value gaps and opening-window sweeps into the breakout-likelihood: a strong same-direction gap just beyond an edge adds continuation fuel, an unfilled gap INSIDE the range dampens breakout odds (reversion magnet), and a sweep+reversal during the opening window leans the read the other way (stop-run). Heuristic, not a probability.", group = G_ORB)
+// (N) ADAPTIVE TRUST THRESHOLD: the empirical predicted-% at which the gauge's recent directional
+// hit-rate crosses this target, surfaced as its own panel row (learned from the user's own log).
+orbTrustHit = input.int(60, "  Adaptive trust: target hit-rate %", minval = 50, maxval = 90, tooltip = "The directional hit-rate the gauge must have achieved (over recent decided days at or above a predicted-% level) for that level to be called 'trustworthy'. The panel surfaces the LOWEST predicted-% that recently met this bar — your empirical trust threshold, learned from your own results. Small-sample heuristic, not a probability.", group = G_ORB)
 
 f_lineStyle() =>
     lineStyleI == "Dashed" ? line.style_dashed : lineStyleI == "Dotted" ? line.style_dotted : line.style_solid
@@ -2126,13 +2134,57 @@ f_returnLikelihood(float zTop, float zBot, float creatVol) =>
     float rl = (prox * 0.34 + clear01 * 0.30 + biasAlign * 0.22 + volF2 * 0.14) * 100.0
     int(math.max(0.0, math.min(100.0, math.round(rl))))
 
+// (J) strongest SAME-DIRECTION FVG just BEYOND an ORB edge (continuation fuel). isUp=true looks
+// for a BULLISH gap whose body sits at/above `edge` within `atrU` ATRs; isUp=false a BEARISH
+// gap at/below. Returns a 0..1 pull = (gap strength/100) scaled by proximity (at edge=1, far=0).
+// Reads the chart-TF unfilled-FVG arrays (fvgBoxes/fvgIsBull/fvgStr, defined above) as globals.
+// The 3.0-ATR window and the -0.25-ATR inside-tolerance are tuned for the 5-minute ORB: a gap
+// from just inside the edge out to 3 ATR beyond counts, decaying linearly to 0 at the far end.
+f_orbLaunchpad(float edge, bool isUp, float atrU) =>
+    float best = 0.0
+    if array.size(fvgBoxes) > 0
+        for i = 0 to array.size(fvgBoxes) - 1
+            bool gb = array.get(fvgIsBull, i)
+            if gb == isUp
+                box bx = array.get(fvgBoxes, i)
+                float gt  = box.get_top(bx)
+                float glo = box.get_bottom(bx)
+                float gmid = (gt + glo) / 2.0
+                // distance of the gap from the edge in the breakout direction (must be beyond the edge)
+                float dist = isUp ? (gmid - edge) / atrU : (edge - gmid) / atrU
+                if dist >= -0.25 and dist <= 3.0        // from just-inside-edge out to 3 ATR beyond
+                    float prox = math.max(0.0, math.min(1.0, 1.0 - dist / 3.0))
+                    float pull = (array.get(fvgStr, i) / 100.0) * prox
+                    best := math.max(best, pull)
+    best
+
+// (K) strongest unfilled FVG sitting INSIDE [lo, hi] (the opening range). An interior imbalance is
+// a reversion magnet that argues AGAINST a clean breakout. Returns 0..1 = (best interior gap
+// strength/100), weighted by how centered it is in the range (a mid-range gap contains most; a
+// gap hugging an edge contains less, floored at 0.3 so it never fully vanishes). Reads the same
+// chart-TF FVG arrays as globals. Direction-agnostic (a containing gap dampens both sides).
+f_orbInteriorFvg(float lo, float hi) =>
+    float best = 0.0
+    float rng = hi - lo
+    if rng > 0 and array.size(fvgBoxes) > 0
+        for i = 0 to array.size(fvgBoxes) - 1
+            box bx = array.get(fvgBoxes, i)
+            float gmid = (box.get_top(bx) + box.get_bottom(bx)) / 2.0
+            if gmid > lo and gmid < hi                   // midpoint inside the range
+                float centered = 1.0 - math.abs((gmid - lo) / rng - 0.5) * 2.0   // 1 at center, 0 at edges
+                float v = (array.get(fvgStr, i) / 100.0) * math.max(0.3, centered)
+                best := math.max(best, v)
+    best
+
 // (H) ORB breakout-likelihood CORE: the exact A-D per-side blend, refactored to a module-level
 // helper so BOTH the live display AND the no-look-ahead prediction snapshot call the SAME math
 // and therefore produce byte-for-byte identical [upPct, dnPct]. Depends only on already-computed
 // globals (close / atr / regimeState / dayBias / biasOn) plus the passed range + rVol + box pool;
 // it reads NO future data, so it is safe to evaluate on a confirmed historical bar. The weights
-// and expressions below are IDENTICAL to the original inline block (A-D) and must stay in sync.
-f_orbPredict(float oHi, float oLo, float oRvol, array<box> boxes) =>
+// and expressions below are IDENTICAL to the original inline block (A-D plus J/K/L/M) and must
+// stay in sync. oSweep = the formation-window SFP side (+1 bullish / -1 bearish / 0 none);
+// oUseFvg = the orbUseFvg toggle (zeroes the beyond-edge term symmetrically when off).
+f_orbPredict(float oHi, float oLo, float oRvol, int oSweep, bool oUseFvg, array<box> boxes) =>
     float atrO = math.max(nz(atr), syminfo.mintick)
     float rng  = oHi - oLo
     // PRICE ACTION: position in range (near an edge = loaded that way) + tightness (A)
@@ -2164,8 +2216,29 @@ f_orbPredict(float oHi, float oLo, float oRvol, array<box> boxes) =>
     // BIAS + REGIME
     float biasUp = biasOn and dayBias > 0 ? 1.0 : (biasOn and dayBias < 0 ? 0.0 : 0.5)
     float regimeMul = regimeState == 1 ? 1.15 : regimeState == -1 ? 0.6 : 0.9
-    float upRaw = (posIn * 0.28 + widthFactor * 0.12 + (upClrS / 100.0) * 0.18 + upMagnet * 0.12 + biasUp * 0.18 + volFactor * 0.12) * regimeMul
-    float dnRaw = ((1.0 - posIn) * 0.28 + widthFactor * 0.12 + (dnClrS / 100.0) * 0.18 + dnMagnet * 0.12 + (1.0 - biasUp) * 0.18 + volFactor * 0.12) * regimeMul
+    // (J) launchpad fuel just beyond each edge (strongest same-direction gap, proximity-scaled)
+    float upLaunch = f_orbLaunchpad(oHi, true,  atrO)
+    float dnLaunch = f_orbLaunchpad(oLo, false, atrO)
+    // (L) sweep-before-break: a bullish sweep during the window (swept a low, reversed up) favors an
+    // UP break; a bearish sweep favors a DOWN break. 0..1 nudge on the favored side only.
+    float upSweep = (oSweep == 1) ? 1.0 : 0.0
+    float dnSweep = (oSweep == -1) ? 1.0 : 0.0
+    // (M) DE-CORRELATED beyond-edge composite: J and L both point the SAME way as the (C) magnet on
+    // a real breakout, so blend launchpad + sweep into ONE 0..1 per side (launchpad weighted more)
+    // and add it as a SINGLE weighted term rather than triple-counting independent signals.
+    float upBeyond = math.min(1.0, upLaunch * 0.7 + upSweep * 0.5)
+    float dnBeyond = math.min(1.0, dnLaunch * 0.7 + dnSweep * 0.5)
+    // (K) INTERIOR-FVG CONTAINMENT acts THROUGH the beyond-edge term: an unfilled gap inside the
+    // range discounts the launchpad/sweep fuel (reversion magnet cancels continuation fuel). Bounded
+    // so the term can't go negative. oUseFvg off -> zero the term on BOTH sides (symmetric, no bias).
+    float containment = f_orbInteriorFvg(oLo, oHi)
+    float upBeyondAdj = oUseFvg ? upBeyond * (1.0 - 0.5 * containment) : 0.0
+    float dnBeyondAdj = oUseFvg ? dnBeyond * (1.0 - 0.5 * containment) : 0.0
+    // compose per-side raw scores (0..1), then scale to 100. per-side weights sum to 1.00:
+    // posIn 0.24 + widthFactor 0.12 + pathClear 0.16 + magnet 0.10 + bias 0.14 + volFactor 0.12
+    // + beyondAdj (J/K/L/M) 0.12. widthFactor/volFactor are symmetric; the rest are side-specific.
+    float upRaw = (posIn * 0.24 + widthFactor * 0.12 + (upClrS / 100.0) * 0.16 + upMagnet * 0.10 + biasUp * 0.14 + volFactor * 0.12 + upBeyondAdj * 0.12) * regimeMul
+    float dnRaw = ((1.0 - posIn) * 0.24 + widthFactor * 0.12 + (dnClrS / 100.0) * 0.16 + dnMagnet * 0.10 + (1.0 - biasUp) * 0.14 + volFactor * 0.12 + dnBeyondAdj * 0.12) * regimeMul
     int upPct = int(math.max(0.0, math.min(100.0, math.round(upRaw * 100.0))))
     int dnPct = int(math.max(0.0, math.min(100.0, math.round(dnRaw * 100.0))))
     [upPct, dnPct]
@@ -3136,6 +3209,7 @@ var line  orbCurHiLn = na         // handle to the current day's high line
 var line  orbCurLoLn = na         // handle to the current day's low line
 var label orbLbl   = na
 var float orbRvol  = na           // max relative volume seen during the opening window (B)
+var int   orbWinSweep = 0         // (L) SFP side seen during the opening window: +1 bullish (sfpLong) / -1 bearish (sfpShort) / 0 none
 bool orbInWin  = not na(time(timeframe.period, orbSession, orbTZ))
 bool orbWinNew = orbInWin and not orbInWin[1]      // first bar of the opening window (new day)
 if masterOn and orbOn
@@ -3151,6 +3225,7 @@ if masterOn and orbOn
         orbStartB := bar_index
         orbReady := false
         orbRvol := rvol                            // seed opening-window rVol on the first bar (B)
+        orbWinSweep := sfpLong ? 1 : sfpShort ? -1 : 0   // (L) seed the formation-window sweep side
         orbBreakDir := 0                           // (E) reset break state for the new day
         orbFailed   := false
         orbUpRun    := 0                           // (I) reset break-quality run-length counters
@@ -3174,6 +3249,7 @@ if masterOn and orbOn
         orbHi := math.max(nz(orbHi, high), high)
         orbLo := math.min(nz(orbLo, low), low)
         orbRvol := math.max(nz(orbRvol, rvol), rvol)   // track peak participation in the window (B)
+        orbWinSweep := sfpLong ? 1 : sfpShort ? -1 : orbWinSweep   // (L) latch most recent sweep seen in the window
     else if orbInWin[1] and not orbInWin
         orbReady := true                           // window just closed -> freeze
     // draw / update ONLY the CURRENT day's objects once we have a range; past days stay frozen
@@ -3192,7 +3268,7 @@ if masterOn and orbOn
     // window has closed). The orbPredLogged guard ensures we never overwrite it, so the graded
     // number is exactly what the gauge showed at freeze and never peeks at the day's outcome.
     if barstate.isconfirmed and orbReady and not orbPredLogged and not na(orbHi) and not na(orbLo) and orbHi > orbLo
-        [pUp, pDn] = f_orbPredict(orbHi, orbLo, orbRvol, orbBoxes)
+        [pUp, pDn] = f_orbPredict(orbHi, orbLo, orbRvol, orbWinSweep, orbUseFvg, orbBoxes)
         int predSide = pUp >= pDn ? 1 : -1
         int predPct  = math.max(pUp, pDn)
         array.push(orbPredSide, predSide)
@@ -3279,11 +3355,29 @@ if masterOn and orbOn
         // BIAS + REGIME: with-bias breaks are higher-prob; chop lowers breakout odds, trend raises
         float biasUp = biasOn and dayBias > 0 ? 1.0 : (biasOn and dayBias < 0 ? 0.0 : 0.5)
         float regimeMul = regimeState == 1 ? 1.15 : regimeState == -1 ? 0.6 : 0.9
+        // (J) launchpad fuel just beyond each edge (strongest same-direction gap, proximity-scaled)
+        float upLaunch = f_orbLaunchpad(orbHi, true,  atrO)
+        float dnLaunch = f_orbLaunchpad(orbLo, false, atrO)
+        // (L) sweep-before-break: a bullish sweep during the window (swept a low, reversed up) favors an
+        // UP break; a bearish sweep favors a DOWN break. 0..1 nudge on the favored side only.
+        float upSweep = (orbWinSweep == 1) ? 1.0 : 0.0
+        float dnSweep = (orbWinSweep == -1) ? 1.0 : 0.0
+        // (M) DE-CORRELATED beyond-edge composite: J and L both point the SAME way as the (C) magnet on
+        // a real breakout, so blend launchpad + sweep into ONE 0..1 per side (launchpad weighted more)
+        // and add it as a SINGLE weighted term rather than triple-counting independent signals.
+        float upBeyond = math.min(1.0, upLaunch * 0.7 + upSweep * 0.5)
+        float dnBeyond = math.min(1.0, dnLaunch * 0.7 + dnSweep * 0.5)
+        // (K) INTERIOR-FVG CONTAINMENT acts THROUGH the beyond-edge term: an unfilled gap inside the
+        // range discounts the launchpad/sweep fuel (reversion magnet cancels continuation fuel). Bounded
+        // so the term can't go negative. orbUseFvg off -> zero the term on BOTH sides (symmetric, no bias).
+        float containment = f_orbInteriorFvg(orbLo, orbHi)
+        float upBeyondAdj = orbUseFvg ? upBeyond * (1.0 - 0.5 * containment) : 0.0
+        float dnBeyondAdj = orbUseFvg ? dnBeyond * (1.0 - 0.5 * containment) : 0.0
         // compose per-side raw scores (0..1), then scale to 100. per-side weights sum to 1.00:
-        // posIn 0.28 + widthFactor 0.12 + pathClear 0.18 + magnet 0.12 + bias 0.18 + volFactor 0.12.
-        // widthFactor and volFactor are symmetric (same on both sides); the rest are side-specific.
-        float upRaw = (posIn * 0.28 + widthFactor * 0.12 + (upClrS / 100.0) * 0.18 + upMagnet * 0.12 + biasUp * 0.18 + volFactor * 0.12) * regimeMul
-        float dnRaw = ((1.0 - posIn) * 0.28 + widthFactor * 0.12 + (dnClrS / 100.0) * 0.18 + dnMagnet * 0.12 + (1.0 - biasUp) * 0.18 + volFactor * 0.12) * regimeMul
+        // posIn 0.24 + widthFactor 0.12 + pathClear 0.16 + magnet 0.10 + bias 0.14 + volFactor 0.12
+        // + beyondAdj (J/K/L/M) 0.12. widthFactor/volFactor are symmetric; the rest are side-specific.
+        float upRaw = (posIn * 0.24 + widthFactor * 0.12 + (upClrS / 100.0) * 0.16 + upMagnet * 0.10 + biasUp * 0.14 + volFactor * 0.12 + upBeyondAdj * 0.12) * regimeMul
+        float dnRaw = ((1.0 - posIn) * 0.24 + widthFactor * 0.12 + (dnClrS / 100.0) * 0.16 + dnMagnet * 0.10 + (1.0 - biasUp) * 0.14 + volFactor * 0.12 + dnBeyondAdj * 0.12) * regimeMul
         int upPct = int(math.max(0.0, math.min(100.0, math.round(upRaw * 100.0))))
         int dnPct = int(math.max(0.0, math.min(100.0, math.round(dnRaw * 100.0))))
         // (D) NET CONVICTION + confidence (heuristic read, not a probability): leading side + spread,
@@ -3350,16 +3444,43 @@ if masterOn and orbOn
         int loRate  = loDec > 0 ? int(math.round(100.0 * loCorrect / loDec)) : 0
         string hitTxt = decidedH > 0 ? "gauge right " + str.tostring(hitRate) + "% (" + str.tostring(correctH) + "/" + str.tostring(decidedH) + ")" : "gauge accuracy: calibrating…"
         string bucketTxt = "≥65%: " + (hiDec > 0 ? str.tostring(hiRate) + "% (" + str.tostring(hiCorrect) + "/" + str.tostring(hiDec) + ")" : "—") + "  ·  <65%: " + (loDec > 0 ? str.tostring(loRate) + "% (" + str.tostring(loCorrect) + "/" + str.tostring(loDec) + ")" : "—")
+        // (N) ADAPTIVE TRUST THRESHOLD: scan candidate predicted-% levels T (55..80 step 5) and, over
+        // PAST decided days (realized != 0) whose predicted % was >= T, measure the directional
+        // hit-rate. Surface the SMALLEST T that recently met the target hit-rate (orbTrustHit) over a
+        // minimum sample (TRUST_MIN) — the user's empirical "trust this reading" level, learned from
+        // their own log. Same PAST-only loop bounds the (H) calibration uses. Small-sample read, NOT a
+        // probability; shows "need more data" when nothing qualifies.
+        int TRUST_MIN = 4                                          // minimum decided days at/above T to trust the level
+        int trustT    = na
+        int trustHit  = 0
+        int trustN    = 0
+        if nCal >= 2
+            for T = 55 to 80 by 5
+                int tn = 0
+                int tc = 0
+                for i = 0 to nCal - 2                               // skip last = current forming day
+                    int rz = array.get(orbRealized, i)
+                    if rz != 0 and array.get(orbPredPct, i) >= T
+                        tn += 1
+                        if rz == array.get(orbPredSide, i)
+                            tc += 1
+                int tr = tn > 0 ? int(math.round(100.0 * tc / tn)) : 0
+                if na(trustT) and tn >= TRUST_MIN and tr >= orbTrustHit
+                    trustT   := T
+                    trustHit := tr
+                    trustN   := tn
+        string trustTxt = na(trustT) ? "adaptive trust: need more data" : "trust ≥" + str.tostring(trustT) + "% (" + str.tostring(trustHit) + "% · " + str.tostring(trustN) + "d)"
         color orbAccent = upPct >= dnPct ? themeUpSolid : themeDnSolid
-        var table orbTbl = table.new(position.middle_left, 1, 6, border_width = 1)
+        var table orbTbl = table.new(position.middle_left, 1, 7, border_width = 1)
         table.set_position(orbTbl, f_tablePos(orbScorePos))
-        table.clear(orbTbl, 0, 0, 0, 5)
+        table.clear(orbTbl, 0, 0, 0, 6)
         table.cell(orbTbl, 0, 0, "📐 ORB breakout" + brokeTxt, text_color = orbAccent, bgcolor = themePanelBg, text_size = size.small)
         table.cell(orbTbl, 0, 1, "▲ " + str.tostring(upPct) + "%   ▼ " + str.tostring(dnPct) + "%", text_color = themeTxt, bgcolor = themeRowBg, text_size = size.normal)
         table.cell(orbTbl, 0, 2, netTxt, text_color = orbAccent, bgcolor = themeRowBg, text_size = size.small)
         table.cell(orbTbl, 0, 3, tallyTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)   // (G) calibration read
         table.cell(orbTbl, 0, 4, hitTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)     // (H) directional hit-rate
         table.cell(orbTbl, 0, 5, bucketTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)  // (H) bucketed calibration
+        table.cell(orbTbl, 0, 6, trustTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)   // (N) adaptive trust threshold
         table.set_frame_color(orbTbl, color.new(orbAccent, 35))
         table.set_frame_width(orbTbl, themeBW)
 // wipe ALL ORB drawings (every pooled day) when off
