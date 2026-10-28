@@ -399,6 +399,7 @@ orbBrkVol  = input.bool(false, "  Require volume on the break", tooltip = "Only 
 // containing gap). When off the beyond-edge term is zeroed symmetrically on BOTH sides (no
 // directional distortion). The weight set is NEVER made conditional — only the term's value is.
 orbUseFvg = input.bool(true, "  Use FVGs + sweeps in the breakout read", tooltip = "Fold nearby fair value gaps and opening-window sweeps into the breakout-likelihood: a strong same-direction gap just beyond an edge adds continuation fuel, an unfilled gap INSIDE the range dampens breakout odds (reversion magnet), and a sweep+reversal during the opening window leans the read the other way (stop-run). Heuristic, not a probability.", group = G_ORB)
+orbWallW = input.float(0.5, "  Opposing-wall dampening (0-1)", minval = 0.0, maxval = 1.0, step = 0.05, tooltip = "How much a strong OPPOSING structure sitting just beyond an edge — a bearish order block/breaker or bearish FVG above the high, or a bullish one below the low — cuts that side's breakout score. This is the reversal 'wall' that traps high-conviction ORB breaks. 0.5 = a full-strength wall right at the edge halves that side's conviction; 0 = ignore walls (legacy). Gated by the 'Use FVGs + sweeps' toggle. Heuristic, not a probability.", group = G_ORB)
 // (N) ADAPTIVE TRUST THRESHOLD: the empirical predicted-% at which the gauge's recent directional
 // hit-rate crosses this target, surfaced as its own panel row (learned from the user's own log).
 orbTrustHit = input.int(60, "  Adaptive trust: target hit-rate %", minval = 50, maxval = 90, tooltip = "The directional hit-rate the gauge must have achieved (over recent decided days at or above a predicted-% level) for that level to be called 'trustworthy'. The panel surfaces the LOWEST predicted-% that recently met this bar — your empirical trust threshold, learned from your own results. Small-sample heuristic, not a probability.", group = G_ORB)
@@ -2077,14 +2078,18 @@ f_pathClear(float fromP, float toP, float atrU) =>
     float pad = atrU * 0.05
     int obstacles = 0            // count shown in the banner
     float severity = 0.0         // strength-weighted obstacle load that actually cuts clearance
-    // order blocks whose zone falls between price and target (full-weight structural walls)
+    // order blocks whose zone falls between price and target — a STRONG block walls the path harder
+    // than a trivial one, so each block's severity scales with its strength score (0.2..1.0), the
+    // same strength-weighting the FVG loop below uses (previously OBs added a flat 1.0 severity).
     if array.size(obTop) > 0
         for oi = 0 to array.size(obTop) - 1
             float ot = array.get(obTop, oi)
             float ob = array.get(obBot, oi)
             if ot >= lo - pad and ob <= hi + pad and not (ot >= hi and ob >= hi) and not (ot <= lo and ob <= lo)
+                float oStrV = oi < array.size(obStr) ? array.get(obStr, oi) : na
+                float ow = na(oStrV) ? 1.0 : (0.2 + 0.8 * (oStrV / 100.0))
                 obstacles := obstacles + 1
-                severity  := severity + 1.0
+                severity  := severity + ow
     // fair value gaps between price and target — a STRONG gap walls the path harder than a
     // trivial one, so each gap's severity scales with its strength score (0.2..1.0).
     if array.size(fvgBoxes) > 0
@@ -2179,6 +2184,43 @@ f_orbInteriorFvg(float lo, float hi) =>
                 best := math.max(best, v)
     best
 
+// (O) strongest OPPOSING structure sitting JUST BEYOND an edge — a reversal WALL that fades a
+// breakout. For an UP break (isUp=true) an opposing wall is a BEARISH/supply order block (or a
+// BEARISH fair value gap) at/above `edge`; for a DOWN break, a BULLISH/demand block or BULLISH gap
+// at/below. Returns 0..1 = (wall strength/100) scaled by proximity (at the edge = full, >=3 ATR
+// away = 0). Mirrors f_orbLaunchpad but for OPPOSING structure. Reads OB + FVG arrays as globals.
+// The 3.0-ATR window and the -0.25-ATR inside-tolerance match f_orbLaunchpad exactly.
+f_orbWall(float edge, bool isUp, float atrU) =>
+    float best = 0.0
+    // opposing ORDER BLOCKS / breakers (bearish block walls an up-break; bullish block walls a down-break)
+    if array.size(obTop) > 0
+        for i = 0 to array.size(obTop) - 1
+            bool bull = array.get(obBull, i)
+            if bull != isUp                              // opposing polarity to the breakout
+                float ot = array.get(obTop, i)
+                float ob = array.get(obBot, i)
+                float omid = (ot + ob) / 2.0
+                float dist = isUp ? (omid - edge) / atrU : (edge - omid) / atrU
+                if dist >= -0.25 and dist <= 3.0         // from just-inside-edge out to 3 ATR beyond
+                    float prox = math.max(0.0, math.min(1.0, 1.0 - dist / 3.0))
+                    float strv = i < array.size(obStr) ? array.get(obStr, i) : na
+                    float pull = (na(strv) ? 0.5 : strv / 100.0) * prox
+                    best := math.max(best, pull)
+    // opposing FAIR VALUE GAPS (a bearish gap just above walls an up-break; bullish gap below a down-break)
+    if array.size(fvgBoxes) > 0
+        for j = 0 to array.size(fvgBoxes) - 1
+            bool gb = array.get(fvgIsBull, j)
+            if gb != isUp                                // opposing polarity
+                box bx = array.get(fvgBoxes, j)
+                float gmid = (box.get_top(bx) + box.get_bottom(bx)) / 2.0
+                float dist = isUp ? (gmid - edge) / atrU : (edge - gmid) / atrU
+                if dist >= -0.25 and dist <= 3.0
+                    float prox = math.max(0.0, math.min(1.0, 1.0 - dist / 3.0))
+                    float strv = j < array.size(fvgStr) ? array.get(fvgStr, j) : na
+                    float pull = (na(strv) ? 0.5 : strv / 100.0) * prox
+                    best := math.max(best, pull)
+    best
+
 // (H) ORB breakout-likelihood CORE: the exact A-D per-side blend, refactored to a module-level
 // helper so BOTH the live display AND the no-look-ahead prediction snapshot call the SAME math
 // and therefore produce byte-for-byte identical [upPct, dnPct]. Depends only on already-computed
@@ -2237,11 +2279,21 @@ f_orbPredict(float oHi, float oLo, float oRvol, int oSweep, bool oUseFvg, array<
     float containment = f_orbInteriorFvg(oLo, oHi)
     float upBeyondAdj = oUseFvg ? upBeyond * (1.0 - 0.5 * containment) : 0.0
     float dnBeyondAdj = oUseFvg ? dnBeyond * (1.0 - 0.5 * containment) : 0.0
+    // (O) BEYOND-EDGE WALL: strong OPPOSING structure just outside an edge fades a breakout that way
+    // (the trap that burns high-conviction ORB breaks). A multiplicative dampener on that side's
+    // score; gated by the same orbUseFvg toggle as the FVG terms. wallMul ranges 1.0 (no wall) down
+    // to (1 - orbWallW) at a full-strength wall right at the edge. Applied to BOTH sides independently.
+    float upWall = oUseFvg ? f_orbWall(oHi, true,  atrO) : 0.0
+    float dnWall = oUseFvg ? f_orbWall(oLo, false, atrO) : 0.0
+    float upWallMul = 1.0 - orbWallW * upWall
+    float dnWallMul = 1.0 - orbWallW * dnWall
     // compose per-side raw scores (0..1), then scale to 100. per-side weights sum to 1.00:
     // posIn 0.24 + widthFactor 0.12 + pathClear 0.16 + magnet 0.10 + bias 0.14 + volFactor 0.12
     // + beyondAdj (J/K/L/M) 0.12. widthFactor/volFactor are symmetric; the rest are side-specific.
-    float upRaw = (posIn * 0.24 + widthFactor * 0.12 + (upClrS / 100.0) * 0.16 + upMagnet * 0.10 + biasUp * 0.14 + volFactor * 0.12 + upBeyondAdj * 0.12) * regimeMul
-    float dnRaw = ((1.0 - posIn) * 0.24 + widthFactor * 0.12 + (dnClrS / 100.0) * 0.16 + dnMagnet * 0.10 + (1.0 - biasUp) * 0.14 + volFactor * 0.12 + dnBeyondAdj * 0.12) * regimeMul
+    // (O) wall is a separate MULTIPLIER (like regimeMul), NOT a weighted term, so the weight budget
+    // stays at 1.00; a strong opposing wall at the edge scales that side down by up to orbWallW.
+    float upRaw = (posIn * 0.24 + widthFactor * 0.12 + (upClrS / 100.0) * 0.16 + upMagnet * 0.10 + biasUp * 0.14 + volFactor * 0.12 + upBeyondAdj * 0.12) * regimeMul * upWallMul
+    float dnRaw = ((1.0 - posIn) * 0.24 + widthFactor * 0.12 + (dnClrS / 100.0) * 0.16 + dnMagnet * 0.10 + (1.0 - biasUp) * 0.14 + volFactor * 0.12 + dnBeyondAdj * 0.12) * regimeMul * dnWallMul
     int upPct = int(math.max(0.0, math.min(100.0, math.round(upRaw * 100.0))))
     int dnPct = int(math.max(0.0, math.min(100.0, math.round(dnRaw * 100.0))))
     [upPct, dnPct]
@@ -3380,11 +3432,21 @@ if masterOn and orbOn
         float containment = f_orbInteriorFvg(orbLo, orbHi)
         float upBeyondAdj = orbUseFvg ? upBeyond * (1.0 - 0.5 * containment) : 0.0
         float dnBeyondAdj = orbUseFvg ? dnBeyond * (1.0 - 0.5 * containment) : 0.0
+        // (O) BEYOND-EDGE WALL: strong OPPOSING structure just outside an edge fades a breakout that way
+        // (the trap that burns high-conviction ORB breaks). A multiplicative dampener on that side's
+        // score; gated by the same orbUseFvg toggle as the FVG terms. wallMul ranges 1.0 (no wall) down
+        // to (1 - orbWallW) at a full-strength wall right at the edge. Applied to BOTH sides independently.
+        float upWall = orbUseFvg ? f_orbWall(orbHi, true,  atrO) : 0.0
+        float dnWall = orbUseFvg ? f_orbWall(orbLo, false, atrO) : 0.0
+        float upWallMul = 1.0 - orbWallW * upWall
+        float dnWallMul = 1.0 - orbWallW * dnWall
         // compose per-side raw scores (0..1), then scale to 100. per-side weights sum to 1.00:
         // posIn 0.24 + widthFactor 0.12 + pathClear 0.16 + magnet 0.10 + bias 0.14 + volFactor 0.12
         // + beyondAdj (J/K/L/M) 0.12. widthFactor/volFactor are symmetric; the rest are side-specific.
-        float upRaw = (posIn * 0.24 + widthFactor * 0.12 + (upClrS / 100.0) * 0.16 + upMagnet * 0.10 + biasUp * 0.14 + volFactor * 0.12 + upBeyondAdj * 0.12) * regimeMul
-        float dnRaw = ((1.0 - posIn) * 0.24 + widthFactor * 0.12 + (dnClrS / 100.0) * 0.16 + dnMagnet * 0.10 + (1.0 - biasUp) * 0.14 + volFactor * 0.12 + dnBeyondAdj * 0.12) * regimeMul
+        // (O) wall is a separate MULTIPLIER (like regimeMul), NOT a weighted term, so the weight budget
+        // stays at 1.00; a strong opposing wall at the edge scales that side down by up to orbWallW.
+        float upRaw = (posIn * 0.24 + widthFactor * 0.12 + (upClrS / 100.0) * 0.16 + upMagnet * 0.10 + biasUp * 0.14 + volFactor * 0.12 + upBeyondAdj * 0.12) * regimeMul * upWallMul
+        float dnRaw = ((1.0 - posIn) * 0.24 + widthFactor * 0.12 + (dnClrS / 100.0) * 0.16 + dnMagnet * 0.10 + (1.0 - biasUp) * 0.14 + volFactor * 0.12 + dnBeyondAdj * 0.12) * regimeMul * dnWallMul
         int upPct = int(math.max(0.0, math.min(100.0, math.round(upRaw * 100.0))))
         int dnPct = int(math.max(0.0, math.min(100.0, math.round(dnRaw * 100.0))))
         // (D) NET CONVICTION + confidence (heuristic read, not a probability): leading side + spread,
