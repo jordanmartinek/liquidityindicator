@@ -59,6 +59,15 @@ nySess    = input.session("1300-2100", "  New York time", group = G_SESS)
 sessResetDaily = input.bool(true, "Reset session H/L each new day", tooltip = "At the start of a new trading day, clear the previous day's session highs/lows so stale levels don't linger.", group = G_SESS)
 sessRemoveSwept = input.bool(true, "Remove session level once swept", tooltip = "If price trades through a session high/low, drop it (the liquidity has been taken).", group = G_SESS)
 sessReclassify = input.bool(true, "Reclassify unswept session H/L as swings", tooltip = "A session high/low that survives into the next day (never swept) gets relabeled e.g. 'Asia H (swing)'.", group = G_SESS)
+// --- overnight (Asia/London) session H/L as plain labelled horizontal lines ---
+// Additive visual overlay only: reuses the session highs/lows the indicator already tracks
+// (asiaH/asiaL/londH/londL) and draws each as one simple labelled line. Does not change how
+// sessions are computed or how the levels/clusters/DOL consume them.
+showOvernightLines = input.bool(false, "Draw Asia/London session H/L lines", tooltip = "Overlay the ASIAN and LONDON session highs and lows as simple labelled horizontal lines drawn directly on the chart — a plain visual of the overnight ranges (these levels are already used by the clusters/DOL; this just shows them as lines). Lines use the session high/low the indicator already tracks and disappear when that level is swept/cleared.", group = G_SESS)
+ovAsiaCol = input.color(color.new(#ffa726, 0), "  Asian session line color", group = G_SESS)
+ovLondCol = input.color(color.new(#29b6f6, 0), "  London session line color", group = G_SESS)
+ovLineExtend = input.bool(true, "  Extend lines to the right", tooltip = "Extend each session high/low line to the right edge so it's easy to see where price sits relative to the overnight range. Off = the line spans only from where the level formed to the current bar.", group = G_SESS)
+ovShowLabels = input.bool(true, "  Label the lines (Asia H/L · London H/L)", group = G_SESS)
 
 // -----------------------------------------------------------------------------
 // INPUTS — STRUCTURE
@@ -1171,6 +1180,114 @@ b_lh  := (na(b_lh)  or londH != londH[1]) ? bar_index : b_lh
 b_ll  := (na(b_ll)  or londL != londL[1]) ? bar_index : b_ll
 b_nh  := (na(b_nh)  or nyH != nyH[1]) ? bar_index : b_nh
 b_nl  := (na(b_nl)  or nyL != nyL[1]) ? bar_index : b_nl
+
+// -----------------------------------------------------------------------------
+// OVERNIGHT SESSION H/L LINES (Asia + London) — plain labelled horizontal overlay
+// -----------------------------------------------------------------------------
+// Additive visual only: draw each of the four session extremes the indicator already tracks
+// (asiaH/asiaL/londH/londL) as a simple labelled line. Each value goes na when there is no
+// current level / when it has been swept (f_sessHL + sessRemoveSwept), so each line is drawn
+// only while its value is live and is deleted the moment the value is na or the feature is off.
+// Four persistent line + four persistent label handles, created once and reused (never
+// re-created every bar). Pine has no usable way to mutate caller `var` handles through a
+// function, so the four per-line bodies are written inline (short repeated blocks), mirroring
+// the ATR-projection / ORB line pattern elsewhere in the file.
+var line  ovAsiaHiLn = na
+var line  ovAsiaLoLn = na
+var line  ovLondHiLn = na
+var line  ovLondLoLn = na
+var label ovAsiaHiLb = na
+var label ovAsiaLoLb = na
+var label ovLondHiLb = na
+var label ovLondLoLb = na
+
+// Asia High
+if masterOn and showOvernightLines and showAsia and not na(asiaH)
+    int ovXL = na(b_ah) ? bar_index - 50 : b_ah
+    int ovXR = ovLineExtend ? bar_index + 5 : bar_index
+    if na(ovAsiaHiLn)
+        ovAsiaHiLn := line.new(ovXL, asiaH, ovXR, asiaH, xloc = xloc.bar_index, color = ovAsiaCol, width = lineWidth, style = f_lineStyle())
+        ovAsiaHiLb := label.new(ovXR, asiaH, "Asia H", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(ovAsiaCol, 20), textcolor = color.white, size = size.small)
+    line.set_xy1(ovAsiaHiLn, ovXL, asiaH)
+    line.set_xy2(ovAsiaHiLn, ovXR, asiaH)
+    line.set_color(ovAsiaHiLn, ovAsiaCol)
+    line.set_width(ovAsiaHiLn, lineWidth)
+    line.set_style(ovAsiaHiLn, f_lineStyle())
+    label.set_xy(ovAsiaHiLb, ovXR, asiaH)
+    label.set_text(ovAsiaHiLb, ovShowLabels ? "Asia H" : "")
+    label.set_color(ovAsiaHiLb, ovShowLabels ? color.new(ovAsiaCol, 20) : color.new(ovAsiaCol, 100))
+    label.set_textcolor(ovAsiaHiLb, ovShowLabels ? color.white : color.new(color.white, 100))
+else if not na(ovAsiaHiLn)
+    line.delete(ovAsiaHiLn)
+    ovAsiaHiLn := na
+    label.delete(ovAsiaHiLb)
+    ovAsiaHiLb := na
+
+// Asia Low
+if masterOn and showOvernightLines and showAsia and not na(asiaL)
+    int ovXL = na(b_al) ? bar_index - 50 : b_al
+    int ovXR = ovLineExtend ? bar_index + 5 : bar_index
+    if na(ovAsiaLoLn)
+        ovAsiaLoLn := line.new(ovXL, asiaL, ovXR, asiaL, xloc = xloc.bar_index, color = ovAsiaCol, width = lineWidth, style = f_lineStyle())
+        ovAsiaLoLb := label.new(ovXR, asiaL, "Asia L", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(ovAsiaCol, 20), textcolor = color.white, size = size.small)
+    line.set_xy1(ovAsiaLoLn, ovXL, asiaL)
+    line.set_xy2(ovAsiaLoLn, ovXR, asiaL)
+    line.set_color(ovAsiaLoLn, ovAsiaCol)
+    line.set_width(ovAsiaLoLn, lineWidth)
+    line.set_style(ovAsiaLoLn, f_lineStyle())
+    label.set_xy(ovAsiaLoLb, ovXR, asiaL)
+    label.set_text(ovAsiaLoLb, ovShowLabels ? "Asia L" : "")
+    label.set_color(ovAsiaLoLb, ovShowLabels ? color.new(ovAsiaCol, 20) : color.new(ovAsiaCol, 100))
+    label.set_textcolor(ovAsiaLoLb, ovShowLabels ? color.white : color.new(color.white, 100))
+else if not na(ovAsiaLoLn)
+    line.delete(ovAsiaLoLn)
+    ovAsiaLoLn := na
+    label.delete(ovAsiaLoLb)
+    ovAsiaLoLb := na
+
+// London High
+if masterOn and showOvernightLines and showLond and not na(londH)
+    int ovXL = na(b_lh) ? bar_index - 50 : b_lh
+    int ovXR = ovLineExtend ? bar_index + 5 : bar_index
+    if na(ovLondHiLn)
+        ovLondHiLn := line.new(ovXL, londH, ovXR, londH, xloc = xloc.bar_index, color = ovLondCol, width = lineWidth, style = f_lineStyle())
+        ovLondHiLb := label.new(ovXR, londH, "London H", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(ovLondCol, 20), textcolor = color.white, size = size.small)
+    line.set_xy1(ovLondHiLn, ovXL, londH)
+    line.set_xy2(ovLondHiLn, ovXR, londH)
+    line.set_color(ovLondHiLn, ovLondCol)
+    line.set_width(ovLondHiLn, lineWidth)
+    line.set_style(ovLondHiLn, f_lineStyle())
+    label.set_xy(ovLondHiLb, ovXR, londH)
+    label.set_text(ovLondHiLb, ovShowLabels ? "London H" : "")
+    label.set_color(ovLondHiLb, ovShowLabels ? color.new(ovLondCol, 20) : color.new(ovLondCol, 100))
+    label.set_textcolor(ovLondHiLb, ovShowLabels ? color.white : color.new(color.white, 100))
+else if not na(ovLondHiLn)
+    line.delete(ovLondHiLn)
+    ovLondHiLn := na
+    label.delete(ovLondHiLb)
+    ovLondHiLb := na
+
+// London Low
+if masterOn and showOvernightLines and showLond and not na(londL)
+    int ovXL = na(b_ll) ? bar_index - 50 : b_ll
+    int ovXR = ovLineExtend ? bar_index + 5 : bar_index
+    if na(ovLondLoLn)
+        ovLondLoLn := line.new(ovXL, londL, ovXR, londL, xloc = xloc.bar_index, color = ovLondCol, width = lineWidth, style = f_lineStyle())
+        ovLondLoLb := label.new(ovXR, londL, "London L", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(ovLondCol, 20), textcolor = color.white, size = size.small)
+    line.set_xy1(ovLondLoLn, ovXL, londL)
+    line.set_xy2(ovLondLoLn, ovXR, londL)
+    line.set_color(ovLondLoLn, ovLondCol)
+    line.set_width(ovLondLoLn, lineWidth)
+    line.set_style(ovLondLoLn, f_lineStyle())
+    label.set_xy(ovLondLoLb, ovXR, londL)
+    label.set_text(ovLondLoLb, ovShowLabels ? "London L" : "")
+    label.set_color(ovLondLoLb, ovShowLabels ? color.new(ovLondCol, 20) : color.new(ovLondCol, 100))
+    label.set_textcolor(ovLondLoLb, ovShowLabels ? color.white : color.new(color.white, 100))
+else if not na(ovLondLoLn)
+    line.delete(ovLondLoLn)
+    ovLondLoLn := na
+    label.delete(ovLondLoLb)
+    ovLondLoLb := na
 
 // -----------------------------------------------------------------------------
 // SWEEP MASKING for previous-period levels
