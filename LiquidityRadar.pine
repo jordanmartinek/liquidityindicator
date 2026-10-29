@@ -1186,12 +1186,17 @@ b_nl  := (na(b_nl)  or nyL != nyL[1]) ? bar_index : b_nl
 // -----------------------------------------------------------------------------
 // Additive visual only: draw each of the four session extremes the indicator already tracks
 // (asiaH/asiaL/londH/londL) as a simple labelled line. Each value goes na when there is no
-// current level / when it has been swept (f_sessHL + sessRemoveSwept), so each line is drawn
-// only while its value is live and is deleted the moment the value is na or the feature is off.
-// Four persistent line + four persistent label handles, created once and reused (never
-// re-created every bar). Pine has no usable way to mutate caller `var` handles through a
-// function, so the four per-line bodies are written inline (short repeated blocks), mirroring
-// the ATR-projection / ORB line pattern elsewhere in the file.
+// current level / when it has been swept (f_sessHL + sessRemoveSwept). Instead of deleting a
+// line the instant its value goes na, each line now CAPTURES the swept price and keeps drawing
+// it in a DOTTED style (so the taken liquidity level stays visible and marked). All four lines
+// (live or swept/dotted) are then cleared together at the END of the NY session (the falling
+// edge of NY session membership), resetting their held state for the next day.
+// Because the source series go na on sweep, the overlay cannot rely on them to carry the price
+// past the sweep instant; so each line gets PERSISTENT per-line state (held price + swept flag)
+// updated every bar. Four persistent line + four persistent label handles, created once and
+// reused (never re-created every bar). Pine has no usable way to mutate caller `var` handles
+// through a function, so the four per-line bodies are written inline (short repeated blocks),
+// mirroring the ATR-projection / ORB line pattern elsewhere in the file.
 var line  ovAsiaHiLn = na
 var line  ovAsiaLoLn = na
 var line  ovLondHiLn = na
@@ -1200,94 +1205,174 @@ var label ovAsiaHiLb = na
 var label ovAsiaLoLb = na
 var label ovLondHiLb = na
 var label ovLondLoLb = na
+// Per-line held price (last live value, retained after sweep) + swept flag (true once taken).
+var float ovAsiaHiPx = na
+var bool  ovAsiaHiSwept = false
+var float ovAsiaLoPx = na
+var bool  ovAsiaLoSwept = false
+var float ovLondHiPx = na
+var bool  ovLondHiSwept = false
+var float ovLondLoPx = na
+var bool  ovLondLoSwept = false
+
+// NY session end = falling edge of NY session membership. nySess is NOT drawn as a line here;
+// it is only used to detect the moment at which all four overnight lines should be cleared.
+bool ovNyInSess  = f_inSession(nySess)
+bool ovNySessEnd = ovNyInSess[1] and not ovNyInSess
 
 // Asia High
-if masterOn and showOvernightLines and showAsia and not na(asiaH)
-    int ovXL = na(b_ah) ? bar_index - 50 : b_ah
-    int ovXR = ovLineExtend ? bar_index + 5 : bar_index
-    if na(ovAsiaHiLn)
-        ovAsiaHiLn := line.new(ovXL, asiaH, ovXR, asiaH, xloc = xloc.bar_index, color = ovAsiaCol, width = lineWidth, style = f_lineStyle())
-        ovAsiaHiLb := label.new(ovXR, asiaH, "Asia H", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(ovAsiaCol, 20), textcolor = color.white, size = size.small)
-    line.set_xy1(ovAsiaHiLn, ovXL, asiaH)
-    line.set_xy2(ovAsiaHiLn, ovXR, asiaH)
-    line.set_color(ovAsiaHiLn, ovAsiaCol)
-    line.set_width(ovAsiaHiLn, lineWidth)
-    line.set_style(ovAsiaHiLn, f_lineStyle())
-    label.set_xy(ovAsiaHiLb, ovXR, asiaH)
-    label.set_text(ovAsiaHiLb, ovShowLabels ? "Asia H" : "")
-    label.set_color(ovAsiaHiLb, ovShowLabels ? color.new(ovAsiaCol, 20) : color.new(ovAsiaCol, 100))
-    label.set_textcolor(ovAsiaHiLb, ovShowLabels ? color.white : color.new(color.white, 100))
-else if not na(ovAsiaHiLn)
-    line.delete(ovAsiaHiLn)
-    ovAsiaHiLn := na
-    label.delete(ovAsiaHiLb)
-    ovAsiaHiLb := na
+if not (masterOn and showOvernightLines and showAsia) or ovNySessEnd
+    // Feature off for this session OR NY session just ended: tear down and reset held state.
+    if not na(ovAsiaHiLn)
+        line.delete(ovAsiaHiLn)
+        ovAsiaHiLn := na
+        label.delete(ovAsiaHiLb)
+        ovAsiaHiLb := na
+    ovAsiaHiSwept := false
+    ovAsiaHiPx    := na
+else
+    // Capture the price at the sweep instant; otherwise track the live level.
+    if na(asiaH) and not na(asiaH[1]) and sessRemoveSwept
+        ovAsiaHiPx    := asiaH[1]
+        ovAsiaHiSwept := true
+    else if not na(asiaH)
+        ovAsiaHiPx    := asiaH
+        ovAsiaHiSwept := false
+    if not na(ovAsiaHiPx)
+        int ovXL = na(b_ah) ? bar_index - 50 : b_ah
+        int ovXR = ovLineExtend ? bar_index + 5 : bar_index
+        styAsiaHi = ovAsiaHiSwept ? line.style_dotted : f_lineStyle()
+        if na(ovAsiaHiLn)
+            ovAsiaHiLn := line.new(ovXL, ovAsiaHiPx, ovXR, ovAsiaHiPx, xloc = xloc.bar_index, color = ovAsiaCol, width = lineWidth, style = styAsiaHi)
+            ovAsiaHiLb := label.new(ovXR, ovAsiaHiPx, "Asia H", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(ovAsiaCol, 20), textcolor = color.white, size = size.small)
+        line.set_xy1(ovAsiaHiLn, ovXL, ovAsiaHiPx)
+        line.set_xy2(ovAsiaHiLn, ovXR, ovAsiaHiPx)
+        line.set_color(ovAsiaHiLn, ovAsiaCol)
+        line.set_width(ovAsiaHiLn, lineWidth)
+        line.set_style(ovAsiaHiLn, styAsiaHi)
+        label.set_xy(ovAsiaHiLb, ovXR, ovAsiaHiPx)
+        label.set_text(ovAsiaHiLb, ovShowLabels ? ("Asia H" + (ovAsiaHiSwept ? " ·swept" : "")) : "")
+        label.set_color(ovAsiaHiLb, ovShowLabels ? color.new(ovAsiaCol, 20) : color.new(ovAsiaCol, 100))
+        label.set_textcolor(ovAsiaHiLb, ovShowLabels ? color.white : color.new(color.white, 100))
+    else if not na(ovAsiaHiLn)
+        line.delete(ovAsiaHiLn)
+        ovAsiaHiLn := na
+        label.delete(ovAsiaHiLb)
+        ovAsiaHiLb := na
 
 // Asia Low
-if masterOn and showOvernightLines and showAsia and not na(asiaL)
-    int ovXL = na(b_al) ? bar_index - 50 : b_al
-    int ovXR = ovLineExtend ? bar_index + 5 : bar_index
-    if na(ovAsiaLoLn)
-        ovAsiaLoLn := line.new(ovXL, asiaL, ovXR, asiaL, xloc = xloc.bar_index, color = ovAsiaCol, width = lineWidth, style = f_lineStyle())
-        ovAsiaLoLb := label.new(ovXR, asiaL, "Asia L", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(ovAsiaCol, 20), textcolor = color.white, size = size.small)
-    line.set_xy1(ovAsiaLoLn, ovXL, asiaL)
-    line.set_xy2(ovAsiaLoLn, ovXR, asiaL)
-    line.set_color(ovAsiaLoLn, ovAsiaCol)
-    line.set_width(ovAsiaLoLn, lineWidth)
-    line.set_style(ovAsiaLoLn, f_lineStyle())
-    label.set_xy(ovAsiaLoLb, ovXR, asiaL)
-    label.set_text(ovAsiaLoLb, ovShowLabels ? "Asia L" : "")
-    label.set_color(ovAsiaLoLb, ovShowLabels ? color.new(ovAsiaCol, 20) : color.new(ovAsiaCol, 100))
-    label.set_textcolor(ovAsiaLoLb, ovShowLabels ? color.white : color.new(color.white, 100))
-else if not na(ovAsiaLoLn)
-    line.delete(ovAsiaLoLn)
-    ovAsiaLoLn := na
-    label.delete(ovAsiaLoLb)
-    ovAsiaLoLb := na
+if not (masterOn and showOvernightLines and showAsia) or ovNySessEnd
+    if not na(ovAsiaLoLn)
+        line.delete(ovAsiaLoLn)
+        ovAsiaLoLn := na
+        label.delete(ovAsiaLoLb)
+        ovAsiaLoLb := na
+    ovAsiaLoSwept := false
+    ovAsiaLoPx    := na
+else
+    if na(asiaL) and not na(asiaL[1]) and sessRemoveSwept
+        ovAsiaLoPx    := asiaL[1]
+        ovAsiaLoSwept := true
+    else if not na(asiaL)
+        ovAsiaLoPx    := asiaL
+        ovAsiaLoSwept := false
+    if not na(ovAsiaLoPx)
+        int ovXL = na(b_al) ? bar_index - 50 : b_al
+        int ovXR = ovLineExtend ? bar_index + 5 : bar_index
+        styAsiaLo = ovAsiaLoSwept ? line.style_dotted : f_lineStyle()
+        if na(ovAsiaLoLn)
+            ovAsiaLoLn := line.new(ovXL, ovAsiaLoPx, ovXR, ovAsiaLoPx, xloc = xloc.bar_index, color = ovAsiaCol, width = lineWidth, style = styAsiaLo)
+            ovAsiaLoLb := label.new(ovXR, ovAsiaLoPx, "Asia L", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(ovAsiaCol, 20), textcolor = color.white, size = size.small)
+        line.set_xy1(ovAsiaLoLn, ovXL, ovAsiaLoPx)
+        line.set_xy2(ovAsiaLoLn, ovXR, ovAsiaLoPx)
+        line.set_color(ovAsiaLoLn, ovAsiaCol)
+        line.set_width(ovAsiaLoLn, lineWidth)
+        line.set_style(ovAsiaLoLn, styAsiaLo)
+        label.set_xy(ovAsiaLoLb, ovXR, ovAsiaLoPx)
+        label.set_text(ovAsiaLoLb, ovShowLabels ? ("Asia L" + (ovAsiaLoSwept ? " ·swept" : "")) : "")
+        label.set_color(ovAsiaLoLb, ovShowLabels ? color.new(ovAsiaCol, 20) : color.new(ovAsiaCol, 100))
+        label.set_textcolor(ovAsiaLoLb, ovShowLabels ? color.white : color.new(color.white, 100))
+    else if not na(ovAsiaLoLn)
+        line.delete(ovAsiaLoLn)
+        ovAsiaLoLn := na
+        label.delete(ovAsiaLoLb)
+        ovAsiaLoLb := na
 
 // London High
-if masterOn and showOvernightLines and showLond and not na(londH)
-    int ovXL = na(b_lh) ? bar_index - 50 : b_lh
-    int ovXR = ovLineExtend ? bar_index + 5 : bar_index
-    if na(ovLondHiLn)
-        ovLondHiLn := line.new(ovXL, londH, ovXR, londH, xloc = xloc.bar_index, color = ovLondCol, width = lineWidth, style = f_lineStyle())
-        ovLondHiLb := label.new(ovXR, londH, "London H", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(ovLondCol, 20), textcolor = color.white, size = size.small)
-    line.set_xy1(ovLondHiLn, ovXL, londH)
-    line.set_xy2(ovLondHiLn, ovXR, londH)
-    line.set_color(ovLondHiLn, ovLondCol)
-    line.set_width(ovLondHiLn, lineWidth)
-    line.set_style(ovLondHiLn, f_lineStyle())
-    label.set_xy(ovLondHiLb, ovXR, londH)
-    label.set_text(ovLondHiLb, ovShowLabels ? "London H" : "")
-    label.set_color(ovLondHiLb, ovShowLabels ? color.new(ovLondCol, 20) : color.new(ovLondCol, 100))
-    label.set_textcolor(ovLondHiLb, ovShowLabels ? color.white : color.new(color.white, 100))
-else if not na(ovLondHiLn)
-    line.delete(ovLondHiLn)
-    ovLondHiLn := na
-    label.delete(ovLondHiLb)
-    ovLondHiLb := na
+if not (masterOn and showOvernightLines and showLond) or ovNySessEnd
+    if not na(ovLondHiLn)
+        line.delete(ovLondHiLn)
+        ovLondHiLn := na
+        label.delete(ovLondHiLb)
+        ovLondHiLb := na
+    ovLondHiSwept := false
+    ovLondHiPx    := na
+else
+    if na(londH) and not na(londH[1]) and sessRemoveSwept
+        ovLondHiPx    := londH[1]
+        ovLondHiSwept := true
+    else if not na(londH)
+        ovLondHiPx    := londH
+        ovLondHiSwept := false
+    if not na(ovLondHiPx)
+        int ovXL = na(b_lh) ? bar_index - 50 : b_lh
+        int ovXR = ovLineExtend ? bar_index + 5 : bar_index
+        styLondHi = ovLondHiSwept ? line.style_dotted : f_lineStyle()
+        if na(ovLondHiLn)
+            ovLondHiLn := line.new(ovXL, ovLondHiPx, ovXR, ovLondHiPx, xloc = xloc.bar_index, color = ovLondCol, width = lineWidth, style = styLondHi)
+            ovLondHiLb := label.new(ovXR, ovLondHiPx, "London H", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(ovLondCol, 20), textcolor = color.white, size = size.small)
+        line.set_xy1(ovLondHiLn, ovXL, ovLondHiPx)
+        line.set_xy2(ovLondHiLn, ovXR, ovLondHiPx)
+        line.set_color(ovLondHiLn, ovLondCol)
+        line.set_width(ovLondHiLn, lineWidth)
+        line.set_style(ovLondHiLn, styLondHi)
+        label.set_xy(ovLondHiLb, ovXR, ovLondHiPx)
+        label.set_text(ovLondHiLb, ovShowLabels ? ("London H" + (ovLondHiSwept ? " ·swept" : "")) : "")
+        label.set_color(ovLondHiLb, ovShowLabels ? color.new(ovLondCol, 20) : color.new(ovLondCol, 100))
+        label.set_textcolor(ovLondHiLb, ovShowLabels ? color.white : color.new(color.white, 100))
+    else if not na(ovLondHiLn)
+        line.delete(ovLondHiLn)
+        ovLondHiLn := na
+        label.delete(ovLondHiLb)
+        ovLondHiLb := na
 
 // London Low
-if masterOn and showOvernightLines and showLond and not na(londL)
-    int ovXL = na(b_ll) ? bar_index - 50 : b_ll
-    int ovXR = ovLineExtend ? bar_index + 5 : bar_index
-    if na(ovLondLoLn)
-        ovLondLoLn := line.new(ovXL, londL, ovXR, londL, xloc = xloc.bar_index, color = ovLondCol, width = lineWidth, style = f_lineStyle())
-        ovLondLoLb := label.new(ovXR, londL, "London L", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(ovLondCol, 20), textcolor = color.white, size = size.small)
-    line.set_xy1(ovLondLoLn, ovXL, londL)
-    line.set_xy2(ovLondLoLn, ovXR, londL)
-    line.set_color(ovLondLoLn, ovLondCol)
-    line.set_width(ovLondLoLn, lineWidth)
-    line.set_style(ovLondLoLn, f_lineStyle())
-    label.set_xy(ovLondLoLb, ovXR, londL)
-    label.set_text(ovLondLoLb, ovShowLabels ? "London L" : "")
-    label.set_color(ovLondLoLb, ovShowLabels ? color.new(ovLondCol, 20) : color.new(ovLondCol, 100))
-    label.set_textcolor(ovLondLoLb, ovShowLabels ? color.white : color.new(color.white, 100))
-else if not na(ovLondLoLn)
-    line.delete(ovLondLoLn)
-    ovLondLoLn := na
-    label.delete(ovLondLoLb)
-    ovLondLoLb := na
+if not (masterOn and showOvernightLines and showLond) or ovNySessEnd
+    if not na(ovLondLoLn)
+        line.delete(ovLondLoLn)
+        ovLondLoLn := na
+        label.delete(ovLondLoLb)
+        ovLondLoLb := na
+    ovLondLoSwept := false
+    ovLondLoPx    := na
+else
+    if na(londL) and not na(londL[1]) and sessRemoveSwept
+        ovLondLoPx    := londL[1]
+        ovLondLoSwept := true
+    else if not na(londL)
+        ovLondLoPx    := londL
+        ovLondLoSwept := false
+    if not na(ovLondLoPx)
+        int ovXL = na(b_ll) ? bar_index - 50 : b_ll
+        int ovXR = ovLineExtend ? bar_index + 5 : bar_index
+        styLondLo = ovLondLoSwept ? line.style_dotted : f_lineStyle()
+        if na(ovLondLoLn)
+            ovLondLoLn := line.new(ovXL, ovLondLoPx, ovXR, ovLondLoPx, xloc = xloc.bar_index, color = ovLondCol, width = lineWidth, style = styLondLo)
+            ovLondLoLb := label.new(ovXR, ovLondLoPx, "London L", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(ovLondCol, 20), textcolor = color.white, size = size.small)
+        line.set_xy1(ovLondLoLn, ovXL, ovLondLoPx)
+        line.set_xy2(ovLondLoLn, ovXR, ovLondLoPx)
+        line.set_color(ovLondLoLn, ovLondCol)
+        line.set_width(ovLondLoLn, lineWidth)
+        line.set_style(ovLondLoLn, styLondLo)
+        label.set_xy(ovLondLoLb, ovXR, ovLondLoPx)
+        label.set_text(ovLondLoLb, ovShowLabels ? ("London L" + (ovLondLoSwept ? " ·swept" : "")) : "")
+        label.set_color(ovLondLoLb, ovShowLabels ? color.new(ovLondCol, 20) : color.new(ovLondCol, 100))
+        label.set_textcolor(ovLondLoLb, ovShowLabels ? color.white : color.new(color.white, 100))
+    else if not na(ovLondLoLn)
+        line.delete(ovLondLoLn)
+        ovLondLoLn := na
+        label.delete(ovLondLoLb)
+        ovLondLoLb := na
 
 // -----------------------------------------------------------------------------
 // SWEEP MASKING for previous-period levels
