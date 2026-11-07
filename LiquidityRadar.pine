@@ -4009,15 +4009,15 @@ var int    mtMcBear = 0
 // =============================================================================
 // ---- multi-timeframe directional context (no lookahead: last CLOSED HTF bar) ----
 f_mtCtx(int plen, bool lag) =>
-    float ph = ta.pivothigh(high, plen, plen)
+    float cPh = ta.pivothigh(high, plen, plen)
     float plw = ta.pivotlow(low, plen, plen)
     var float h1 = na
     var float h0 = na
     var float l1 = na
     var float l0 = na
-    if not na(ph)
+    if not na(cPh)
         h0 := h1
-        h1 := ph
+        h1 := cPh
     if not na(plw)
         l0 := l1
         l1 := plw
@@ -4785,7 +4785,7 @@ if mtOn and barstate.isconfirmed and not na(atr) and bar_index > 30
             bool sbOkOpp = s > 0 ? mtSbBearOk : mtSbBullOk
             // ---- A: failed microtrendline breakout ----
             if mtSetA and tl.state == 4 and f_mtValid(tl) and sbOkS and s * (close - f_mtVal(tl, bi)) > 0 and (tl.isMC or mtD1 == s or mtD5 == s)
-                float speed = 1.0 - 0.5 * (tl.failBar - tl.brkBar) / math.max(1, mtFailBars)
+                float speed = 1.0 - 0.5 * float(tl.failBar - tl.brkBar) / float(math.max(1, mtFailBars))
                 float depthF = 1.0 - math.min(1.0, tl.brkPen / 0.75)
                 f_mtAddCand(0, s, 0.6 * speed + 0.4 * depthF, tl.quality, tl.brkExt, na)
             // ---- B: break + pullback continuation ----
@@ -5021,7 +5021,7 @@ if mtOn and mtShowDash and barstate.islast
                     weakTxt += array.get(names, q) + " "
     int r = 0
     table.cell(mtTbl, 0, r, "BROOKS MICROTRENDLINE", text_color = themeTxt, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_left)
-    table.merge_cells(mtTbl, 0, r, 1, r)
+    table.cell(mtTbl, 1, r, mtOn ? "ON" : "", text_color = themeMuted, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_right)
     r += 1
     table.cell(mtTbl, 0, r, "Market", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
     table.cell(mtTbl, 1, r, condTxt, text_color = condCol, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
@@ -5079,8 +5079,8 @@ if mtOn and mtShowStats and barstate.islast
     table.clear(mtStTbl, 0, 0, 1, 19)
     array<string> labs = array.from("ALL SIGNALS", "Failed BO", "Pullback cont.", "Reversal", "H2/L2", "Trend", "Range", "Transition", "Open 9:30-10:30", "10:30-12:00", "12:00-14:00", "14:00-16:00", "Other hours", "Score A+ (85+)", "Score A (75-84)", "Score B (<75)")
     int sr = 0
-    table.cell(mtStTbl, 0, sr, "SIGNAL STATS (not a backtest)", text_color = themeTxt, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_left)
-    table.merge_cells(mtStTbl, 0, sr, 1, sr)
+    table.cell(mtStTbl, 0, sr, "SIGNAL STATS", text_color = themeTxt, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtStTbl, 1, sr, "n · win% · expectancy (R)", text_color = themeMuted, bgcolor = themePanelBg, text_size = size.tiny, text_halign = text.align_left)
     sr += 1
     float nAll = array.get(mtStat, 0)
     string extra = nAll > 0 ? ("win " + str.tostring(array.get(mtStat, 1), "#") + " / loss " + str.tostring(nAll - array.get(mtStat, 1), "#") + " · avg win " + str.tostring(array.get(mtStat, 1) > 0 ? array.get(mtStat, 3) / array.get(mtStat, 1) : 0.0, "+0.00") + "R · avg loss " + str.tostring(nAll - array.get(mtStat, 1) > 0 ? array.get(mtStat, 4) / (nAll - array.get(mtStat, 1)) : 0.0, "0.00") + "R") : "no completed signals"
@@ -5088,11 +5088,11 @@ if mtOn and mtShowStats and barstate.islast
         table.cell(mtStTbl, 0, sr, array.get(labs, g), text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
         table.cell(mtStTbl, 1, sr, f_mtStatTxt(g), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
         sr += 1
-    table.cell(mtStTbl, 0, sr, extra, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
-    table.merge_cells(mtStTbl, 0, sr, 1, sr)
+    table.cell(mtStTbl, 0, sr, "Totals", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+    table.cell(mtStTbl, 1, sr, extra, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
     sr += 1
-    table.cell(mtStTbl, 0, sr, "n · win% · expectancy(R). One position at a time; conservative: stop wins ties, no costs.", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
-    table.merge_cells(mtStTbl, 0, sr, 1, sr)
+    table.cell(mtStTbl, 0, sr, "Not a backtest", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+    table.cell(mtStTbl, 1, sr, "1 position at a time · stop wins same-bar ties · no costs", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
     table.set_frame_color(mtStTbl, color.new(themeMuted, 40))
     table.set_frame_width(mtStTbl, themeBW)
 
