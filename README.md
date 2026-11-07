@@ -72,6 +72,18 @@ A **sticky, structural daily bias** meant to be a directional *anchor* rather th
 ### ⑫ Moving Averages (EMA)
 Up to **four exponential moving averages** overlaid on the chart. **EMA 1 is on by default at length 20**; EMA 2–4 are off by default (preset 50 / 100 / 200) — toggle them on as needed. Each has its own length and color, with a shared line-width control and a configurable source. An optional **EMA timeframe** computes them on a higher timeframe (non-repainting) and overlays them on the chart; blank uses the chart timeframe.
 
+### ⑰ Brooks Microtrendlines (price action) — toggle: *Enable Brooks microtrendline module*
+An Al Brooks–style price-action layer, fully switchable on/off (off = nothing is calculated or drawn). Built for NQ 1-minute charts (5m / 15m context, both configurable), usable on ES / GC / CL.
+- **Microtrendlines:** pivot-based support/resistance lines over ~2–10 bars (configurable pivot sensitivity, min touches, max age, bars between pivots, min slope, max penetration), plus a separate **microchannel** detector for strong few-bar channels. Each line tracks touches, age, slope and a quality score.
+- **Break vs failed breakout:** a penetration beyond tolerance is only a *potential* break; if price closes back on the trend side within N bars it becomes a **failed breakout**, otherwise a genuine break.
+- **Setups:** **A** failed-breakout (primary) · **B** break + pullback continuation · **C** failed-breakout reversal (stricter confirmation) · **D** High 2 / Low 2 with trend context. H1/H2/L1/L2 markers are drawn on the chart.
+- **Market condition:** TREND / RANGE / TRANSITION (efficiency ratio, bar overlap, VWAP crosses, EMA slope, recent break). Range sharply lowers continuation scores.
+- **Signal-bar quality** (body, close position, opposing wick, relative size — all configurable) and a **0–100 confluence score** with configurable weights (A+ ≥ 85, A ≥ 75, B ≥ 65; minimum score configurable). It is a technical confluence rating, **not** a probability.
+- **Trade plan:** pending stop-entry beyond the signal bar, stop, T1/T2 (R multiples or structure), optional T3. The state machine separates *setup identified → entry triggered → stop / T1 / T2 / invalidated / expired*; a pending setup is never shown as executed.
+- **Dashboard** (top-right) with market, trendline, setup, trade and score-driver rows; **statistics table** (overall, by setup, market condition, time of day, score bucket) with optional date range. Stats are *signal* statistics, not a strategy backtest: one position at a time, no costs, and a stop wins any same-bar tie with a target.
+- **Non-repainting:** the engine runs only on closed bars; higher-timeframe context uses the last *closed* HTF bar.
+- **Alerts:** 16 `alertcondition`s (`MT 1 … MT 16`) plus optional detailed `alert()` messages (instrument · timeframe · setup · direction · score).
+
 ### ⑯ Opening Range Breakout (ORB)
 Draws the **high/low of the opening window** (default the first 5 minutes of the NY session, 09:30–09:35 ET, configurable session + timezone) as a box, frozen once the window closes and extended across the session, with a breakout marked when price closes beyond an edge. A **directional breakout-likelihood** read (`▲ NN%  ▼ NN%`) blends: **price action** (where price sits in the range + how tight the range is vs ATR), **liquidity** (resting pools just beyond each edge and how clear the path to them is), **daily-bias alignment**, and the **market regime** (DIRECTIONAL boosts breakout odds; BALANCED/chop lowers them, since ORB breaks tend to fake out in chop). Shown in its own small banner. Heuristic, not a probability.
 

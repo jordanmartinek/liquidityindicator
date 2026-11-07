@@ -3783,6 +3783,1339 @@ if (not masterOn or not orbOn) and array.size(orbBoxes) > 0
     orbCurHiLn := na
     orbCurLoLn := na
 
+// =============================================================================
+// ⑰ AL BROOKS MICROTRENDLINE PRICE ACTION MODULE  (toggle: "Enable module")
+//   Setup A  Failed microtrendline breakout (primary)
+//   Setup B  Microtrendline break + pullback continuation
+//   Setup C  Failed-breakout reversal (stricter confirmation)
+//   Setup D  High 2 / Low 2 second-entry with trend context
+//   + H1/H2/L1/L2 markers, market condition (TREND/RANGE/TRANSITION),
+//     signal-bar quality, 0-100 confluence score, pending/entry/stop/target
+//     tracking, dashboard, alerts and historical signal statistics.
+// Non-repainting: the whole engine runs ONLY on confirmed (closed) bars; the
+// higher-timeframe context uses lookahead_on with a [1] offset (last CLOSED HTF bar).
+// The confluence score is a technical confluence rating, NOT a probability.
+// =============================================================================
+var string G_MT  = "⑰ Brooks Microtrendlines · Core & Display"
+var string G_MTD = "⑰ Brooks Microtrendlines · Detection"
+var string G_MTS = "⑰ Brooks Microtrendlines · Setups & Signal Bar"
+var string G_MTC = "⑰ Brooks Microtrendlines · Confidence Weights"
+var string G_MTT = "⑰ Brooks Microtrendlines · Trade Plan"
+var string G_MTA = "⑰ Brooks Microtrendlines · Alerts & Stats"
+
+// ---- core & display ----
+mtOn        = input.bool(true, "Enable Brooks microtrendline module", tooltip = "Master on/off for the whole microtrendline price-action module (trendlines, setups, dashboard, alerts, stats). Off = nothing from this module is calculated or drawn.", group = G_MT)
+mtTF5       = input.timeframe("5", "  Secondary context timeframe", group = G_MT)
+mtTF15      = input.timeframe("15", "  Higher-timeframe directional context", group = G_MT)
+mtCtxPiv    = input.int(3, "  Context swing pivot length", minval = 2, maxval = 10, group = G_MT)
+mtShowDash  = input.bool(true, "Show dashboard", group = G_MT)
+mtDashPos   = input.string("Top Right", "  Dashboard position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_MT)
+mtShowTL    = input.bool(true, "Show active trendlines", group = G_MT)
+mtShowHist  = input.bool(true, "Show historical trendlines", group = G_MT)
+mtHistKeep  = input.int(12, "  Historical trendlines kept", minval = 1, maxval = 60, group = G_MT)
+mtShowBrk   = input.bool(true, "Show break / failed-breakout markers", group = G_MT)
+mtShowSig   = input.bool(true, "Show LONG / SHORT signal markers", group = G_MT)
+mtShowHL    = input.bool(true, "Show H1/H2/L1/L2 markers", group = G_MT)
+mtShowLvls  = input.bool(true, "Show entry / stop / target levels", group = G_MT)
+mtKeepLvls  = input.bool(true, "  Keep finished setups' levels (last few)", group = G_MT)
+mtShowVwap  = input.bool(false, "Show VWAP", group = G_MT)
+mtShowBg    = input.bool(false, "Market-condition background shading", group = G_MT)
+mtColBull   = input.color(#00c853, "  Bullish trendline", group = G_MT)
+mtColBear   = input.color(#ff1744, "  Bearish trendline", group = G_MT)
+mtColBrk    = input.color(#ff9800, "  Break marker / broken line", group = G_MT)
+
+// ---- detection ----
+mtPivL      = input.int(2, "Pivot sensitivity · bars left", minval = 1, maxval = 6, group = G_MTD)
+mtPivR      = input.int(1, "Pivot sensitivity · bars right", minval = 1, maxval = 4, tooltip = "Pivots are confirmed this many bars late (no repaint). Smaller = faster, noisier.", group = G_MTD)
+mtMinTouch  = input.int(2, "Minimum trendline touches", minval = 2, maxval = 5, group = G_MTD)
+mtMaxAge    = input.int(30, "Maximum trendline age (bars since last touch)", minval = 5, maxval = 200, group = G_MTD)
+mtMinBetween = input.int(2, "Min bars between pivots", minval = 1, maxval = 10, group = G_MTD)
+mtMaxBetween = input.int(10, "Max bars between pivots", minval = 3, maxval = 30, tooltip = "Keeps lines MICRO (about 2-10 bars) rather than structural trendlines.", group = G_MTD)
+mtMinSlope  = input.float(0.02, "Minimum slope (ATR per bar)", minval = 0.0, step = 0.01, group = G_MTD)
+mtMaxPen    = input.float(0.15, "Max penetration before 'broken' (× ATR)", minval = 0.0, step = 0.05, group = G_MTD)
+mtTouchTol  = input.float(0.12, "Touch tolerance (× ATR)", minval = 0.0, step = 0.02, group = G_MTD)
+mtMcOn      = input.bool(true, "Microchannel detection (few-bar channels)", tooltip = "Strong microchannels can develop over very few bars. Consecutive bars with rising lows/highs (falling for bears) get a supporting line without needing separated pivots.", group = G_MTD)
+mtMcMin     = input.int(4, "  Microchannel min bars", minval = 3, maxval = 10, group = G_MTD)
+mtMcTol     = input.float(0.05, "  Microchannel tolerance (× ATR)", minval = 0.0, step = 0.01, group = G_MTD)
+mtMcMinMove = input.float(1.0, "  Microchannel min net move (× ATR)", minval = 0.0, step = 0.1, group = G_MTD)
+mtFailBars  = input.int(4, "Failed-breakout window (bars to reclaim)", minval = 1, maxval = 12, tooltip = "After a penetration, price must close back on the trend side of the line within this many bars to count as a FAILED breakout; otherwise it is a genuine break.", group = G_MTD)
+mtSigWait   = input.int(2, "Signal-bar wait after reclaim (bars)", minval = 0, maxval = 6, group = G_MTD)
+
+// ---- setups & signal bar ----
+mtSetA      = input.bool(true, "Setup A · Failed microtrendline breakout", group = G_MTS)
+mtSetB      = input.bool(true, "Setup B · Break + pullback continuation", group = G_MTS)
+mtSetC      = input.bool(true, "Setup C · Failed-breakout reversal", group = G_MTS)
+mtSetD      = input.bool(true, "Setup D · High 2 / Low 2", group = G_MTS)
+mtPostBreak = input.int(20, "Post-break window for B / C (bars)", minval = 5, maxval = 100, group = G_MTS)
+mtMaxRetr   = input.float(0.75, "B · max pullback retracement of the leg", minval = 0.2, maxval = 1.0, step = 0.05, group = G_MTS)
+mtSupTol    = input.float(0.8, "B · support/resistance proximity (× ATR)", minval = 0.1, step = 0.1, group = G_MTS)
+mtExtATR    = input.float(3.0, "C · min extension of prior move (× ATR)", minval = 0.5, step = 0.5, group = G_MTS)
+mtRetestTol = input.float(0.25, "C · retest zone around old extreme (× ATR)", minval = 0.0, step = 0.05, group = G_MTS)
+mtRetestOver = input.float(0.25, "C · max overshoot of old extreme (× ATR)", minval = 0.0, step = 0.05, group = G_MTS)
+mtRevConf   = input.int(3, "C · confirmations required (of 5)", minval = 1, maxval = 5, group = G_MTS)
+mtRevSbMin  = input.float(0.65, "C · min signal-bar quality (0-1)", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
+mtPbMax     = input.int(15, "H/L · max pullback length (bars)", minval = 3, maxval = 50, group = G_MTS)
+mtPbDepth   = input.float(5.0, "H/L · max pullback depth (× ATR)", minval = 1.0, step = 0.5, group = G_MTS)
+mtSbBody    = input.float(0.45, "Signal bar · min body / range", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
+mtSbClose   = input.float(0.65, "Signal bar · min close position (0=far, 1=at extreme)", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
+mtSbWick    = input.float(0.30, "Signal bar · max opposing wick / range", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
+mtSbSize    = input.float(0.6, "Signal bar · min size vs 20-bar average range", minval = 0.0, step = 0.1, group = G_MTS)
+mtTrendHi   = input.float(0.55, "Market condition · trend score threshold", minval = 0.2, maxval = 0.9, step = 0.05, group = G_MTS)
+mtTransBars = input.int(15, "Market condition · transition window after break (bars)", minval = 3, maxval = 60, group = G_MTS)
+
+// ---- confidence weights (normalised, so they need not sum to 100) ----
+mtWHtf      = input.float(15, "Weight · higher-timeframe alignment", minval = 0, group = G_MTC)
+mtWTl       = input.float(15, "Weight · microtrendline quality", minval = 0, group = G_MTC)
+mtWFbo      = input.float(20, "Weight · pattern / failed-breakout confirmation", minval = 0, group = G_MTC)
+mtWSb       = input.float(15, "Weight · signal bar quality", minval = 0, group = G_MTC)
+mtWMkt      = input.float(10, "Weight · market-condition suitability", minval = 0, group = G_MTC)
+mtWVwap     = input.float(10, "Weight · VWAP alignment", minval = 0, group = G_MTC)
+mtWH        = input.float(10, "Weight · H1/H2 · L1/L2 confluence", minval = 0, group = G_MTC)
+mtWRoom     = input.float(5, "Weight · room to target", minval = 0, group = G_MTC)
+mtVwapOn    = input.bool(true, "VWAP filter (scoring only; off = VWAP weight ignored)", group = G_MTC)
+mtMinScore  = input.int(65, "Minimum score to display an actionable signal", minval = 30, maxval = 95, group = G_MTC)
+
+// ---- trade plan ----
+mtStopMode  = input.string("Wider of both", "Stop placement", options = ["Signal bar","Structural","Wider of both"], group = G_MTT)
+mtMinStopATR = input.float(0.4, "Minimum stop distance (× ATR)", minval = 0.05, step = 0.05, group = G_MTT)
+mtMaxStopATR = input.float(3.0, "Maximum stop distance (× ATR) · wider = no setup", minval = 0.5, step = 0.25, group = G_MTT)
+mtTgtMode   = input.string("R multiples", "Targets based on", options = ["R multiples","Market structure"], group = G_MTT)
+mtT1R       = input.float(1.0, "Target 1 (R)", minval = 0.25, step = 0.25, group = G_MTT)
+mtT2R       = input.float(2.0, "Target 2 (R)", minval = 0.5, step = 0.25, group = G_MTT)
+mtShowT3    = input.bool(true, "Show Target 3 (swing / measured move)", group = G_MTT)
+mtPendBars  = input.int(3, "Pending entry expires after (bars)", minval = 1, maxval = 20, group = G_MTT)
+mtMaxHold   = input.int(60, "Max bars in trade before time-out", minval = 5, maxval = 500, group = G_MTT)
+
+// ---- alerts & stats ----
+mtAlertFn   = input.bool(true, "Send detailed alert() messages (instrument · TF · setup · direction · score)", tooltip = "Create the alert with condition 'Any alert() function call'. The alertcondition() entries below are always available too.", group = G_MTA)
+mtShowStats = input.bool(true, "Show historical signal statistics table", group = G_MTA)
+mtStatsPos  = input.string("Bottom Right", "  Stats table position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_MTA)
+mtStatsTgt  = input.string("Target 1", "  A signal 'wins' when it reaches", options = ["Target 1","Target 2"], group = G_MTA)
+mtStatsRng  = input.bool(false, "  Restrict statistics to date range", group = G_MTA)
+mtStatsFrom = input.time(timestamp("2024-01-01T00:00:00"), "    From", group = G_MTA)
+mtStatsTo   = input.time(timestamp("2100-01-01T00:00:00"), "    To", group = G_MTA)
+
+// =============================================================================
+// TYPES + STATE
+// =============================================================================
+type MtTL
+    int    dir       = 0
+    int    state     = 0      // 0 none · 1 intact · 2 penetrated (watching) · 3 genuinely broken (post-break record) · 4 failed breakout (awaiting signal bar)
+    int    x1        = 0
+    float  y1        = na
+    int    x2        = 0
+    float  y2        = na
+    float  slope     = 0.0
+    int    touches   = 0
+    bool   isMC      = false
+    float  quality   = 0.0
+    int    hug       = 0
+    float  peak      = na
+    int    peakBar   = 0
+    int    brkBar    = 0
+    float  brkExt    = na
+    float  brkPen    = 0.0
+    int    failBar   = 0
+    float  structLvl = na
+    bool   structOK  = true
+    bool   closeOver = false
+    bool   retested  = false
+    int    retestBar = 0
+    float  retestExt = na
+    bool   evNew     = false
+    bool   evBreak   = false
+    bool   evFail    = false
+    bool   evGenuine = false
+    line   ln        = na
+
+var MtTL mtBull    = MtTL.new(dir = 1)
+var MtTL mtBear    = MtTL.new(dir = -1)
+var MtTL mtBullBrk = MtTL.new(dir = 1)
+var MtTL mtBearBrk = MtTL.new(dir = -1)
+
+var array<float> mtPLpx = array.new<float>()
+var array<int>   mtPLbr = array.new<int>()
+var array<float> mtPHpx = array.new<float>()
+var array<int>   mtPHbr = array.new<int>()
+var array<line>  mtHist = array.new<line>()
+var array<line>  mtOldLn = array.new<line>()
+var array<label> mtOldLb = array.new<label>()
+var array<label> mtSigLbls = array.new<label>()
+var array<float> mtFacTmp  = array.new<float>(8, 0.0)
+var array<float> mtFacBest = array.new<float>(8, 0.0)
+var array<float> mtFac     = array.new<float>(8, 0.0)   // factor points of the current / last setup
+var array<float> mtStat    = array.new<float>(80, 0.0)  // 16 groups × [n, wins, sumR, sumWinR, sumLossR]
+var array<int>   mtCT = array.new<int>()
+var array<int>   mtCD = array.new<int>()
+var array<float> mtCF = array.new<float>()
+var array<float> mtCQ = array.new<float>()
+var array<float> mtCS = array.new<float>()
+var array<float> mtC3 = array.new<float>()
+
+var int   mtCond = 2            // 1 TREND · 2 RANGE · 3 TRANSITION
+var int   mtLastGenBar = -1000
+var int   mtLastHBar = -1000
+var int   mtLastHDir = 0
+var int   mtLastHCnt = 0
+// H / L sequence state
+var float hbRef = na
+var bool  hbPb = false
+var int   hbCnt = 0
+var bool  hbLeg = false
+var float hbLow = na
+var int   hbBars = 0
+var float lbRef = na
+var bool  lbPb = false
+var int   lbCnt = 0
+var bool  lbLeg = false
+var float lbHigh = na
+var int   lbBars = 0
+// setup / trade state: stSt 0 idle · 1 pending · 2 open · 3 finished
+var int    stSt = 0
+var int    stDir = 0
+var int    stType = 0
+var float  stScore = 0.0
+var float  stEntry = na
+var float  stStop = na
+var float  stT1 = na
+var float  stT2 = na
+var float  stT3 = na
+var float  stRisk = na
+var float  stFill = na
+var float  stSq = 0.0
+var int    stSigBar = 0
+var int    stEntryBar = 0
+var bool   stT1Hit = false
+var bool   stT2Hit = false
+var bool   stResolved = false
+var int    stCond = 2
+var int    stTod = 4
+var string stRes = ""
+var line   stLnE = na
+var line   stLnS = na
+var line   stLnT1 = na
+var line   stLnT2 = na
+var line   stLnT3 = na
+var label  stLbE = na
+var label  stLbS = na
+var label  stLbT1 = na
+var label  stLbT2 = na
+var label  stLbT3 = na
+var int    mtMcBull = 0
+var int    mtMcBear = 0
+
+// =============================================================================
+// PER-BAR SERIES (computed every bar; only read by the engine on confirmed bars)
+// =============================================================================
+// ---- multi-timeframe directional context (no lookahead: last CLOSED HTF bar) ----
+f_mtCtx(int plen, bool lag) =>
+    float cPh = ta.pivothigh(high, plen, plen)
+    float plw = ta.pivotlow(low, plen, plen)
+    var float h1 = na
+    var float h0 = na
+    var float l1 = na
+    var float l0 = na
+    if not na(cPh)
+        h0 := h1
+        h1 := cPh
+    if not na(plw)
+        l0 := l1
+        l1 := plw
+    float e = ta.ema(close, 20)
+    float a = ta.atr(14)
+    int st = 0
+    if not na(h0) and not na(l0)
+        if h1 > h0 and l1 > l0
+            st := 1
+        else if h1 < h0 and l1 < l0
+            st := -1
+    int mom = 0
+    if close > e and e > e[3]
+        mom := 1
+    else if close < e and e < e[3]
+        mom := -1
+    int dir = st
+    if st == 0
+        dir := mom
+    else if mom == -st
+        dir := 0
+    float strn = a > 0 ? math.abs(close - e) / a : 0.0
+    [lag ? dir[1] : dir, lag ? strn[1] : strn]
+
+[mtT1, mtT1s]       = f_mtCtx(mtCtxPiv, false)
+[mtSec5, mtSec5s]   = request.security(syminfo.tickerid, mtTF5,  f_mtCtx(mtCtxPiv, true), lookahead = barmerge.lookahead_on)
+[mtSec15, mtSec15s] = request.security(syminfo.tickerid, mtTF15, f_mtCtx(mtCtxPiv, true), lookahead = barmerge.lookahead_on)
+// if the chart is already slower than the requested timeframe, fall back to the chart's own context
+int mtD5  = timeframe.in_seconds(mtTF5)  <= secPerBar ? nz(mtT1) : nz(mtSec5)
+int mtD15 = timeframe.in_seconds(mtTF15) <= secPerBar ? nz(mtT1) : nz(mtSec15)
+int mtD1  = nz(mtT1)
+
+// ---- pivots ----
+float mtPLv = ta.pivotlow(low, mtPivL, mtPivR)
+float mtPHv = ta.pivothigh(high, mtPivL, mtPivR)
+bool  mtNewPL = not na(mtPLv)
+bool  mtNewPH = not na(mtPHv)
+
+// ---- microchannel run counters (stair-stepping bars) ----
+mtMcBull := (low >= low[1] - mtMcTol * atr and high >= high[1] - mtMcTol * atr and close > close[1]) ? mtMcBull + 1 : 0
+mtMcBear := (high <= high[1] + mtMcTol * atr and low <= low[1] + mtMcTol * atr and close < close[1]) ? mtMcBear + 1 : 0
+
+// ---- signal bar anatomy ----
+float mtRngBar = high - low
+float mtAvgRng = ta.sma(mtRngBar, 20)
+float mtBody = mtRngBar > 0 ? math.abs(close - open) / mtRngBar : 0.0
+float mtCPos = mtRngBar > 0 ? (close - low) / mtRngBar : 0.5
+float mtUW   = mtRngBar > 0 ? (high - math.max(open, close)) / mtRngBar : 0.0
+float mtLW   = mtRngBar > 0 ? (math.min(open, close) - low) / mtRngBar : 0.0
+float mtRelSz = mtAvgRng > 0 ? mtRngBar / mtAvgRng : 1.0
+bool mtSbBullOk = close > open and mtBody >= mtSbBody and mtCPos >= mtSbClose and mtUW <= mtSbWick and mtRelSz >= mtSbSize
+bool mtSbBearOk = close < open and mtBody >= mtSbBody and (1.0 - mtCPos) >= mtSbClose and mtLW <= mtSbWick and mtRelSz >= mtSbSize
+float mtSqBull = close > open ? math.max(0.0, math.min(1.0, 0.30 * math.min(1.0, mtBody / 0.7) + 0.30 * mtCPos + 0.20 * (1.0 - math.min(1.0, mtUW / 0.4)) + 0.20 * math.min(1.0, mtRelSz / 1.2))) : 0.0
+float mtSqBear = close < open ? math.max(0.0, math.min(1.0, 0.30 * math.min(1.0, mtBody / 0.7) + 0.30 * (1.0 - mtCPos) + 0.20 * (1.0 - math.min(1.0, mtLW / 0.4)) + 0.20 * math.min(1.0, mtRelSz / 1.2))) : 0.0
+
+// ---- market-condition inputs ----
+float mtEma20 = ta.ema(close, 20)
+float mtPath  = ta.sum(math.abs(ta.change(close)), 20)
+float mtEr20  = mtPath > 0 ? math.abs(close - close[20]) / mtPath : 0.0
+float mtPath10 = ta.sum(math.abs(ta.change(close)), 10)
+float mtErNow = mtPath10 > 0 ? math.abs(close - close[10]) / mtPath10 : 0.0
+float mtErPrev = nz(mtErNow[10])
+float mtOvl = mtRngBar > 0 ? math.max(0.0, math.min(1.0, (math.min(high, high[1]) - math.max(low, low[1])) / mtRngBar)) : 1.0
+float mtOvlAvg = ta.sma(mtOvl, 20)
+float mtVCross = ta.sum((not na(vwapVal) and ((close > vwapVal and close[1] <= nz(vwapVal[1])) or (close < vwapVal and close[1] >= nz(vwapVal[1])))) ? 1.0 : 0.0, 20)
+float mtSlopeAtr = atr > 0 ? math.abs(mtEma20 - mtEma20[5]) / atr : 0.0
+float mtTrendScore = 0.4 * mtEr20 + 0.2 * (1.0 - mtOvlAvg) + 0.2 * (1.0 - math.min(1.0, mtVCross / 4.0)) + 0.2 * math.min(1.0, mtSlopeAtr)
+float mtVwapSlp = (not na(vwapVal) and atr > 0) ? (vwapVal - nz(vwapVal[5], vwapVal)) / atr : 0.0
+
+// ---- time-of-day bucket (New York): 0 open · 1 late AM · 2 midday · 3 afternoon · 4 other ----
+int mtHhmm = hour(time, "America/New_York") * 100 + minute(time, "America/New_York")
+int mtTodIdx = (mtHhmm >= 930 and mtHhmm < 1030) ? 0 : (mtHhmm >= 1030 and mtHhmm < 1200) ? 1 : (mtHhmm >= 1200 and mtHhmm < 1400) ? 2 : (mtHhmm >= 1400 and mtHhmm < 1600) ? 3 : 4
+
+// ---- per-bar event flags (reset every execution; set only on confirmed bars) ----
+bool mtEvNewBull = false
+bool mtEvNewBear = false
+bool mtEvBrkBull = false
+bool mtEvBrkBear = false
+bool mtEvFboBull = false
+bool mtEvFboBear = false
+bool mtEvH1 = false
+bool mtEvH2 = false
+bool mtEvL1 = false
+bool mtEvL2 = false
+bool mtEvContL = false
+bool mtEvContS = false
+bool mtEvRevL = false
+bool mtEvRevS = false
+bool mtEvH2L = false
+bool mtEvL2S = false
+bool mtEvEntry = false
+bool mtEvStop = false
+bool mtEvT1 = false
+bool mtEvT2 = false
+bool mtEvSetupL = false
+bool mtEvSetupS = false
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+f_mtPos(string p) =>
+    p == "Top Right" ? position.top_right : p == "Top Left" ? position.top_left : p == "Bottom Right" ? position.bottom_right : p == "Bottom Left" ? position.bottom_left : p == "Middle Right" ? position.middle_right : position.middle_left
+
+f_mtVal(MtTL t, int bi) => t.y1 + t.slope * (bi - t.x1)
+
+f_mtValid(MtTL t) => t.isMC or t.touches >= mtMinTouch
+
+f_mtQuality(MtTL t) =>
+    float tS = math.min(1.0, (t.touches - 1) / 3.0)
+    float sS = atr > 0 ? math.min(1.0, (t.dir * t.slope / atr) / 0.15) : 0.0
+    float lS = math.min(1.0, (t.x2 - t.x1) / 6.0)
+    float hS = math.min(1.0, t.hug / 3.0)
+    math.max(0.0, math.min(1.0, 0.35 * tS + 0.25 * sS + 0.20 * lS + 0.20 * hS))
+
+f_mtTypeName(int ty) => ty == 0 ? "Failed BO" : ty == 1 ? "Pullback cont." : ty == 2 ? "Reversal" : "H2/L2"
+
+f_mtCls(float sc) => sc >= 85 ? "A+ SETUP" : sc >= 75 ? "A SETUP" : sc >= 65 ? "B SETUP" : "BELOW B"
+
+f_mtCopy(MtTL dst, MtTL src) =>
+    dst.dir := src.dir
+    dst.state := src.state
+    dst.x1 := src.x1
+    dst.y1 := src.y1
+    dst.x2 := src.x2
+    dst.y2 := src.y2
+    dst.slope := src.slope
+    dst.touches := src.touches
+    dst.isMC := src.isMC
+    dst.quality := src.quality
+    dst.hug := src.hug
+    dst.peak := src.peak
+    dst.peakBar := src.peakBar
+    dst.brkBar := src.brkBar
+    dst.brkExt := src.brkExt
+    dst.brkPen := src.brkPen
+    dst.failBar := src.failBar
+    dst.structLvl := src.structLvl
+
+// retire the drawn line (to history or delete) and mark the record empty
+f_mtRetire(MtTL t, color fc) =>
+    if not na(t.ln)
+        if mtShowHist
+            line.set_xy2(t.ln, bar_index, f_mtVal(t, bar_index))
+            line.set_extend(t.ln, extend.none)
+            line.set_color(t.ln, fc)
+            line.set_style(t.ln, line.style_dotted)
+            line.set_width(t.ln, 1)
+            array.push(mtHist, t.ln)
+            if array.size(mtHist) > mtHistKeep
+                line.delete(array.shift(mtHist))
+        else
+            line.delete(t.ln)
+        t.ln := na
+    t.state := 0
+
+// genuine break: keep a post-break record (b) for setups B / C, retire the live line
+f_mtGenuine(MtTL t, MtTL b) =>
+    f_mtCopy(b, t)
+    b.ln := na
+    b.state := 3
+    b.structOK := true
+    b.closeOver := false
+    b.retested := false
+    b.retestBar := 0
+    b.retestExt := na
+    t.evGenuine := true
+    f_mtRetire(t, mtColBrk)
+
+f_mtDraw(MtTL t) =>
+    if mtShowTL and (t.state == 1 or t.state == 2 or t.state == 4) and f_mtValid(t)
+        float yEnd = f_mtVal(t, bar_index)
+        color col = t.state == 2 ? mtColBrk : (t.dir > 0 ? mtColBull : mtColBear)
+        if na(t.ln)
+            t.ln := line.new(t.x1, t.y1, bar_index, yEnd, color = col, width = 2, extend = extend.right)
+        else
+            line.set_xy1(t.ln, t.x1, t.y1)
+            line.set_xy2(t.ln, bar_index, yEnd)
+            line.set_color(t.ln, col)
+        line.set_style(t.ln, t.state == 2 ? line.style_dashed : line.style_solid)
+
+// ---- the per-direction trendline state machine (s = +1 support line / bull, -1 resistance line / bear)
+f_mtStep(MtTL t, MtTL b, int s, array<float> pPx, array<int> pBr, bool newPiv, int mcLen) =>
+    t.evNew := false
+    t.evBreak := false
+    t.evFail := false
+    t.evGenuine := false
+    int bi = bar_index
+    float pen = mtMaxPen * atr
+    float ext = s > 0 ? low : high
+    color fade = color.new(s > 0 ? mtColBull : mtColBear, 55)
+    int n = array.size(pPx)
+    // (1) form a line from the newest pivot, or count it as a touch of the live line
+    if newPiv and n >= 1
+        float p2 = array.get(pPx, n - 1)
+        int x2 = array.get(pBr, n - 1)
+        bool respected = false
+        if t.state == 1 or t.state == 4
+            float lvP = f_mtVal(t, x2)
+            if math.abs(p2 - lvP) <= mtTouchTol * atr
+                t.touches := t.touches + 1
+                t.x2 := x2
+                t.y2 := p2
+                t.quality := f_mtQuality(t)
+                respected := true
+        if not respected and n >= 2 and (t.state == 0 or t.state == 1)
+            for k = n - 2 to math.max(0, n - 5)
+                float p1 = array.get(pPx, k)
+                int x1 = array.get(pBr, k)
+                int dx = x2 - x1
+                if dx >= mtMinBetween and dx <= mtMaxBetween and s * (p2 - p1) > 0
+                    float slp = (p2 - p1) / dx
+                    if s * slp >= mtMinSlope * atr
+                        bool ok = true
+                        int hug = 0
+                        float pk = na
+                        int pkBar = x1
+                        int span = bi - x1
+                        for i = 0 to span
+                            int xb = bi - i
+                            float lvv = p1 + slp * (xb - x1)
+                            float eb = s > 0 ? low[i] : high[i]
+                            float pe = s > 0 ? high[i] : low[i]
+                            float gap = s * (eb - lvv)
+                            if gap < -pen
+                                ok := false
+                                break
+                            if gap <= 0.35 * atr
+                                hug += 1
+                            if na(pk) or s * (pe - pk) > 0
+                                pk := pe
+                                pkBar := xb
+                        if ok
+                            if t.state == 1
+                                f_mtRetire(t, fade)
+                            t.x1 := x1
+                            t.y1 := p1
+                            t.x2 := x2
+                            t.y2 := p2
+                            t.slope := slp
+                            t.touches := 2
+                            t.isMC := false
+                            t.hug := hug
+                            t.peak := pk
+                            t.peakBar := pkBar
+                            t.structLvl := p1
+                            t.state := 1
+                            t.quality := f_mtQuality(t)
+                            t.evNew := true
+                            break
+    // (2) microchannel line (few-bar channel, no separated pivots needed)
+    if mtMcOn and mcLen >= mtMcMin and (t.state == 0 or (t.state == 1 and t.isMC))
+        int i0 = math.min(mcLen, 12)
+        float y0 = s > 0 ? low[i0] : high[i0]
+        float bestSl = na
+        for i = i0 - 1 to 0
+            float yi = s > 0 ? low[i] : high[i]
+            float sl = (yi - y0) / (i0 - i)
+            if na(bestSl) or (s > 0 and sl < bestSl) or (s < 0 and sl > bestSl)
+                bestSl := sl
+        float move = s > 0 ? high - y0 : y0 - low
+        if not na(bestSl) and s * bestSl >= mtMinSlope * atr * 0.5 and move >= mtMcMinMove * atr
+            float pk2 = na
+            int pk2Bar = bi
+            for i = 0 to i0
+                float pe2 = s > 0 ? high[i] : low[i]
+                if na(pk2) or s * (pe2 - pk2) > 0
+                    pk2 := pe2
+                    pk2Bar := bi - i
+            bool fresh = t.state == 0
+            t.x1 := bi - i0
+            t.y1 := y0
+            t.x2 := bi
+            t.y2 := y0 + bestSl * i0
+            t.slope := bestSl
+            t.touches := 2
+            t.isMC := true
+            t.hug := 3
+            t.peak := pk2
+            t.peakBar := pk2Bar
+            t.structLvl := y0
+            t.state := 1
+            t.quality := math.min(1.0, 0.45 + 0.08 * (mcLen - mtMcMin) + 0.20 * math.min(1.0, move / (2.0 * atr)))
+            if fresh
+                t.evNew := true
+    // (3) failed breakout housekeeping (bars after the reclaim bar)
+    if t.state == 4 and t.failBar < bi
+        float lv4 = f_mtVal(t, bi)
+        bool lost = s > 0 ? low < t.brkExt : high > t.brkExt
+        if lost
+            f_mtGenuine(t, b)
+        else if bi - t.failBar > mtSigWait
+            if s * (close - lv4) > 0
+                t.state := 1
+            else
+                f_mtRetire(t, fade)
+    // (4) intact line: track the trend extreme, test for penetration, expire
+    if t.state == 1
+        float pe3 = s > 0 ? high : low
+        if s * (pe3 - t.peak) > 0
+            t.peak := pe3
+            t.peakBar := bi
+        float lv = f_mtVal(t, bi)
+        float depth = s * (lv - ext)
+        if depth > pen
+            t.state := 2
+            t.brkBar := bi
+            t.brkExt := ext
+            t.brkPen := atr > 0 ? depth / atr : 0.0
+            t.evBreak := true
+        else if bi - t.x2 > mtMaxAge
+            f_mtRetire(t, fade)
+    // (5) penetrated line: reclaim = FAILED breakout, no reclaim in time = genuine break
+    if t.state == 2
+        float lv2 = f_mtVal(t, bi)
+        t.brkExt := s > 0 ? math.min(t.brkExt, low) : math.max(t.brkExt, high)
+        if s * (close - lv2) > 0
+            t.state := 4
+            t.failBar := bi
+            t.touches := t.touches + 1
+            t.evFail := true
+        else if bi - t.brkBar >= mtFailBars
+            f_mtGenuine(t, b)
+
+// post-break record upkeep for setups B (pullback) and C (reversal)
+f_mtPost(MtTL b, int s) =>
+    if b.state == 3
+        int since = bar_index - b.brkBar
+        b.brkExt := s > 0 ? math.min(b.brkExt, low) : math.max(b.brkExt, high)
+        if not na(b.structLvl) and s * (close - b.structLvl) < 0
+            b.structOK := false
+        if s * (close - b.peak) > 0
+            b.closeOver := true
+        bool inZone = s > 0 ? high >= b.peak - mtRetestTol * atr : low <= b.peak + mtRetestTol * atr
+        if since >= 2 and inZone
+            b.retested := true
+            b.retestBar := bar_index
+            float re = s > 0 ? high : low
+            b.retestExt := na(b.retestExt) ? re : (s > 0 ? math.max(b.retestExt, re) : math.min(b.retestExt, re))
+        if since > mtPostBreak
+            b.state := 0
+
+// ---- candidate list ----
+f_mtAddCand(int typ, int d, float fbo, float tlq, float stp, float t3) =>
+    array.push(mtCT, typ)
+    array.push(mtCD, d)
+    array.push(mtCF, fbo)
+    array.push(mtCQ, tlq)
+    array.push(mtCS, stp)
+    array.push(mtC3, t3)
+
+// ---- plan + confluence score for one candidate. Returns [score, entry, stop, risk, t1, t2, t3, ok, roomR]
+f_mtEval(int typ, int d, float fboF, float tlQ, float stopStruct, float tgt3Ovr) =>
+    float tick = syminfo.mintick
+    float entry = d > 0 ? high + tick : low - tick
+    float sigStop = d > 0 ? low - tick : high + tick
+    float stp = sigStop
+    if not na(stopStruct)
+        float stS = d > 0 ? stopStruct - tick : stopStruct + tick
+        if mtStopMode == "Structural"
+            stp := stS
+        else if mtStopMode == "Wider of both"
+            stp := d > 0 ? math.min(sigStop, stS) : math.max(sigStop, stS)
+    if d * (entry - stp) <= 0
+        stp := sigStop
+    float risk = math.abs(entry - stp)
+    float minR = mtMinStopATR * atr
+    if risk < minR
+        risk := minR
+        stp := entry - d * risk
+    bool ok = risk > 0 and risk <= mtMaxStopATR * atr
+    // nearest opposing swing (obstacle) and last swing leg (measured move)
+    array<float> arr = d > 0 ? mtPHpx : mtPLpx
+    float obs = na
+    if array.size(arr) > 0
+        for k = 0 to array.size(arr) - 1
+            float v = array.get(arr, k)
+            if d > 0 and v > entry and (na(obs) or v < obs)
+                obs := v
+            if d < 0 and v < entry and (na(obs) or v > obs)
+                obs := v
+    float leg = (array.size(mtPHpx) > 0 and array.size(mtPLpx) > 0) ? math.abs(array.get(mtPHpx, array.size(mtPHpx) - 1) - array.get(mtPLpx, array.size(mtPLpx) - 1)) : 3.0 * risk
+    float t1 = entry + d * mtT1R * risk
+    float t2 = entry + d * mtT2R * risk
+    if mtTgtMode == "Market structure" and not na(obs) and d * (obs - entry) >= mtT1R * risk
+        t2 := obs
+    float t3 = entry + d * leg
+    if not na(tgt3Ovr) and d * (tgt3Ovr - entry) > d * (t2 - entry)
+        t3 := tgt3Ovr
+    if d * (t3 - t2) <= 0
+        t3 := entry + d * (mtT2R + 1.0) * risk
+    float roomR = na(obs) ? 3.0 : math.abs(obs - entry) / risk
+    // ---- factors (each 0..1) ----
+    float a15 = mtD15 == d ? 1.0 : (mtD15 == 0 ? 0.5 : 0.0)
+    float a5  = mtD5 == d ? 1.0 : (mtD5 == 0 ? 0.5 : 0.0)
+    float f1 = 0.6 * a15 + 0.4 * a5
+    if typ == 2
+        f1 := 0.35 + 0.65 * f1
+    float f2 = tlQ
+    float f3 = fboF
+    float f4 = d > 0 ? mtSqBull : mtSqBear
+    float f5 = 0.5
+    if typ == 0
+        f5 := mtCond == 1 ? 1.0 : (mtCond == 3 ? 0.75 : 0.3)
+    else if typ == 1
+        f5 := mtCond == 1 ? 1.0 : (mtCond == 3 ? 0.7 : 0.25)
+    else if typ == 2
+        f5 := mtCond == 3 ? 1.0 : (mtCond == 2 ? 0.6 : 0.35)
+    else
+        f5 := mtCond == 1 ? 1.0 : (mtCond == 3 ? 0.6 : 0.3)
+    float f6 = 0.5
+    if mtVwapOn and not na(vwapVal) and atr > 0
+        float vd = d * (close - vwapVal) / atr
+        if typ == 2
+            f6 := vd <= -1.5 ? 0.9 : (vd < 0 ? 0.55 : 0.4)
+        else if math.abs(vd) < 0.2
+            f6 := 0.6
+        else if vd > 0
+            f6 := d * mtVwapSlp > 0.02 ? 1.0 : 0.8
+        else
+            f6 := 0.3
+    float f7 = 0.0
+    if bar_index - mtLastHBar <= 3 and mtLastHDir == d
+        f7 := mtLastHCnt == 2 ? 1.0 : 0.6
+    if typ == 3
+        f7 := 1.0
+    float f8 = math.min(1.0, roomR / 2.0)
+    float w6 = mtVwapOn ? mtWVwap : 0.0
+    float wsum = mtWHtf + mtWTl + mtWFbo + mtWSb + mtWMkt + w6 + mtWH + mtWRoom
+    float sc = 0.0
+    if wsum > 0
+        array.set(mtFacTmp, 0, 100.0 * mtWHtf * f1 / wsum)
+        array.set(mtFacTmp, 1, 100.0 * mtWTl * f2 / wsum)
+        array.set(mtFacTmp, 2, 100.0 * mtWFbo * f3 / wsum)
+        array.set(mtFacTmp, 3, 100.0 * mtWSb * f4 / wsum)
+        array.set(mtFacTmp, 4, 100.0 * mtWMkt * f5 / wsum)
+        array.set(mtFacTmp, 5, 100.0 * w6 * f6 / wsum)
+        array.set(mtFacTmp, 6, 100.0 * mtWH * f7 / wsum)
+        array.set(mtFacTmp, 7, 100.0 * mtWRoom * f8 / wsum)
+        for q = 0 to 7
+            sc += array.get(mtFacTmp, q)
+    [sc, entry, stp, risk, t1, t2, t3, ok, roomR]
+
+// ---- statistics ----
+f_mtRecG(int g, float r) =>
+    int bs = g * 5
+    array.set(mtStat, bs, array.get(mtStat, bs) + 1.0)
+    array.set(mtStat, bs + 2, array.get(mtStat, bs + 2) + r)
+    if r > 0
+        array.set(mtStat, bs + 1, array.get(mtStat, bs + 1) + 1.0)
+        array.set(mtStat, bs + 3, array.get(mtStat, bs + 3) + r)
+    else
+        array.set(mtStat, bs + 4, array.get(mtStat, bs + 4) + r)
+
+f_mtRec(float r, int typ, int cnd, int tod, float sc) =>
+    f_mtRecG(0, r)
+    f_mtRecG(1 + typ, r)
+    f_mtRecG(5 + cnd - 1, r)
+    f_mtRecG(8 + tod, r)
+    f_mtRecG(13 + (sc >= 85 ? 0 : sc >= 75 ? 1 : 2), r)
+
+f_mtStatTxt(int g) =>
+    int bs = g * 5
+    float n = array.get(mtStat, bs)
+    n > 0 ? (str.tostring(n, "#") + " · " + str.tostring(100.0 * array.get(mtStat, bs + 1) / n, "#") + "% · " + str.tostring(array.get(mtStat, bs + 2) / n, "+0.00;-0.00") + "R") : "—"
+
+// ---- label / level bookkeeping ----
+f_mtSigLabel(string txt, int x, float y, color col, string sty) =>
+    label l = label.new(x, y, txt, color = col, textcolor = color.white, size = size.small, style = sty == "up" ? label.style_label_up : sty == "down" ? label.style_label_down : label.style_label_left)
+    array.push(mtSigLbls, l)
+    if array.size(mtSigLbls) > 60
+        label.delete(array.shift(mtSigLbls))
+
+f_mtKeepObj(line ln, label lb) =>
+    if mtKeepLvls
+        array.push(mtOldLn, ln)
+        array.push(mtOldLb, lb)
+        if array.size(mtOldLn) > 20
+            line.delete(array.shift(mtOldLn))
+        if array.size(mtOldLb) > 20
+            label.delete(array.shift(mtOldLb))
+    else
+        line.delete(ln)
+        label.delete(lb)
+
+// =============================================================================
+// ENGINE (confirmed bars only → no repainting)
+// =============================================================================
+f_mtLvl(float px, string txt, color col, int bi, bool dashed) =>
+    line l = line.new(bi, px, bi + 1, px, color = col, width = 1, style = dashed ? line.style_dashed : line.style_solid)
+    label lb = label.new(bi + 1, px, txt + " " + str.tostring(px, format.mintick), style = label.style_label_left, color = color.new(col, 100), textcolor = col, size = size.small)
+    [l, lb]
+
+f_mtMsg(string ev, int ty, int d, float sc) =>
+    ev + " | " + syminfo.ticker + " " + timeframe.period + (ty >= 0 ? " | " + f_mtTypeName(ty) + " " + (d > 0 ? "LONG" : "SHORT") + " | score " + str.tostring(sc, "#") : "")
+
+if mtOn and barstate.isconfirmed and not na(atr) and bar_index > 30
+    int bi = bar_index
+    float tick = syminfo.mintick
+    color colLong = color.new(#00c853, 0)
+    color colShort = color.new(#ff1744, 0)
+
+    // ---- 1) pivots ----
+    if mtNewPL
+        array.push(mtPLpx, mtPLv)
+        array.push(mtPLbr, bi - mtPivR)
+        if array.size(mtPLpx) > 6
+            array.shift(mtPLpx)
+            array.shift(mtPLbr)
+    if mtNewPH
+        array.push(mtPHpx, mtPHv)
+        array.push(mtPHbr, bi - mtPivR)
+        if array.size(mtPHpx) > 6
+            array.shift(mtPHpx)
+            array.shift(mtPHbr)
+
+    // ---- 2) trendline engines ----
+    f_mtStep(mtBull, mtBullBrk, 1, mtPLpx, mtPLbr, mtNewPL, mtMcBull)
+    f_mtStep(mtBear, mtBearBrk, -1, mtPHpx, mtPHbr, mtNewPH, mtMcBear)
+    f_mtPost(mtBullBrk, 1)
+    f_mtPost(mtBearBrk, -1)
+    f_mtDraw(mtBull)
+    f_mtDraw(mtBear)
+    if mtBull.evNew
+        mtEvNewBull := true
+    if mtBear.evNew
+        mtEvNewBear := true
+    if mtBull.evBreak
+        mtEvBrkBull := true
+    if mtBear.evBreak
+        mtEvBrkBear := true
+    if mtBull.evFail
+        mtEvFboBull := true
+    if mtBear.evFail
+        mtEvFboBear := true
+    if mtBull.evGenuine or mtBear.evGenuine
+        mtLastGenBar := bi
+
+    // ---- 3) market condition: TREND / RANGE / TRANSITION ----
+    bool recentBrk = bi - mtLastGenBar <= mtTransBars
+    if mtErPrev >= 0.4 and mtErNow <= 0.6 * mtErPrev and (recentBrk or mtErNow <= 0.25)
+        mtCond := 3
+    else if mtTrendScore >= mtTrendHi
+        mtCond := 1
+    else
+        mtCond := 2
+
+    // ---- 4) High 1/2 · Low 1/2 sequences (directional context required) ----
+    bool ctxBull = mtD1 >= 0 and (mtD1 == 1 or mtD5 == 1) and mtD15 != -1
+    bool ctxBear = mtD1 <= 0 and (mtD1 == -1 or mtD5 == -1) and mtD15 != 1
+    int hAtt = 0
+    int lAtt = 0
+    float hPbLow = na
+    float lPbHigh = na
+    if not ctxBull
+        hbPb := false
+        hbCnt := 0
+        hbRef := high
+    else
+        if not hbPb
+            hbRef := na(hbRef) ? high : math.max(hbRef, high)
+            if high < high[1]
+                hbPb := true
+                hbCnt := 0
+                hbLeg := true
+                hbLow := low
+                hbBars := 1
+        else
+            hbBars += 1
+            hbLow := math.min(hbLow, low)
+            if low < low[1]
+                hbLeg := true
+            if high > hbRef
+                hbPb := false
+                hbCnt := 0
+                hbRef := high
+            else if high > high[1] and hbLeg
+                hbCnt += 1
+                hbLeg := false
+                hPbLow := hbLow
+                if hbCnt <= 2
+                    hAtt := hbCnt
+            if hbPb and (hbBars > mtPbMax or (hbRef - hbLow) > mtPbDepth * atr)
+                hbPb := false
+                hbCnt := 0
+                hbRef := high
+    if not ctxBear
+        lbPb := false
+        lbCnt := 0
+        lbRef := low
+    else
+        if not lbPb
+            lbRef := na(lbRef) ? low : math.min(lbRef, low)
+            if low > low[1]
+                lbPb := true
+                lbCnt := 0
+                lbLeg := true
+                lbHigh := high
+                lbBars := 1
+        else
+            lbBars += 1
+            lbHigh := math.max(lbHigh, high)
+            if high > high[1]
+                lbLeg := true
+            if low < lbRef
+                lbPb := false
+                lbCnt := 0
+                lbRef := low
+            else if low < low[1] and lbLeg
+                lbCnt += 1
+                lbLeg := false
+                lPbHigh := lbHigh
+                if lbCnt <= 2
+                    lAtt := lbCnt
+            if lbPb and (lbBars > mtPbMax or (lbHigh - lbRef) > mtPbDepth * atr)
+                lbPb := false
+                lbCnt := 0
+                lbRef := low
+    if hAtt == 1
+        mtEvH1 := true
+    if hAtt == 2
+        mtEvH2 := true
+    if lAtt == 1
+        mtEvL1 := true
+    if lAtt == 2
+        mtEvL2 := true
+    if hAtt > 0
+        mtLastHBar := bi
+        mtLastHDir := 1
+        mtLastHCnt := hAtt
+    if lAtt > 0
+        mtLastHBar := bi
+        mtLastHDir := -1
+        mtLastHCnt := lAtt
+
+    // ---- 5) manage the pending / open setup ----
+    bool ended = false
+    string endTxt = ""
+    bool inRng = not mtStatsRng or (time >= mtStatsFrom and time <= mtStatsTo)
+    if stSt == 1 and bi > stSigBar
+        bool lg = stDir > 0
+        bool trig = lg ? high >= stEntry : low <= stEntry
+        bool stopT = lg ? low <= stStop : high >= stStop
+        if trig
+            stFill := lg ? math.max(open, stEntry) : math.min(open, stEntry)
+            stEntryBar := bi
+            stSt := 2
+            mtEvEntry := true
+            if mtShowSig
+                f_mtSigLabel("ENTRY", bi, stFill, color.new(color.gray, 20), "left")
+            if not na(stLnE)
+                line.set_style(stLnE, line.style_solid)
+            if stopT
+                float rr = stRisk > 0 ? stDir * (stStop - stFill) / stRisk : -1.0
+                if inRng
+                    f_mtRec(rr, stType, stCond, stTod, stScore)
+                stResolved := true
+                mtEvStop := true
+                ended := true
+                endTxt := "STOPPED (same bar as entry)"
+        else if stopT
+            ended := true
+            endTxt := "INVALIDATED before entry"
+        else if bi - stSigBar >= mtPendBars
+            ended := true
+            endTxt := "EXPIRED (not triggered)"
+    else if stSt == 2 and bi > stEntryBar
+        bool lg2 = stDir > 0
+        bool stopH = lg2 ? low <= stStop : high >= stStop
+        bool t1Reach = lg2 ? high >= stT1 : low <= stT1
+        bool t2Reach = lg2 ? high >= stT2 : low <= stT2
+        if stopH
+            float rl = stRisk > 0 ? stDir * (stStop - stFill) / stRisk : -1.0
+            if not stResolved and inRng
+                f_mtRec(rl, stType, stCond, stTod, stScore)
+            stResolved := true
+            mtEvStop := true
+            ended := true
+            endTxt := "STOP HIT"
+        else
+            if t1Reach and not stT1Hit
+                stT1Hit := true
+                mtEvT1 := true
+                if not stResolved and mtStatsTgt == "Target 1"
+                    if inRng
+                        f_mtRec(stRisk > 0 ? stDir * (stT1 - stFill) / stRisk : mtT1R, stType, stCond, stTod, stScore)
+                    stResolved := true
+                if mtShowSig
+                    f_mtSigLabel("T1", bi, stT1, color.new(#00897b, 10), "left")
+            if t2Reach
+                stT2Hit := true
+                mtEvT2 := true
+                if not stResolved
+                    if inRng
+                        f_mtRec(stRisk > 0 ? stDir * (stT2 - stFill) / stRisk : mtT2R, stType, stCond, stTod, stScore)
+                    stResolved := true
+                if mtShowSig
+                    f_mtSigLabel("T2", bi, stT2, color.new(#00695c, 0), "left")
+                ended := true
+                endTxt := "TARGET 2 REACHED"
+            else if bi - stEntryBar >= mtMaxHold
+                float rt = stRisk > 0 ? stDir * (close - stFill) / stRisk : 0.0
+                if not stResolved and inRng
+                    f_mtRec(rt, stType, stCond, stTod, stScore)
+                stResolved := true
+                ended := true
+                endTxt := "TIME-OUT"
+    if ended
+        if mtEvStop and mtShowSig
+            f_mtSigLabel("STOP", bi, stStop, color.new(#b71c1c, 10), "left")
+        stSt := 3
+        stRes := endTxt
+        if not na(stLnE)
+            line.set_x2(stLnE, bi)
+            line.set_x2(stLnS, bi)
+            line.set_x2(stLnT1, bi)
+            line.set_x2(stLnT2, bi)
+            label.set_x(stLbE, bi)
+            label.set_x(stLbS, bi)
+            label.set_x(stLbT1, bi)
+            label.set_x(stLbT2, bi)
+            f_mtKeepObj(stLnE, stLbE)
+            f_mtKeepObj(stLnS, stLbS)
+            f_mtKeepObj(stLnT1, stLbT1)
+            f_mtKeepObj(stLnT2, stLbT2)
+            if not na(stLnT3)
+                line.set_x2(stLnT3, bi)
+                label.set_x(stLbT3, bi)
+                f_mtKeepObj(stLnT3, stLbT3)
+            stLnE := na
+            stLnS := na
+            stLnT1 := na
+            stLnT2 := na
+            stLnT3 := na
+            stLbE := na
+            stLbS := na
+            stLbT1 := na
+            stLbT2 := na
+            stLbT3 := na
+    else if (stSt == 1 or stSt == 2) and not na(stLnE)
+        line.set_x2(stLnE, bi + 1)
+        line.set_x2(stLnS, bi + 1)
+        line.set_x2(stLnT1, bi + 1)
+        line.set_x2(stLnT2, bi + 1)
+        label.set_x(stLbE, bi + 1)
+        label.set_x(stLbS, bi + 1)
+        label.set_x(stLbT1, bi + 1)
+        label.set_x(stLbT2, bi + 1)
+        if not na(stLnT3)
+            line.set_x2(stLnT3, bi + 1)
+            label.set_x(stLbT3, bi + 1)
+
+    // ---- 6) look for a NEW setup (only when idle: one setup at a time, no duplicates) ----
+    if stSt == 0 or stSt == 3
+        array.clear(mtCT)
+        array.clear(mtCD)
+        array.clear(mtCF)
+        array.clear(mtCQ)
+        array.clear(mtCS)
+        array.clear(mtC3)
+        for si = 0 to 1
+            int s = si == 0 ? 1 : -1
+            MtTL tl = si == 0 ? mtBull : mtBear
+            MtTL bk = si == 0 ? mtBullBrk : mtBearBrk
+            bool sbOkS = s > 0 ? mtSbBullOk : mtSbBearOk
+            bool sbOkOpp = s > 0 ? mtSbBearOk : mtSbBullOk
+            // ---- A: failed microtrendline breakout ----
+            if mtSetA and tl.state == 4 and f_mtValid(tl) and sbOkS and s * (close - f_mtVal(tl, bi)) > 0 and (tl.isMC or mtD1 == s or mtD5 == s)
+                float speed = 1.0 - 0.5 * float(tl.failBar - tl.brkBar) / float(math.max(1, mtFailBars))
+                float depthF = 1.0 - math.min(1.0, tl.brkPen / 0.75)
+                f_mtAddCand(0, s, 0.6 * speed + 0.4 * depthF, tl.quality, tl.brkExt, na)
+            // ---- B: break + pullback continuation ----
+            if mtSetB and bk.state == 3 and bk.structOK and sbOkS and bi - bk.brkBar >= 2 and not (mtD15 == -s and mtD5 == -s)
+                float legH = math.max(math.abs(bk.peak - bk.y1), tick)
+                float retr = math.abs(bk.peak - bk.brkExt) / legH
+                if retr <= mtMaxRetr
+                    float extS = s > 0 ? low : high
+                    int nSup = 0
+                    if math.abs(extS - mtEma20) <= mtSupTol * atr
+                        nSup += 1
+                    if not na(vwapVal) and math.abs(extS - vwapVal) <= mtSupTol * atr
+                        nSup += 1
+                    array<float> sidePx = s > 0 ? mtPLpx : mtPHpx
+                    if array.size(sidePx) > 0 and math.abs(extS - array.get(sidePx, array.size(sidePx) - 1)) <= mtSupTol * atr
+                        nSup += 1
+                    if math.abs(extS - bk.structLvl) <= mtSupTol * atr
+                        nSup += 1
+                    if nSup >= 1
+                        f_mtAddCand(1, s, 0.4 + 0.3 * (1.0 - retr / mtMaxRetr) + 0.3 * math.min(1.0, nSup / 2.0), bk.quality, bk.brkExt, na)
+            // ---- C: failed-breakout reversal (broken line of trend s, signal in the opposite direction) ----
+            if mtSetC and bk.state == 3 and bk.retested and bi - bk.retestBar <= 3 and sbOkOpp
+                bool extended = math.abs(bk.peak - bk.y1) >= mtExtATR * atr or bk.touches >= 3
+                bool noOver = s * (bk.retestExt - bk.peak) <= mtRetestOver * atr
+                float sqOpp = s > 0 ? mtSqBear : mtSqBull
+                if extended and noOver and sqOpp >= mtRevSbMin
+                    int conf = 0
+                    if s * (bk.retestExt - bk.peak) <= 0.1 * atr
+                        conf += 1
+                    if sqOpp >= 0.75
+                        conf += 1
+                    int against = 0
+                    for j = 0 to 2
+                        if (s > 0 ? close[j] < open[j] : close[j] > open[j])
+                            against += 1
+                    if against >= 2
+                        conf += 1
+                    float wk = s > 0 ? math.max(mtUW, nz(mtUW[1]), nz(mtUW[2])) : math.max(mtLW, nz(mtLW[1]), nz(mtLW[2]))
+                    if wk >= 0.35
+                        conf += 1
+                    if not bk.closeOver and bi - bk.brkBar >= 3
+                        conf += 1
+                    if conf >= mtRevConf
+                        f_mtAddCand(2, -s, conf / 5.0, bk.quality, bk.retestExt, bk.y1)
+        // ---- D: High 2 / Low 2 second entry with trend context ----
+        if mtSetD and hAtt == 2 and mtSbBullOk
+            f_mtAddCand(3, 1, 0.5, mtBull.state == 1 or mtBull.state == 4 ? mtBull.quality : 0.4, hPbLow, na)
+        if mtSetD and lAtt == 2 and mtSbBearOk
+            f_mtAddCand(3, -1, 0.5, mtBear.state == 1 or mtBear.state == 4 ? mtBear.quality : 0.4, lPbHigh, na)
+        // ---- evaluate every candidate, keep the best ----
+        float bSc = -1.0
+        int bIdx = -1
+        float bEn = na
+        float bSp = na
+        float bRk = na
+        float bT1 = na
+        float bT2 = na
+        float bT3 = na
+        bool bOk = false
+        int nc = array.size(mtCT)
+        if nc > 0
+            for c = 0 to nc - 1
+                [sc, en, sp, rk, t1v, t2v, t3v, okv, rm] = f_mtEval(array.get(mtCT, c), array.get(mtCD, c), array.get(mtCF, c), array.get(mtCQ, c), array.get(mtCS, c), array.get(mtC3, c))
+                if okv and sc > bSc
+                    bSc := sc
+                    bIdx := c
+                    bEn := en
+                    bSp := sp
+                    bRk := rk
+                    bT1 := t1v
+                    bT2 := t2v
+                    bT3 := t3v
+                    bOk := true
+                    for q = 0 to 7
+                        array.set(mtFacBest, q, array.get(mtFacTmp, q))
+        if bOk and bSc >= mtMinScore
+            int bTy = array.get(mtCT, bIdx)
+            int bD = array.get(mtCD, bIdx)
+            stSt := 1
+            stDir := bD
+            stType := bTy
+            stScore := bSc
+            stEntry := bEn
+            stStop := bSp
+            stRisk := bRk
+            stT1 := bT1
+            stT2 := bT2
+            stT3 := bT3
+            stSigBar := bi
+            stT1Hit := false
+            stT2Hit := false
+            stResolved := false
+            stFill := na
+            stCond := mtCond
+            stTod := mtTodIdx
+            stSq := bD > 0 ? mtSqBull : mtSqBear
+            stRes := "PENDING ENTRY"
+            for q = 0 to 7
+                array.set(mtFac, q, array.get(mtFacBest, q))
+            // consume the source pattern so it cannot signal twice
+            if bTy == 0
+                if bD > 0
+                    mtBull.state := 1
+                else
+                    mtBear.state := 1
+            else if bTy == 1
+                if bD > 0
+                    mtBullBrk.state := 0
+                else
+                    mtBearBrk.state := 0
+            else if bTy == 2
+                if bD > 0
+                    mtBearBrk.state := 0
+                else
+                    mtBullBrk.state := 0
+            if bD > 0
+                mtEvSetupL := true
+            else
+                mtEvSetupS := true
+            if bTy <= 1
+                if bD > 0
+                    mtEvContL := true
+                else
+                    mtEvContS := true
+            else if bTy == 2
+                if bD > 0
+                    mtEvRevL := true
+                else
+                    mtEvRevS := true
+            else
+                if bD > 0
+                    mtEvH2L := true
+                else
+                    mtEvL2S := true
+            if mtShowSig
+                f_mtSigLabel((bD > 0 ? "LONG " : "SHORT ") + f_mtCls(bSc) + " " + str.tostring(bSc, "#") + "\n" + f_mtTypeName(bTy) + " · pending", bi, bD > 0 ? low : high, bD > 0 ? colLong : colShort, bD > 0 ? "up" : "down")
+            if mtShowLvls
+                [l1, b1] = f_mtLvl(stEntry, "ENTRY", color.new(color.white, 0), bi, true)
+                [l2, b2] = f_mtLvl(stStop, "STOP", colShort, bi, false)
+                [l3, b3] = f_mtLvl(stT1, "T1 " + str.tostring(mtT1R, "#.##") + "R", colLong, bi, false)
+                [l4, b4] = f_mtLvl(stT2, "T2", colLong, bi, false)
+                stLnE := l1
+                stLbE := b1
+                stLnS := l2
+                stLbS := b2
+                stLnT1 := l3
+                stLbT1 := b3
+                stLnT2 := l4
+                stLbT2 := b4
+                if mtShowT3
+                    [l5, b5] = f_mtLvl(stT3, "T3", color.new(colLong, 40), bi, true)
+                    stLnT3 := l5
+                    stLbT3 := b5
+
+    // ---- 7) detailed alerts (once per confirmed bar) ----
+    if mtAlertFn
+        if mtEvNewBull
+            alert(f_mtMsg("Bullish microtrendline detected", -1, 0, 0), alert.freq_once_per_bar_close)
+        if mtEvNewBear
+            alert(f_mtMsg("Bearish microtrendline detected", -1, 0, 0), alert.freq_once_per_bar_close)
+        if mtEvBrkBull
+            alert(f_mtMsg("Bullish microtrendline BREAK (support line penetrated)", -1, 0, 0), alert.freq_once_per_bar_close)
+        if mtEvBrkBear
+            alert(f_mtMsg("Bearish microtrendline BREAK (resistance line penetrated)", -1, 0, 0), alert.freq_once_per_bar_close)
+        if mtEvFboBull
+            alert(f_mtMsg("Bullish FAILED breakout", -1, 0, 0), alert.freq_once_per_bar_close)
+        if mtEvFboBear
+            alert(f_mtMsg("Bearish FAILED breakout", -1, 0, 0), alert.freq_once_per_bar_close)
+        if mtEvSetupL or mtEvSetupS
+            alert(f_mtMsg("SETUP " + f_mtCls(stScore), stType, stDir, stScore), alert.freq_once_per_bar_close)
+        if mtEvEntry
+            alert(f_mtMsg("ENTRY TRIGGERED", stType, stDir, stScore), alert.freq_once_per_bar_close)
+        if mtEvStop
+            alert(f_mtMsg("STOP LOSS reached", stType, stDir, stScore), alert.freq_once_per_bar_close)
+        if mtEvT1
+            alert(f_mtMsg("TARGET 1 reached", stType, stDir, stScore), alert.freq_once_per_bar_close)
+        if mtEvT2
+            alert(f_mtMsg("TARGET 2 reached", stType, stDir, stScore), alert.freq_once_per_bar_close)
+
+// =============================================================================
+// MARKERS · SHADING · VWAP
+// =============================================================================
+plot(mtOn and mtShowVwap ? vwapVal : na, "MT VWAP", color = color.new(#ffd54f, 0), linewidth = 1)
+bgcolor(mtOn and mtShowBg ? (mtCond == 1 ? color.new(#00c853, 93) : mtCond == 3 ? color.new(#ff9800, 92) : color.new(#9e9e9e, 94)) : na, title = "MT market condition")
+plotshape(mtOn and mtShowBrk and mtEvBrkBull, "MT bull line penetrated", shape.xcross, location.belowbar, color.new(#ff9800, 0), size = size.tiny)
+plotshape(mtOn and mtShowBrk and mtEvBrkBear, "MT bear line penetrated", shape.xcross, location.abovebar, color.new(#ff9800, 0), size = size.tiny)
+plotshape(mtOn and mtShowBrk and mtEvFboBull, "MT bullish failed breakout", shape.diamond, location.belowbar, color.new(#00e5ff, 0), text = "FBO", textcolor = color.new(#00e5ff, 0), size = size.tiny)
+plotshape(mtOn and mtShowBrk and mtEvFboBear, "MT bearish failed breakout", shape.diamond, location.abovebar, color.new(#e040fb, 0), text = "FBO", textcolor = color.new(#e040fb, 0), size = size.tiny)
+plotshape(mtOn and mtShowHL and mtEvH1, "MT H1", shape.labelup, location.belowbar, color.new(#26a69a, 30), text = "H1", textcolor = color.white, size = size.tiny)
+plotshape(mtOn and mtShowHL and mtEvH2, "MT H2", shape.labelup, location.belowbar, color.new(#00897b, 0), text = "H2", textcolor = color.white, size = size.tiny)
+plotshape(mtOn and mtShowHL and mtEvL1, "MT L1", shape.labeldown, location.abovebar, color.new(#ef5350, 30), text = "L1", textcolor = color.white, size = size.tiny)
+plotshape(mtOn and mtShowHL and mtEvL2, "MT L2", shape.labeldown, location.abovebar, color.new(#c62828, 0), text = "L2", textcolor = color.white, size = size.tiny)
+
+// =============================================================================
+// DASHBOARD + STATISTICS TABLE (last bar only; reads state committed on closed bars)
+// =============================================================================
+f_mtBias(int d) => d > 0 ? "▲" : d < 0 ? "▼" : "—"
+
+if mtOn and mtShowDash and barstate.islast
+    var table mtTbl = table.new(position.top_right, 2, 20, border_width = 1)
+    table.set_position(mtTbl, f_mtPos(mtDashPos))
+    table.clear(mtTbl, 0, 0, 1, 19)
+    // choose the line to describe: live line first, else the post-break record
+    MtTL showTl = mtBull
+    if mtBear.state != 0 and (mtBull.state == 0 or mtBear.x2 > mtBull.x2)
+        showTl := mtBear
+    if showTl.state == 0
+        showTl := mtBullBrk.state == 3 ? mtBullBrk : (mtBearBrk.state == 3 ? mtBearBrk : showTl)
+    string condTxt = mtCond == 1 ? "TREND" : mtCond == 3 ? "TRANSITION" : "RANGE"
+    color condCol = mtCond == 1 ? themeUpSolid : mtCond == 3 ? color.orange : themeMuted
+    string tlDir = showTl.state == 0 ? "none" : (showTl.dir > 0 ? "BULLISH ▲ (support)" : "BEARISH ▼ (resistance)")
+    color tlCol = showTl.state == 0 ? themeMuted : (showTl.dir > 0 ? themeUpSolid : themeDnSolid)
+    string tlQ = showTl.state == 0 ? "—" : (str.tostring(100.0 * showTl.quality, "#") + "%" + (showTl.isMC ? " · microchannel" : ""))
+    string tlStat = showTl.state == 0 ? "—" : showTl.state == 1 ? "INTACT" : showTl.state == 2 ? ("PENETRATED " + str.tostring(bar_index - showTl.brkBar) + "b ago") : showTl.state == 4 ? "FAILED BREAKOUT ✔ (await signal bar)" : ("BROKEN " + str.tostring(bar_index - showTl.brkBar) + "b ago")
+    string clsTxt = stSt == 0 ? "NO TRADE" : f_mtCls(stScore)
+    string dirTxt = stSt == 0 ? "—" : (stDir > 0 ? "LONG" : "SHORT")
+    color dirCol = stSt == 0 ? themeMuted : (stDir > 0 ? themeUpSolid : themeDnSolid)
+    string hTxt = (bar_index - mtLastHBar <= 5) ? ((mtLastHDir > 0 ? "H" : "L") + str.tostring(mtLastHCnt) + " (" + str.tostring(bar_index - mtLastHBar) + "b ago)") : "—"
+    string facN = "HTF|TL|PAT|SB|MKT|VWAP|H|ROOM"
+    string whyTxt = ""
+    string weakTxt = ""
+    float wsumD = mtWHtf + mtWTl + mtWFbo + mtWSb + mtWMkt + (mtVwapOn ? mtWVwap : 0.0) + mtWH + mtWRoom
+    if stSt != 0 and wsumD > 0
+        array<string> names = str.split(facN, "|")
+        array<float> wts = array.from(mtWHtf, mtWTl, mtWFbo, mtWSb, mtWMkt, mtVwapOn ? mtWVwap : 0.0, mtWH, mtWRoom)
+        for q = 0 to 7
+            float w = array.get(wts, q)
+            if w > 0
+                float pts = array.get(mtFac, q)
+                float mx = 100.0 * w / wsumD
+                whyTxt += array.get(names, q) + " " + str.tostring(pts, "#") + "/" + str.tostring(mx, "#") + "  "
+                if pts < 0.5 * mx
+                    weakTxt += array.get(names, q) + " "
+    int r = 0
+    table.cell(mtTbl, 0, r, "BROOKS MICROTRENDLINE", text_color = themeTxt, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtTbl, 1, r, mtOn ? "ON" : "", text_color = themeMuted, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_right)
+    r += 1
+    table.cell(mtTbl, 0, r, "Market", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtTbl, 1, r, condTxt, text_color = condCol, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    r += 1
+    table.cell(mtTbl, 0, r, "Bias 15m·5m·1m", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtTbl, 1, r, f_mtBias(mtD15) + "  " + f_mtBias(mtD5) + "  " + f_mtBias(mtD1), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    r += 1
+    table.cell(mtTbl, 0, r, "Trendline", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtTbl, 1, r, tlDir, text_color = tlCol, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    r += 1
+    table.cell(mtTbl, 0, r, "Quality", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtTbl, 1, r, tlQ, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    r += 1
+    table.cell(mtTbl, 0, r, "Touches", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtTbl, 1, r, showTl.state == 0 ? "—" : str.tostring(showTl.touches), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    r += 1
+    table.cell(mtTbl, 0, r, "Break status", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtTbl, 1, r, tlStat, text_color = showTl.state == 2 or showTl.state == 3 ? color.orange : themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    r += 1
+    table.cell(mtTbl, 0, r, "Setup", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtTbl, 1, r, stSt == 0 ? "NO TRADE" : (clsTxt + " · " + f_mtTypeName(stType)), text_color = dirCol, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    r += 1
+    table.cell(mtTbl, 0, r, "Direction · score", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtTbl, 1, r, stSt == 0 ? "—" : (dirTxt + " · " + str.tostring(stScore, "#") + "/100"), text_color = dirCol, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    r += 1
+    table.cell(mtTbl, 0, r, "Signal bar · H/L", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtTbl, 1, r, (stSt == 0 ? "—" : str.tostring(100.0 * stSq, "#") + "%") + " · " + hTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    r += 1
+    table.cell(mtTbl, 0, r, "Entry", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtTbl, 1, r, stSt == 0 ? "—" : ((stSt == 1 ? "stop-entry " : "filled ") + str.tostring(stSt == 2 or (stSt == 3 and not na(stFill)) ? stFill : stEntry, format.mintick)), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    r += 1
+    table.cell(mtTbl, 0, r, "Stop", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtTbl, 1, r, stSt == 0 ? "—" : str.tostring(stStop, format.mintick), text_color = themeDnSolid, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    r += 1
+    table.cell(mtTbl, 0, r, "Target 1 · 2", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtTbl, 1, r, stSt == 0 ? "—" : (str.tostring(stT1, format.mintick) + " · " + str.tostring(stT2, format.mintick)), text_color = themeUpSolid, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    r += 1
+    table.cell(mtTbl, 0, r, "Risk : reward", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtTbl, 1, r, stSt == 0 ? "—" : ("1 : " + str.tostring(mtT1R, "#.##") + " / 1 : " + str.tostring(math.abs(stT2 - stEntry) / math.max(stRisk, syminfo.mintick), "#.##")), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    r += 1
+    table.cell(mtTbl, 0, r, "Status", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtTbl, 1, r, stSt == 0 ? "no active setup" : (stSt == 1 ? "PENDING ENTRY" : stSt == 2 ? ("TRIGGERED" + (stT1Hit ? " · T1 ✔" : "")) : stRes), text_color = stSt == 2 ? themeUpSolid : themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    r += 1
+    table.cell(mtTbl, 0, r, "Score drivers", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtTbl, 1, r, whyTxt == "" ? "—" : whyTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+    r += 1
+    table.cell(mtTbl, 0, r, "Weak factors", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtTbl, 1, r, weakTxt == "" ? "—" : weakTxt, text_color = color.orange, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+    table.set_frame_color(mtTbl, color.new(condCol, 35))
+    table.set_frame_width(mtTbl, themeBW)
+
+if mtOn and mtShowStats and barstate.islast
+    var table mtStTbl = table.new(position.bottom_right, 2, 20, border_width = 1)
+    table.set_position(mtStTbl, f_mtPos(mtStatsPos))
+    table.clear(mtStTbl, 0, 0, 1, 19)
+    array<string> labs = array.from("ALL SIGNALS", "Failed BO", "Pullback cont.", "Reversal", "H2/L2", "Trend", "Range", "Transition", "Open 9:30-10:30", "10:30-12:00", "12:00-14:00", "14:00-16:00", "Other hours", "Score A+ (85+)", "Score A (75-84)", "Score B (<75)")
+    int sr = 0
+    table.cell(mtStTbl, 0, sr, "SIGNAL STATS", text_color = themeTxt, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(mtStTbl, 1, sr, "n · win% · expectancy (R)", text_color = themeMuted, bgcolor = themePanelBg, text_size = size.tiny, text_halign = text.align_left)
+    sr += 1
+    float nAll = array.get(mtStat, 0)
+    string extra = nAll > 0 ? ("win " + str.tostring(array.get(mtStat, 1), "#") + " / loss " + str.tostring(nAll - array.get(mtStat, 1), "#") + " · avg win " + str.tostring(array.get(mtStat, 1) > 0 ? array.get(mtStat, 3) / array.get(mtStat, 1) : 0.0, "+0.00") + "R · avg loss " + str.tostring(nAll - array.get(mtStat, 1) > 0 ? array.get(mtStat, 4) / (nAll - array.get(mtStat, 1)) : 0.0, "0.00") + "R") : "no completed signals"
+    for g = 0 to 15
+        table.cell(mtStTbl, 0, sr, array.get(labs, g), text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+        table.cell(mtStTbl, 1, sr, f_mtStatTxt(g), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+        sr += 1
+    table.cell(mtStTbl, 0, sr, "Totals", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+    table.cell(mtStTbl, 1, sr, extra, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+    sr += 1
+    table.cell(mtStTbl, 0, sr, "Not a backtest", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+    table.cell(mtStTbl, 1, sr, "1 position at a time · stop wins same-bar ties · no costs", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+    table.set_frame_color(mtStTbl, color.new(themeMuted, 40))
+    table.set_frame_width(mtStTbl, themeBW)
+
+// =============================================================================
+// ALERT CONDITIONS (fire only on confirmed bars; message placeholders are filled by TradingView)
+// =============================================================================
+alertcondition(mtOn and mtEvNewBull, "MT 1 · Bullish microtrendline detected", "Bullish microtrendline detected {{ticker}} {{interval}}")
+alertcondition(mtOn and mtEvNewBear, "MT 2 · Bearish microtrendline detected", "Bearish microtrendline detected {{ticker}} {{interval}}")
+alertcondition(mtOn and mtEvBrkBull, "MT 3 · Bullish microtrendline break (support penetrated)", "Bullish microtrendline broken {{ticker}} {{interval}}")
+alertcondition(mtOn and mtEvBrkBear, "MT 4 · Bearish microtrendline break (resistance penetrated)", "Bearish microtrendline broken {{ticker}} {{interval}}")
+alertcondition(mtOn and mtEvFboBull, "MT 5 · Bullish failed breakout", "Bullish failed breakout {{ticker}} {{interval}}")
+alertcondition(mtOn and mtEvFboBear, "MT 6 · Bearish failed breakout", "Bearish failed breakout {{ticker}} {{interval}}")
+alertcondition(mtOn and mtEvContL, "MT 7 · Bullish continuation setup", "Bullish continuation setup {{ticker}} {{interval}}")
+alertcondition(mtOn and mtEvContS, "MT 8 · Bearish continuation setup", "Bearish continuation setup {{ticker}} {{interval}}")
+alertcondition(mtOn and mtEvRevL, "MT 9 · Bullish reversal setup", "Bullish reversal setup {{ticker}} {{interval}}")
+alertcondition(mtOn and mtEvRevS, "MT 10 · Bearish reversal setup", "Bearish reversal setup {{ticker}} {{interval}}")
+alertcondition(mtOn and mtEvH2L, "MT 11 · High 2 long setup", "High 2 long setup {{ticker}} {{interval}}")
+alertcondition(mtOn and mtEvL2S, "MT 12 · Low 2 short setup", "Low 2 short setup {{ticker}} {{interval}}")
+alertcondition(mtOn and mtEvEntry, "MT 13 · Entry triggered", "Entry triggered {{ticker}} {{interval}}")
+alertcondition(mtOn and mtEvStop, "MT 14 · Stop loss reached", "Stop loss reached {{ticker}} {{interval}}")
+alertcondition(mtOn and mtEvT1, "MT 15 · Target 1 reached", "Target 1 reached {{ticker}} {{interval}}")
+alertcondition(mtOn and mtEvT2, "MT 16 · Target 2 reached", "Target 2 reached {{ticker}} {{interval}}")
+
 // -----------------------------------------------------------------------------
 // ALERTS
 // -----------------------------------------------------------------------------
