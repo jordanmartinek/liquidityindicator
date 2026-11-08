@@ -29,7 +29,7 @@ var string G_EMO    = "⑧ Emoji Tags"
 var string G_TESTED = "⑨ Tested Levels"
 var string G_EXEC   = "⑩ FVG Execution (setups)"
 var string G_BIAS   = "⑪ Daily Bias"
-var string G_REGIME = "⑭ Market Conditions (regime)"
+var string G_REGIME = "⑭ Market Condition (shared)"
 var string G_CLARITY = "⑮ Level Clarity (importance declutter)"
 var string G_ORB    = "⑯ Opening Range Breakout (ORB)"
 
@@ -311,16 +311,12 @@ biasFadeLvls = input.bool(false, "Fade counter-bias-side levels", tooltip = "Als
 // -----------------------------------------------------------------------------
 // INPUTS — MARKET CONDITIONS (REGIME)
 // -----------------------------------------------------------------------------
-// Classifies the tape as DIRECTIONAL / BALANCED / UNCLEAR from transparent signals (EMA-trend
-// strength, position in the dealing range, VWAP-cross frequency) — so you stop treating the
-// middle of a chop as a clean trend. Can gate the FVG execution engine.
-regimeOn   = input.bool(true,  "Show market-conditions regime", tooltip = "Classify the current tape as DIRECTIONAL (trend + structure aligned), BALANCED (rotating in a range), or UNCLEAR, from transparent signals: EMA-trend strength, where price sits in the dealing range, and how often price is crossing VWAP. Shown as a small banner; can also gate the execution engine (below).", group = G_REGIME)
-regimeBanner = input.bool(true, "  Show regime banner", group = G_REGIME)
-regimeBanPos = input.string("Bottom Left", "  Regime banner position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_REGIME)
-regimeTrendMin = input.float(0.6, "  Trend-strength threshold (EMA sep × ATR)", minval = 0.1, maxval = 3.0, step = 0.1, tooltip = "How far the fast/slow EMAs must separate (in ATRs) for the tape to read DIRECTIONAL. Higher = stricter (only strong trends qualify).", group = G_REGIME)
-regimeChopBars = input.int(20, "  VWAP-cross window (bars)", minval = 5, maxval = 100, tooltip = "Look-back used to count how often price crosses VWAP. Many crosses in this window = chop.", group = G_REGIME)
-regimeChopN  = input.int(4, "  VWAP crosses = chop", minval = 2, maxval = 20, tooltip = "This many VWAP crosses within the window flags potential CHOP (and pulls the regime toward BALANCED/UNCLEAR).", group = G_REGIME)
-regimeGateExec = input.bool(false, "  Gate execution: suppress continuation setups mid-range", tooltip = "When ON and the regime is BALANCED/chop, the FVG execution engine will NOT arm CONTINUATION setups in the middle of the range — but still allows REVERSAL setups near the range extremes (premium/discount). This directly targets getting chopped up trading the middle of a range. OFF = the regime is informational only and never blocks a setup.", group = G_REGIME)
+// One shared TREND / RANGE / TRANSITION classifier (computed in MARKET CONDITION below). Feeds
+// the FVG execution gate and the Brooks setups' market-suitability factor.
+regimeOn   = input.bool(true,  "Show market condition (TREND / RANGE / TRANSITION)", tooltip = "One shared classifier used by the whole indicator (FVG execution gate + Brooks setups). Blends efficiency ratio, bar overlap, VWAP-cross frequency and EMA slope; TRANSITION = a trend losing efficiency, especially right after a genuine microtrendline break. Shown in the context panel (or in the Brooks dashboard when that is on).", group = G_REGIME)
+mtTrendHi   = input.float(0.55, "  Trend score threshold", minval = 0.2, maxval = 0.9, step = 0.05, group = G_REGIME)
+mtTransBars = input.int(15, "  Transition window after a microtrendline break (bars)", minval = 3, maxval = 60, group = G_REGIME)
+regimeGateExec = input.bool(false, "  Gate execution: suppress continuation setups mid-range", tooltip = "When ON and the market condition is RANGE, the FVG execution engine will NOT arm CONTINUATION setups in the middle of the range — but still allows REVERSAL setups near the range extremes (premium/discount). This directly targets getting chopped up trading the middle of a range. OFF = the regime is informational only and never blocks a setup.", group = G_REGIME)
 
 // -----------------------------------------------------------------------------
 // INPUTS — LEVEL CLARITY (importance declutter)
@@ -348,6 +344,106 @@ orbExtend  = input.bool(true, "  Extend ORB across the session", group = G_ORB)
 orbHist    = input.int(10, "  Max historical ORBs kept", minval = 1, maxval = 60, tooltip = "How many past days' opening-range boxes stay drawn on the chart for look-back analysis. Oldest is dropped when the limit is reached.", group = G_ORB)
 orbBrkBuf  = input.float(0.10, "  Break buffer (× ATR beyond edge)", minval = 0.0, maxval = 2.0, step = 0.05, tooltip = "A close must clear the opening-range edge by this many ATRs before it counts as a break — so a one-tick poke beyond the high/low no longer registers as a breakout. Raising this filters noise and lifts the realized 'breaks held' rate (at the cost of registering real breaks a touch later). 0 = legacy behaviour (any close beyond the edge). On the 5-minute chart ~0.10-0.25 cuts most fakeouts.", group = G_ORB)
 orbBrkBars = input.int(1, "  Break confirmation (consecutive closes)", minval = 1, maxval = 5, tooltip = "How many CONSECUTIVE confirmed closes beyond the buffered edge are required before a break is registered. 1 = a single qualifying close (legacy). 2+ filters flash-breaks that immediately reverse, raising the hold rate.", group = G_ORB)
+
+// -----------------------------------------------------------------------------
+// INPUTS — ⑰ BROOKS MICROTRENDLINES (execution + entries)
+// -----------------------------------------------------------------------------
+var string G_MT  = "⑰ Brooks Microtrendlines · Core & Display"
+var string G_MTD = "⑰ Brooks Microtrendlines · Detection"
+var string G_MTS = "⑰ Brooks Microtrendlines · Setups & Signal Bar"
+var string G_MTC = "⑰ Brooks Microtrendlines · Confidence Weights"
+var string G_MTT = "⑰ Brooks Microtrendlines · Trade Plan"
+var string G_MTA = "⑰ Brooks Microtrendlines · Alerts & Stats"
+
+// ---- core & display ----
+mtOn        = input.bool(true, "Enable Brooks microtrendline module", tooltip = "Master on/off for the whole microtrendline price-action module (trendlines, setups, dashboard, alerts, stats). Off = nothing from this module is calculated or drawn.", group = G_MT)
+mtTF5       = input.timeframe("5", "  Secondary context timeframe", group = G_MT)
+mtTF15      = input.timeframe("15", "  Higher-timeframe directional context", group = G_MT)
+mtCtxPiv    = input.int(3, "  Context swing pivot length", minval = 2, maxval = 10, group = G_MT)
+mtShowDash  = input.bool(true, "Show dashboard", group = G_MT)
+mtDashPos   = input.string("Top Right", "  Dashboard position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_MT)
+mtShowTL    = input.bool(true, "Show active trendlines", group = G_MT)
+mtShowHist  = input.bool(true, "Show historical trendlines", group = G_MT)
+mtHistKeep  = input.int(12, "  Historical trendlines kept", minval = 1, maxval = 60, group = G_MT)
+mtShowBrk   = input.bool(true, "Show break / failed-breakout markers", group = G_MT)
+mtShowSig   = input.bool(true, "Show LONG / SHORT signal markers", group = G_MT)
+mtShowHL    = input.bool(true, "Show H1/H2/L1/L2 markers", group = G_MT)
+mtShowLvls  = input.bool(true, "Show entry / stop / target levels", group = G_MT)
+mtKeepLvls  = input.bool(true, "  Keep finished setups' levels (last few)", group = G_MT)
+mtShowVwap  = input.bool(false, "Show VWAP", group = G_MT)
+mtShowBg    = input.bool(false, "Market-condition background shading", group = G_MT)
+mtColBull   = input.color(#00c853, "  Bullish trendline", group = G_MT)
+mtColBear   = input.color(#ff1744, "  Bearish trendline", group = G_MT)
+mtColBrk    = input.color(#ff9800, "  Break marker / broken line", group = G_MT)
+
+// ---- detection ----
+mtPivL      = input.int(2, "Pivot sensitivity · bars left", minval = 1, maxval = 6, group = G_MTD)
+mtPivR      = input.int(1, "Pivot sensitivity · bars right", minval = 1, maxval = 4, tooltip = "Pivots are confirmed this many bars late (no repaint). Smaller = faster, noisier.", group = G_MTD)
+mtMinTouch  = input.int(2, "Minimum trendline touches", minval = 2, maxval = 5, group = G_MTD)
+mtMaxAge    = input.int(30, "Maximum trendline age (bars since last touch)", minval = 5, maxval = 200, group = G_MTD)
+mtMinBetween = input.int(2, "Min bars between pivots", minval = 1, maxval = 10, group = G_MTD)
+mtMaxBetween = input.int(10, "Max bars between pivots", minval = 3, maxval = 30, tooltip = "Keeps lines MICRO (about 2-10 bars) rather than structural trendlines.", group = G_MTD)
+mtMinSlope  = input.float(0.02, "Minimum slope (ATR per bar)", minval = 0.0, step = 0.01, group = G_MTD)
+mtMaxPen    = input.float(0.15, "Max penetration before 'broken' (× ATR)", minval = 0.0, step = 0.05, group = G_MTD)
+mtTouchTol  = input.float(0.12, "Touch tolerance (× ATR)", minval = 0.0, step = 0.02, group = G_MTD)
+mtMcOn      = input.bool(true, "Microchannel detection (few-bar channels)", tooltip = "Strong microchannels can develop over very few bars. Consecutive bars with rising lows/highs (falling for bears) get a supporting line without needing separated pivots.", group = G_MTD)
+mtMcMin     = input.int(4, "  Microchannel min bars", minval = 3, maxval = 10, group = G_MTD)
+mtMcTol     = input.float(0.05, "  Microchannel tolerance (× ATR)", minval = 0.0, step = 0.01, group = G_MTD)
+mtMcMinMove = input.float(1.0, "  Microchannel min net move (× ATR)", minval = 0.0, step = 0.1, group = G_MTD)
+mtFailBars  = input.int(4, "Failed-breakout window (bars to reclaim)", minval = 1, maxval = 12, tooltip = "After a penetration, price must close back on the trend side of the line within this many bars to count as a FAILED breakout; otherwise it is a genuine break.", group = G_MTD)
+mtSigWait   = input.int(2, "Signal-bar wait after reclaim (bars)", minval = 0, maxval = 6, group = G_MTD)
+
+// ---- setups & signal bar ----
+mtSetA      = input.bool(true, "Setup A · Failed microtrendline breakout", group = G_MTS)
+mtSetB      = input.bool(true, "Setup B · Break + pullback continuation", group = G_MTS)
+mtSetC      = input.bool(true, "Setup C · Failed-breakout reversal", group = G_MTS)
+mtSetD      = input.bool(true, "Setup D · High 2 / Low 2", group = G_MTS)
+mtPostBreak = input.int(20, "Post-break window for B / C (bars)", minval = 5, maxval = 100, group = G_MTS)
+mtMaxRetr   = input.float(0.75, "B · max pullback retracement of the leg", minval = 0.2, maxval = 1.0, step = 0.05, group = G_MTS)
+mtSupTol    = input.float(0.8, "B · support/resistance proximity (× ATR)", minval = 0.1, step = 0.1, group = G_MTS)
+mtExtATR    = input.float(3.0, "C · min extension of prior move (× ATR)", minval = 0.5, step = 0.5, group = G_MTS)
+mtRetestTol = input.float(0.25, "C · retest zone around old extreme (× ATR)", minval = 0.0, step = 0.05, group = G_MTS)
+mtRetestOver = input.float(0.25, "C · max overshoot of old extreme (× ATR)", minval = 0.0, step = 0.05, group = G_MTS)
+mtRevConf   = input.int(3, "C · confirmations required (of 5)", minval = 1, maxval = 5, group = G_MTS)
+mtRevSbMin  = input.float(0.65, "C · min signal-bar quality (0-1)", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
+mtPbMax     = input.int(15, "H/L · max pullback length (bars)", minval = 3, maxval = 50, group = G_MTS)
+mtPbDepth   = input.float(5.0, "H/L · max pullback depth (× ATR)", minval = 1.0, step = 0.5, group = G_MTS)
+mtSbBody    = input.float(0.45, "Signal bar · min body / range", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
+mtSbClose   = input.float(0.65, "Signal bar · min close position (0=far, 1=at extreme)", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
+mtSbWick    = input.float(0.30, "Signal bar · max opposing wick / range", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
+mtSbSize    = input.float(0.6, "Signal bar · min size vs 20-bar average range", minval = 0.0, step = 0.1, group = G_MTS)
+
+// ---- confidence weights (normalised, so they need not sum to 100) ----
+mtWHtf      = input.float(15, "Weight · higher-timeframe alignment", minval = 0, group = G_MTC)
+mtWTl       = input.float(15, "Weight · microtrendline quality", minval = 0, group = G_MTC)
+mtWFbo      = input.float(20, "Weight · pattern / failed-breakout confirmation", minval = 0, group = G_MTC)
+mtWSb       = input.float(15, "Weight · signal bar quality", minval = 0, group = G_MTC)
+mtWMkt      = input.float(10, "Weight · market-condition suitability", minval = 0, group = G_MTC)
+mtWVwap     = input.float(10, "Weight · VWAP alignment", minval = 0, group = G_MTC)
+mtWH        = input.float(10, "Weight · H1/H2 · L1/L2 confluence", minval = 0, group = G_MTC)
+mtWRoom     = input.float(5, "Weight · room to target", minval = 0, group = G_MTC)
+mtVwapOn    = input.bool(true, "VWAP filter (scoring only; off = VWAP weight ignored)", group = G_MTC)
+mtMinScore  = input.int(65, "Minimum score to display an actionable signal", minval = 30, maxval = 95, group = G_MTC)
+
+// ---- trade plan ----
+mtStopMode  = input.string("Wider of both", "Stop placement", options = ["Signal bar","Structural","Wider of both"], group = G_MTT)
+mtMinStopATR = input.float(0.4, "Minimum stop distance (× ATR)", minval = 0.05, step = 0.05, group = G_MTT)
+mtMaxStopATR = input.float(3.0, "Maximum stop distance (× ATR) · wider = no setup", minval = 0.5, step = 0.25, group = G_MTT)
+mtTgtMode   = input.string("R multiples", "Targets based on", options = ["R multiples","Market structure"], group = G_MTT)
+mtT1R       = input.float(1.0, "Target 1 (R)", minval = 0.25, step = 0.25, group = G_MTT)
+mtT2R       = input.float(2.0, "Target 2 (R)", minval = 0.5, step = 0.25, group = G_MTT)
+mtShowT3    = input.bool(true, "Show Target 3 (swing / measured move)", group = G_MTT)
+mtPendBars  = input.int(3, "Pending entry expires after (bars)", minval = 1, maxval = 20, group = G_MTT)
+mtMaxHold   = input.int(60, "Max bars in trade before time-out", minval = 5, maxval = 500, group = G_MTT)
+
+// ---- alerts & stats ----
+mtAlertFn   = input.bool(true, "Send detailed alert() messages (instrument · TF · setup · direction · score)", tooltip = "Create the alert with condition 'Any alert() function call'. The alertcondition() entries below are always available too.", group = G_MTA)
+mtShowStats = input.bool(true, "Show historical signal statistics table", group = G_MTA)
+mtStatsPos  = input.string("Bottom Right", "  Stats table position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_MTA)
+mtStatsTgt  = input.string("Target 1", "  A signal 'wins' when it reaches", options = ["Target 1","Target 2"], group = G_MTA)
+mtStatsRng  = input.bool(false, "  Restrict statistics to date range", group = G_MTA)
+mtStatsFrom = input.time(timestamp("2024-01-01T00:00:00"), "    From", group = G_MTA)
+mtStatsTo   = input.time(timestamp("2100-01-01T00:00:00"), "    To", group = G_MTA)
 
 f_lineStyle() =>
     lineStyleI == "Dashed" ? line.style_dashed : lineStyleI == "Dotted" ? line.style_dotted : line.style_solid
@@ -825,26 +921,32 @@ var float pdFib2 = 0.788
 var float pdFib3 = 0.886
 
 // -----------------------------------------------------------------------------
-// MARKET CONDITIONS (REGIME) — DIRECTIONAL / BALANCED / UNCLEAR, from transparent signals
+// MARKET CONDITION — one shared classifier: 1 TREND · 2 RANGE · 3 TRANSITION
 // -----------------------------------------------------------------------------
-// 1) trend strength: fast/slow EMA separation vs ATR (reuses dolTrendV). 2) VWAP-cross count in
-// a window (chop). 3) position in the dealing range (middle = balance-leaning). Combined into a
-// readable state. regimeState: 1 = DIRECTIONAL, 0 = UNCLEAR, -1 = BALANCED.
-float vwapCrossRaw = (not na(vwapVal) and ((close > vwapVal and close[1] <= vwapVal) or (close < vwapVal and close[1] >= vwapVal))) ? 1.0 : 0.0
-float vwapCrosses  = math.sum(vwapCrossRaw, regimeChopBars)
-bool  regimeChop   = vwapCrosses >= regimeChopN
-float trendStrength = math.abs(nz(dolTrendV))                 // EMA separation in ATRs
-bool  regimeTrending = trendStrength >= regimeTrendMin and not regimeChop
-// position in the dealing range (0..1); 0.5 = equilibrium. Falls back to neutral if range off.
-float regimePos = (not na(rngHi) and not na(rngLo) and rngHi > rngLo) ? math.min(1.0, math.max(0.0, (close - rngLo) / (rngHi - rngLo))) : 0.5
-bool  regimeMidRange = regimePos > 0.38 and regimePos < 0.62   // rotating in the middle
-int   regimeState = 0
-if regimeTrending
-    regimeState := 1                                           // DIRECTIONAL
-else if regimeChop or regimeMidRange
-    regimeState := -1                                          // BALANCED / rotating
-else
-    regimeState := 0                                           // UNCLEAR
+// Efficiency ratio (net move / path), bar overlap, VWAP-cross frequency and EMA slope blend into
+// a 0..1 trend score. TRANSITION = efficiency collapsing from a trending read, especially right
+// after a genuine microtrendline break (mtLastGenBar is set by the Brooks engine, one bar lag).
+// regimeState keeps the legacy mapping for consumers: 1 TREND, -1 RANGE, 0 TRANSITION.
+var int mtLastGenBar = -1000
+float mtEma20  = ta.ema(close, 20)
+float mtPath   = math.sum(math.abs(ta.change(close)), 20)
+float mtEr20   = mtPath > 0 ? math.abs(close - close[20]) / mtPath : 0.0
+float mtPath10 = math.sum(math.abs(ta.change(close)), 10)
+float mtErNow  = mtPath10 > 0 ? math.abs(close - close[10]) / mtPath10 : 0.0
+float mtErPrev = nz(mtErNow[10])
+float mtBarRng = high - low
+float mtOvl    = mtBarRng > 0 ? math.max(0.0, math.min(1.0, (math.min(high, high[1]) - math.max(low, low[1])) / mtBarRng)) : 1.0
+float mtOvlAvg = ta.sma(mtOvl, 20)
+float vwapCrosses = math.sum((not na(vwapVal) and ((close > vwapVal and close[1] <= nz(vwapVal[1])) or (close < vwapVal and close[1] >= nz(vwapVal[1])))) ? 1.0 : 0.0, 20)
+bool  regimeChop  = vwapCrosses >= 4
+float mtSlopeAtr  = atr > 0 ? math.abs(mtEma20 - mtEma20[5]) / atr : 0.0
+float mtTrendScore = 0.4 * mtEr20 + 0.2 * (1.0 - mtOvlAvg) + 0.2 * (1.0 - math.min(1.0, vwapCrosses / 4.0)) + 0.2 * math.min(1.0, mtSlopeAtr)
+int mtCond = 2
+if mtErPrev >= 0.4 and mtErNow <= 0.6 * mtErPrev and (bar_index - mtLastGenBar <= mtTransBars or mtErNow <= 0.25)
+    mtCond := 3
+else if mtTrendScore >= mtTrendHi
+    mtCond := 1
+int regimeState = mtCond == 1 ? 1 : mtCond == 2 ? -1 : 0
 
 // historical swing storage
 var swHi   = array.new<float>()
@@ -2518,7 +2620,7 @@ if barstate.islast
 // Each section still honours its own show-toggle; it just renders as a row here.
 if masterOn and barstate.islast
     bool ctxBias   = biasOn and biasBanner
-    bool ctxRegime = regimeOn and regimeBanner
+    bool ctxRegime = regimeOn and not (mtOn and mtShowDash)   // Brooks dashboard already shows it
     bool ctxRsi    = exhOn and exhShow and not na(exhRsi)
     if ctxBias or ctxRegime or ctxRsi
         // --- Daily Bias rows ---
@@ -2529,10 +2631,10 @@ if masterOn and barstate.islast
         string whyTxt = dayBias == 0 ? "no clean structure" : (biasWhyStruct + biasWhySweep)
         biasSzB = biasBanSize == "Huge" ? size.large : biasBanSize == "Large" ? size.normal : size.small
         // --- Regime row ---
-        string regWord = regimeState == 1 ? "DIRECTIONAL" : regimeState == -1 ? "BALANCED" : "UNCLEAR"
-        string regEmo  = regimeState == 1 ? "➡️" : regimeState == -1 ? "↔️" : "❓"
-        color  regCol  = regimeState == 1 ? themeUpSolid : regimeState == -1 ? themeDnSolid : themeMuted
-        string regTxt  = regEmo + " MARKET: " + regWord + (regimeChop ? ("  ⚠ VWAP chop (" + str.tostring(int(vwapCrosses)) + "x)") : ("  · trend " + str.tostring(trendStrength, "#.0#") + " ATR"))
+        string regWord = mtCond == 1 ? "TREND" : mtCond == 3 ? "TRANSITION" : "RANGE"
+        string regEmo  = mtCond == 1 ? "➡" : mtCond == 3 ? "⤴" : "↔"
+        color  regCol  = mtCond == 1 ? themeUpSolid : mtCond == 3 ? color.orange : themeMuted
+        string regTxt  = regEmo + " MARKET: " + regWord + "  · trend score " + str.tostring(100.0 * mtTrendScore, "#") + (regimeChop ? ("  ⚠ VWAP chop (" + str.tostring(int(vwapCrosses)) + "x)") : "")
         // --- RSI row ---
         string rsiState = exhRsi >= exhOB ? "OVERBOUGHT" : exhRsi <= exhOS ? "OVERSOLD" : "neutral"
         color  rsiCol = exhRsi >= exhOB ? themeDnSolid : exhRsi <= exhOS ? themeUpSolid : themeTxt
@@ -2756,7 +2858,7 @@ if array.size(fvgBoxes) > 0
                 // of the range) but still allow REVERSAL setups at the extremes (bull gap in deep
                 // discount / bear gap in deep premium). Only active when regimeGateExec is on.
                 bool qRegime = true
-                if regimeOn and regimeGateExec and regimeState == -1
+                if regimeGateExec and regimeState == -1
                     bool atExtreme = na(rngHi) or na(rngLo) or rngHi <= rngLo ? false : (isBull ? (ceP - rngLo) / (rngHi - rngLo) <= 0.38 : (ceP - rngLo) / (rngHi - rngLo) >= 0.62)
                     qRegime := atExtreme
                 bool qualifies = qStr and qPD and qDOL and qBias and qRR and qRegime
@@ -3042,105 +3144,6 @@ if (not masterOn or not orbOn) and array.size(orbBoxes) > 0
 // higher-timeframe context uses lookahead_on with a [1] offset (last CLOSED HTF bar).
 // The confluence score is a technical confluence rating, NOT a probability.
 // =============================================================================
-var string G_MT  = "⑰ Brooks Microtrendlines · Core & Display"
-var string G_MTD = "⑰ Brooks Microtrendlines · Detection"
-var string G_MTS = "⑰ Brooks Microtrendlines · Setups & Signal Bar"
-var string G_MTC = "⑰ Brooks Microtrendlines · Confidence Weights"
-var string G_MTT = "⑰ Brooks Microtrendlines · Trade Plan"
-var string G_MTA = "⑰ Brooks Microtrendlines · Alerts & Stats"
-
-// ---- core & display ----
-mtOn        = input.bool(true, "Enable Brooks microtrendline module", tooltip = "Master on/off for the whole microtrendline price-action module (trendlines, setups, dashboard, alerts, stats). Off = nothing from this module is calculated or drawn.", group = G_MT)
-mtTF5       = input.timeframe("5", "  Secondary context timeframe", group = G_MT)
-mtTF15      = input.timeframe("15", "  Higher-timeframe directional context", group = G_MT)
-mtCtxPiv    = input.int(3, "  Context swing pivot length", minval = 2, maxval = 10, group = G_MT)
-mtShowDash  = input.bool(true, "Show dashboard", group = G_MT)
-mtDashPos   = input.string("Top Right", "  Dashboard position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_MT)
-mtShowTL    = input.bool(true, "Show active trendlines", group = G_MT)
-mtShowHist  = input.bool(true, "Show historical trendlines", group = G_MT)
-mtHistKeep  = input.int(12, "  Historical trendlines kept", minval = 1, maxval = 60, group = G_MT)
-mtShowBrk   = input.bool(true, "Show break / failed-breakout markers", group = G_MT)
-mtShowSig   = input.bool(true, "Show LONG / SHORT signal markers", group = G_MT)
-mtShowHL    = input.bool(true, "Show H1/H2/L1/L2 markers", group = G_MT)
-mtShowLvls  = input.bool(true, "Show entry / stop / target levels", group = G_MT)
-mtKeepLvls  = input.bool(true, "  Keep finished setups' levels (last few)", group = G_MT)
-mtShowVwap  = input.bool(false, "Show VWAP", group = G_MT)
-mtShowBg    = input.bool(false, "Market-condition background shading", group = G_MT)
-mtColBull   = input.color(#00c853, "  Bullish trendline", group = G_MT)
-mtColBear   = input.color(#ff1744, "  Bearish trendline", group = G_MT)
-mtColBrk    = input.color(#ff9800, "  Break marker / broken line", group = G_MT)
-
-// ---- detection ----
-mtPivL      = input.int(2, "Pivot sensitivity · bars left", minval = 1, maxval = 6, group = G_MTD)
-mtPivR      = input.int(1, "Pivot sensitivity · bars right", minval = 1, maxval = 4, tooltip = "Pivots are confirmed this many bars late (no repaint). Smaller = faster, noisier.", group = G_MTD)
-mtMinTouch  = input.int(2, "Minimum trendline touches", minval = 2, maxval = 5, group = G_MTD)
-mtMaxAge    = input.int(30, "Maximum trendline age (bars since last touch)", minval = 5, maxval = 200, group = G_MTD)
-mtMinBetween = input.int(2, "Min bars between pivots", minval = 1, maxval = 10, group = G_MTD)
-mtMaxBetween = input.int(10, "Max bars between pivots", minval = 3, maxval = 30, tooltip = "Keeps lines MICRO (about 2-10 bars) rather than structural trendlines.", group = G_MTD)
-mtMinSlope  = input.float(0.02, "Minimum slope (ATR per bar)", minval = 0.0, step = 0.01, group = G_MTD)
-mtMaxPen    = input.float(0.15, "Max penetration before 'broken' (× ATR)", minval = 0.0, step = 0.05, group = G_MTD)
-mtTouchTol  = input.float(0.12, "Touch tolerance (× ATR)", minval = 0.0, step = 0.02, group = G_MTD)
-mtMcOn      = input.bool(true, "Microchannel detection (few-bar channels)", tooltip = "Strong microchannels can develop over very few bars. Consecutive bars with rising lows/highs (falling for bears) get a supporting line without needing separated pivots.", group = G_MTD)
-mtMcMin     = input.int(4, "  Microchannel min bars", minval = 3, maxval = 10, group = G_MTD)
-mtMcTol     = input.float(0.05, "  Microchannel tolerance (× ATR)", minval = 0.0, step = 0.01, group = G_MTD)
-mtMcMinMove = input.float(1.0, "  Microchannel min net move (× ATR)", minval = 0.0, step = 0.1, group = G_MTD)
-mtFailBars  = input.int(4, "Failed-breakout window (bars to reclaim)", minval = 1, maxval = 12, tooltip = "After a penetration, price must close back on the trend side of the line within this many bars to count as a FAILED breakout; otherwise it is a genuine break.", group = G_MTD)
-mtSigWait   = input.int(2, "Signal-bar wait after reclaim (bars)", minval = 0, maxval = 6, group = G_MTD)
-
-// ---- setups & signal bar ----
-mtSetA      = input.bool(true, "Setup A · Failed microtrendline breakout", group = G_MTS)
-mtSetB      = input.bool(true, "Setup B · Break + pullback continuation", group = G_MTS)
-mtSetC      = input.bool(true, "Setup C · Failed-breakout reversal", group = G_MTS)
-mtSetD      = input.bool(true, "Setup D · High 2 / Low 2", group = G_MTS)
-mtPostBreak = input.int(20, "Post-break window for B / C (bars)", minval = 5, maxval = 100, group = G_MTS)
-mtMaxRetr   = input.float(0.75, "B · max pullback retracement of the leg", minval = 0.2, maxval = 1.0, step = 0.05, group = G_MTS)
-mtSupTol    = input.float(0.8, "B · support/resistance proximity (× ATR)", minval = 0.1, step = 0.1, group = G_MTS)
-mtExtATR    = input.float(3.0, "C · min extension of prior move (× ATR)", minval = 0.5, step = 0.5, group = G_MTS)
-mtRetestTol = input.float(0.25, "C · retest zone around old extreme (× ATR)", minval = 0.0, step = 0.05, group = G_MTS)
-mtRetestOver = input.float(0.25, "C · max overshoot of old extreme (× ATR)", minval = 0.0, step = 0.05, group = G_MTS)
-mtRevConf   = input.int(3, "C · confirmations required (of 5)", minval = 1, maxval = 5, group = G_MTS)
-mtRevSbMin  = input.float(0.65, "C · min signal-bar quality (0-1)", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
-mtPbMax     = input.int(15, "H/L · max pullback length (bars)", minval = 3, maxval = 50, group = G_MTS)
-mtPbDepth   = input.float(5.0, "H/L · max pullback depth (× ATR)", minval = 1.0, step = 0.5, group = G_MTS)
-mtSbBody    = input.float(0.45, "Signal bar · min body / range", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
-mtSbClose   = input.float(0.65, "Signal bar · min close position (0=far, 1=at extreme)", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
-mtSbWick    = input.float(0.30, "Signal bar · max opposing wick / range", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
-mtSbSize    = input.float(0.6, "Signal bar · min size vs 20-bar average range", minval = 0.0, step = 0.1, group = G_MTS)
-mtTrendHi   = input.float(0.55, "Market condition · trend score threshold", minval = 0.2, maxval = 0.9, step = 0.05, group = G_MTS)
-mtTransBars = input.int(15, "Market condition · transition window after break (bars)", minval = 3, maxval = 60, group = G_MTS)
-
-// ---- confidence weights (normalised, so they need not sum to 100) ----
-mtWHtf      = input.float(15, "Weight · higher-timeframe alignment", minval = 0, group = G_MTC)
-mtWTl       = input.float(15, "Weight · microtrendline quality", minval = 0, group = G_MTC)
-mtWFbo      = input.float(20, "Weight · pattern / failed-breakout confirmation", minval = 0, group = G_MTC)
-mtWSb       = input.float(15, "Weight · signal bar quality", minval = 0, group = G_MTC)
-mtWMkt      = input.float(10, "Weight · market-condition suitability", minval = 0, group = G_MTC)
-mtWVwap     = input.float(10, "Weight · VWAP alignment", minval = 0, group = G_MTC)
-mtWH        = input.float(10, "Weight · H1/H2 · L1/L2 confluence", minval = 0, group = G_MTC)
-mtWRoom     = input.float(5, "Weight · room to target", minval = 0, group = G_MTC)
-mtVwapOn    = input.bool(true, "VWAP filter (scoring only; off = VWAP weight ignored)", group = G_MTC)
-mtMinScore  = input.int(65, "Minimum score to display an actionable signal", minval = 30, maxval = 95, group = G_MTC)
-
-// ---- trade plan ----
-mtStopMode  = input.string("Wider of both", "Stop placement", options = ["Signal bar","Structural","Wider of both"], group = G_MTT)
-mtMinStopATR = input.float(0.4, "Minimum stop distance (× ATR)", minval = 0.05, step = 0.05, group = G_MTT)
-mtMaxStopATR = input.float(3.0, "Maximum stop distance (× ATR) · wider = no setup", minval = 0.5, step = 0.25, group = G_MTT)
-mtTgtMode   = input.string("R multiples", "Targets based on", options = ["R multiples","Market structure"], group = G_MTT)
-mtT1R       = input.float(1.0, "Target 1 (R)", minval = 0.25, step = 0.25, group = G_MTT)
-mtT2R       = input.float(2.0, "Target 2 (R)", minval = 0.5, step = 0.25, group = G_MTT)
-mtShowT3    = input.bool(true, "Show Target 3 (swing / measured move)", group = G_MTT)
-mtPendBars  = input.int(3, "Pending entry expires after (bars)", minval = 1, maxval = 20, group = G_MTT)
-mtMaxHold   = input.int(60, "Max bars in trade before time-out", minval = 5, maxval = 500, group = G_MTT)
-
-// ---- alerts & stats ----
-mtAlertFn   = input.bool(true, "Send detailed alert() messages (instrument · TF · setup · direction · score)", tooltip = "Create the alert with condition 'Any alert() function call'. The alertcondition() entries below are always available too.", group = G_MTA)
-mtShowStats = input.bool(true, "Show historical signal statistics table", group = G_MTA)
-mtStatsPos  = input.string("Bottom Right", "  Stats table position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_MTA)
-mtStatsTgt  = input.string("Target 1", "  A signal 'wins' when it reaches", options = ["Target 1","Target 2"], group = G_MTA)
-mtStatsRng  = input.bool(false, "  Restrict statistics to date range", group = G_MTA)
-mtStatsFrom = input.time(timestamp("2024-01-01T00:00:00"), "    From", group = G_MTA)
-mtStatsTo   = input.time(timestamp("2100-01-01T00:00:00"), "    To", group = G_MTA)
-
 // =============================================================================
 // TYPES + STATE
 // =============================================================================
@@ -3198,8 +3201,6 @@ var array<float> mtCQ = array.new<float>()
 var array<float> mtCS = array.new<float>()
 var array<float> mtC3 = array.new<float>()
 
-var int   mtCond = 2            // 1 TREND · 2 RANGE · 3 TRANSITION
-var int   mtLastGenBar = -1000
 var int   mtLastHBar = -1000
 var int   mtLastHDir = 0
 var int   mtLastHCnt = 0
@@ -3319,18 +3320,6 @@ bool mtSbBearOk = close < open and mtBody >= mtSbBody and (1.0 - mtCPos) >= mtSb
 float mtSqBull = close > open ? math.max(0.0, math.min(1.0, 0.30 * math.min(1.0, mtBody / 0.7) + 0.30 * mtCPos + 0.20 * (1.0 - math.min(1.0, mtUW / 0.4)) + 0.20 * math.min(1.0, mtRelSz / 1.2))) : 0.0
 float mtSqBear = close < open ? math.max(0.0, math.min(1.0, 0.30 * math.min(1.0, mtBody / 0.7) + 0.30 * (1.0 - mtCPos) + 0.20 * (1.0 - math.min(1.0, mtLW / 0.4)) + 0.20 * math.min(1.0, mtRelSz / 1.2))) : 0.0
 
-// ---- market-condition inputs ----
-float mtEma20 = ta.ema(close, 20)
-float mtPath  = math.sum(math.abs(ta.change(close)), 20)
-float mtEr20  = mtPath > 0 ? math.abs(close - close[20]) / mtPath : 0.0
-float mtPath10 = math.sum(math.abs(ta.change(close)), 10)
-float mtErNow = mtPath10 > 0 ? math.abs(close - close[10]) / mtPath10 : 0.0
-float mtErPrev = nz(mtErNow[10])
-float mtOvl = mtRngBar > 0 ? math.max(0.0, math.min(1.0, (math.min(high, high[1]) - math.max(low, low[1])) / mtRngBar)) : 1.0
-float mtOvlAvg = ta.sma(mtOvl, 20)
-float mtVCross = math.sum((not na(vwapVal) and ((close > vwapVal and close[1] <= nz(vwapVal[1])) or (close < vwapVal and close[1] >= nz(vwapVal[1])))) ? 1.0 : 0.0, 20)
-float mtSlopeAtr = atr > 0 ? math.abs(mtEma20 - mtEma20[5]) / atr : 0.0
-float mtTrendScore = 0.4 * mtEr20 + 0.2 * (1.0 - mtOvlAvg) + 0.2 * (1.0 - math.min(1.0, mtVCross / 4.0)) + 0.2 * math.min(1.0, mtSlopeAtr)
 float mtVwapSlp = (not na(vwapVal) and atr > 0) ? (vwapVal - nz(vwapVal[5], vwapVal)) / atr : 0.0
 
 // ---- time-of-day bucket (New York): 0 open · 1 late AM · 2 midday · 3 afternoon · 4 other ----
@@ -3811,15 +3800,6 @@ if mtOn and barstate.isconfirmed and not na(atr) and bar_index > 30
         mtEvFboBear := true
     if mtBull.evGenuine or mtBear.evGenuine
         mtLastGenBar := bi
-
-    // ---- 3) market condition: TREND / RANGE / TRANSITION ----
-    bool recentBrk = bi - mtLastGenBar <= mtTransBars
-    if mtErPrev >= 0.4 and mtErNow <= 0.6 * mtErPrev and (recentBrk or mtErNow <= 0.25)
-        mtCond := 3
-    else if mtTrendScore >= mtTrendHi
-        mtCond := 1
-    else
-        mtCond := 2
 
     // ---- 4) High 1/2 · Low 1/2 sequences (directional context required) ----
     bool ctxBull = mtD1 >= 0 and (mtD1 == 1 or mtD5 == 1) and mtD15 != -1
