@@ -295,11 +295,13 @@ mtDashPos   = input.string("Top Right", "  Dashboard position", options = ["Top 
 mtShowTL    = input.bool(true, "Show active trendlines", group = G_MT)
 mtShowHist  = input.bool(true, "Show historical trendlines", group = G_MT)
 mtHistKeep  = input.int(12, "  Historical trendlines kept", minval = 1, maxval = 60, group = G_MT)
-mtShowBrk   = input.bool(true, "Show break / failed-breakout markers", group = G_MT)
+mtShowBrk   = input.bool(true, "Show failed-breakout (FBO) markers", group = G_MT)
+mtShowPen   = input.bool(false, "  Also show line-pierced ✕ markers", group = G_MT)
 mtShowSig   = input.bool(true, "Show LONG / SHORT signal markers", group = G_MT)
-mtShowHL    = input.bool(true, "Show H1/H2/L1/L2 markers", group = G_MT)
+mtShowHL    = input.bool(true, "Show H2/L2 markers", group = G_MT)
+mtShowHL1   = input.bool(false, "  Also show H1/L1 markers", group = G_MT)
 mtShowLvls  = input.bool(true, "Show entry / stop / target levels", group = G_MT)
-mtKeepLvls  = input.bool(true, "  Keep finished setups' levels (last few)", group = G_MT)
+mtKeepLvls  = input.bool(true, "  Keep the last finished setup's levels (until the next setup)", group = G_MT)
 mtShowVwap  = input.bool(false, "Show VWAP", group = G_MT)
 mtShowBg    = input.bool(false, "Market-condition background shading", group = G_MT)
 mtColBull   = input.color(#00c853, "  Bullish trendline", group = G_MT)
@@ -685,6 +687,7 @@ type MtState
     label stLbT1 = na
     label stLbT2 = na
     label stLbT3 = na
+    label sigLb = na
 
 type MtEv
     bool mtEvNewBull = false
@@ -3139,17 +3142,17 @@ f_mtStatTxt(int g) =>
 f_mtSigLabel(string txt, int x, float y, color col, string sty) =>
     label l = label.new(x, y, txt, color = col, textcolor = color.white, size = size.small, style = sty == "up" ? label.style_label_up : sty == "down" ? label.style_label_down : label.style_label_left)
     array.push(mtSigLbls, l)
-    if array.size(mtSigLbls) > 60
+    if array.size(mtSigLbls) > 15
         label.delete(array.shift(mtSigLbls))
-    true   // explicit return: keeps the function's return type consistent
+    l
 
 f_mtKeepObj(line ln, label lb) =>
     if mtKeepLvls
         array.push(mtOldLn, ln)
         array.push(mtOldLb, lb)
-        if array.size(mtOldLn) > 20
+        if array.size(mtOldLn) > 5
             line.delete(array.shift(mtOldLn))
-        if array.size(mtOldLb) > 20
+        if array.size(mtOldLb) > 5
             label.delete(array.shift(mtOldLb))
     else
         line.delete(ln)
@@ -3320,8 +3323,8 @@ f_mtPhaseB() =>
             mtS.stEntryBar := bi
             mtS.stSt := 2
             mtE.mtEvEntry := true
-            if mtShowSig
-                f_mtSigLabel("ENTRY", bi, mtS.stFill, color.new(color.gray, 20), "left")
+            if not na(mtS.sigLb)
+                label.set_text(mtS.sigLb, str.replace(label.get_text(mtS.sigLb), "pending", "filled"))
             if not na(mtS.stLnE)
                 line.set_style(mtS.stLnE, line.style_solid)
             if stopT
@@ -3359,8 +3362,6 @@ f_mtPhaseB() =>
                     if inRng
                         f_mtRec(mtS.stRisk > 0 ? mtS.stDir * (mtS.stT1 - mtS.stFill) / mtS.stRisk : mtT1R, mtS.stType, mtS.stCond, mtS.stTod, mtS.stScore)
                     mtS.stResolved := true
-                if mtShowSig
-                    f_mtSigLabel("T1", bi, mtS.stT1, color.new(#00897b, 10), "left")
             if t2Reach
                 mtS.stT2Hit := true
                 mtE.mtEvT2 := true
@@ -3368,8 +3369,6 @@ f_mtPhaseB() =>
                     if inRng
                         f_mtRec(mtS.stRisk > 0 ? mtS.stDir * (mtS.stT2 - mtS.stFill) / mtS.stRisk : mtT2R, mtS.stType, mtS.stCond, mtS.stTod, mtS.stScore)
                     mtS.stResolved := true
-                if mtShowSig
-                    f_mtSigLabel("T2", bi, mtS.stT2, color.new(#00695c, 0), "left")
                 ended := true
                 endTxt := "TARGET 2 REACHED"
             else if bi - mtS.stEntryBar >= mtMaxHold
@@ -3380,10 +3379,11 @@ f_mtPhaseB() =>
                 ended := true
                 endTxt := "TIME-OUT"
     if ended
-        if mtE.mtEvStop and mtShowSig
-            f_mtSigLabel("STOP", bi, mtS.stStop, color.new(#b71c1c, 10), "left")
         mtS.stSt := 3
         mtS.stRes := endTxt
+        if (endTxt == "INVALIDATED before entry" or endTxt == "EXPIRED (not triggered)") and not na(mtS.sigLb)
+            label.delete(mtS.sigLb)
+            mtS.sigLb := na
         if not na(mtS.stLnE)
             line.set_x2(mtS.stLnE, bi)
             line.set_x2(mtS.stLnS, bi)
@@ -3582,8 +3582,14 @@ f_mtPhaseC(int hAtt, float hPbLow, int lAtt, float lPbHigh) =>
                     mtE.mtEvH2L := true
                 else
                     mtE.mtEvL2S := true
+            // only one setup's levels on the chart at a time: drop the previous setup's kept lines
+            while array.size(mtOldLn) > 0
+                line.delete(array.shift(mtOldLn))
+            while array.size(mtOldLb) > 0
+                label.delete(array.shift(mtOldLb))
+            mtS.sigLb := na
             if mtShowSig
-                f_mtSigLabel((bD > 0 ? "LONG " : "SHORT ") + f_mtCls(bSc) + " " + str.tostring(bSc, "#") + "\n" + f_mtTypeName(bTy) + " · pending", bi, bD > 0 ? low : high, bD > 0 ? colLong : colShort, bD > 0 ? "up" : "down")
+                mtS.sigLb := f_mtSigLabel((bD > 0 ? "LONG " : "SHORT ") + f_mtCls(bSc) + " " + str.tostring(bSc, "#") + "\n" + f_mtTypeName(bTy) + " · pending", bi, bD > 0 ? low : high, bD > 0 ? colLong : colShort, bD > 0 ? "up" : "down")
             if mtShowLvls
                 [l1, b1] = f_mtLvl(mtS.stEntry, "ENTRY", color.new(color.white, 0), bi, true)
                 [l2, b2] = f_mtLvl(mtS.stStop, "STOP", colShort, bi, false)
@@ -3647,13 +3653,13 @@ mtCond := mtS.cond   // pick up a same-bar TRANSITION set by the engine
 // =============================================================================
 plot(mtOn and mtShowVwap ? vwapVal : na, "MT VWAP", color = color.new(#ffd54f, 0), linewidth = 1)
 bgcolor(mtOn and mtShowBg ? (mtCond == 1 ? color.new(#00c853, 93) : mtCond == 3 ? color.new(#ff9800, 92) : color.new(#9e9e9e, 94)) : na, title = "MT market condition")
-plotshape(mtOn and mtShowBrk and mtE.mtEvBrkBull, "MT bull line penetrated", shape.xcross, location.belowbar, color.new(#ff9800, 0), size = size.tiny)
-plotshape(mtOn and mtShowBrk and mtE.mtEvBrkBear, "MT bear line penetrated", shape.xcross, location.abovebar, color.new(#ff9800, 0), size = size.tiny)
+plotshape(mtOn and mtShowPen and mtE.mtEvBrkBull, "MT bull line penetrated", shape.xcross, location.belowbar, color.new(#ff9800, 0), size = size.tiny)
+plotshape(mtOn and mtShowPen and mtE.mtEvBrkBear, "MT bear line penetrated", shape.xcross, location.abovebar, color.new(#ff9800, 0), size = size.tiny)
 plotshape(mtOn and mtShowBrk and mtE.mtEvFboBull, "MT bullish failed breakout", shape.diamond, location.belowbar, color.new(#00e5ff, 0), text = "FBO", textcolor = color.new(#00e5ff, 0), size = size.tiny)
 plotshape(mtOn and mtShowBrk and mtE.mtEvFboBear, "MT bearish failed breakout", shape.diamond, location.abovebar, color.new(#e040fb, 0), text = "FBO", textcolor = color.new(#e040fb, 0), size = size.tiny)
-plotshape(mtOn and mtShowHL and mtE.mtEvH1, "MT H1", shape.labelup, location.belowbar, color.new(#26a69a, 30), text = "H1", textcolor = color.white, size = size.tiny)
+plotshape(mtOn and mtShowHL1 and mtE.mtEvH1, "MT H1", shape.labelup, location.belowbar, color.new(#26a69a, 30), text = "H1", textcolor = color.white, size = size.tiny)
 plotshape(mtOn and mtShowHL and mtE.mtEvH2, "MT H2", shape.labelup, location.belowbar, color.new(#00897b, 0), text = "H2", textcolor = color.white, size = size.tiny)
-plotshape(mtOn and mtShowHL and mtE.mtEvL1, "MT L1", shape.labeldown, location.abovebar, color.new(#ef5350, 30), text = "L1", textcolor = color.white, size = size.tiny)
+plotshape(mtOn and mtShowHL1 and mtE.mtEvL1, "MT L1", shape.labeldown, location.abovebar, color.new(#ef5350, 30), text = "L1", textcolor = color.white, size = size.tiny)
 plotshape(mtOn and mtShowHL and mtE.mtEvL2, "MT L2", shape.labeldown, location.abovebar, color.new(#c62828, 0), text = "L2", textcolor = color.white, size = size.tiny)
 
 // =============================================================================
