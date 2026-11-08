@@ -24,7 +24,7 @@ QUICK START
 2. Read the context panel (top-left): TODAY: LONG / SHORT / NEUTRAL and why, plus the market condition (TREND / RANGE / TRANSITION).
 3. Find the 🎯 level — the most likely next target. Its % is its share of total liquidity pull.
 4. Wait for a sweep (🎯 SFP marker) or price returning into a strong FVG / order block.
-5. For entries, turn on ⑬ Brooks microtrendlines and/or ⑨ FVG execution and take only signals that agree with the Daily Bias.
+5. For entries, turn on ⑫ Brooks microtrendlines and take only signals that agree with the Daily Bias.
 
 
 SETTINGS
@@ -50,15 +50,14 @@ SETTINGS
 
 ⑧ Tested Levels — a level a wick has probed but not swept gets a ✓ and a dotted line, and pulls slightly less.
 
-⑨ FVG Execution — off by default. When price returns into a qualifying gap the setup arms and draws entry / stop / TP1 / TP2 with R:R and the nearest liquidity target. Gates: min strength, premium/discount, draw direction, Daily Bias, min R:R. States commit on bar close; setups die on stop breach or expiry.
 
-⑩ Daily Bias — a sticky structural bias from the last two completed daily candles plus the latest PDH/PDL sweep and reclaim. Fast or conservative flip. Can fade counter-bias FVGs and levels.
+⑨ Daily Bias — a sticky structural bias from the last two completed daily candles plus the latest PDH/PDL sweep and reclaim. Fast or conservative flip. Can fade counter-bias FVGs and levels.
 
-⑪ Market Condition — one shared classifier: TREND, RANGE or TRANSITION, from efficiency ratio, bar overlap, VWAP-cross frequency and EMA slope (TRANSITION = a trend losing efficiency, especially right after a microtrendline break). Used by the FVG execution gate and the Brooks module.
+⑩ Market Condition — one shared classifier: TREND, RANGE or TRANSITION, from efficiency ratio, bar overlap, VWAP-cross frequency and EMA slope (TRANSITION = a trend losing efficiency, especially right after a microtrendline break). Used by the Brooks module and the context panel.
 
-⑫ Opening Range (ORB) — the opening window (default 09:30-09:35 ET) as a box. ORB ▲ / ORB ▼ marks a confirmed break (close beyond the edge by an ATR buffer for N closes); ORB fail marks a break that closes back inside.
+⑪ Opening Range (ORB) — the opening window (default 09:30-09:35 ET) as a box. ORB ▲ / ORB ▼ marks a confirmed break (close beyond the edge by an ATR buffer for N closes); ORB fail marks a break that closes back inside.
 
-⑬ Brooks Microtrendlines (execution + entries) — toggle "Enable Brooks microtrendline module".
+⑫ Brooks Microtrendlines (execution + entries) — toggle "Enable Brooks microtrendline module".
 • Microtrendlines from pivots 2-10 bars apart, plus a microchannel detector for strong few-bar channels.
 • Break vs failed breakout: a penetration only becomes a genuine break if price does not close back on the trend side within N bars.
 • Setups: A failed microtrendline breakout (primary), B break + pullback continuation, C failed-breakout reversal (stricter), D High 2 / Low 2. H1 / H2 / L1 / L2 markers.
@@ -70,12 +69,12 @@ SETTINGS
 
 ALERTS
 
-PD level touched · Liquidity swept · Session level touched · SFP fired / long / short · FVG setup approaching / armed / confirmed / invalidated · Daily bias flipped · ORB break · ORB failed break · MT 1-16 (microtrendline detected / break / failed breakout, continuation, reversal, High 2, Low 2, entry, stop, T1, T2). With the Brooks module on, choose "Any alert() function call" for detailed messages (instrument · timeframe · setup · direction · score).
+PD level touched · Liquidity swept · Session level touched · SFP fired / long / short · Daily bias flipped · ORB break · ORB failed break · MT 1-16 (microtrendline detected / break / failed breakout, continuation, reversal, High 2, Low 2, entry, stop, T1, T2). With the Brooks module on, choose "Any alert() function call" for detailed messages (instrument · timeframe · setup · direction · score).
 
 
 NOTES
 
-• No repaint by default: SFPs, FVG setup states, Brooks signals and Daily Bias commit on closed bars.
+• No repaint by default: SFPs, Brooks signals and Daily Bias commit on closed bars.
 • MASTER toggle (⑤) turns all drawings on or off.
 • Scores and percentages are heuristic ratings, not probabilities.
 

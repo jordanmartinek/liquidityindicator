@@ -7,9 +7,9 @@
 //   • Stacked liquidity: nearby levels merge into strength-rated zones.
 //   • Confluence score (0-100) per zone.
 //   • Per-level confidence % + 🎯 most-likely target (draw-on-liquidity model).
-//   • Order Blocks / Breakers and Fair Value Gaps (strength-ranked) + FVG execution setups.
+//   • Order Blocks / Breakers and Fair Value Gaps (strength-ranked).
 //   • Sweep + reversal (SFP) markers, per-level countdown, Daily Bias, ORB.
-//   • ⑬ Brooks microtrendline module for execution + entries (toggle).
+//   • ⑫ Brooks microtrendline module for execution + entries (toggle).
 // =============================================================================
 indicator("Liquidity Radar", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 5000)
 
@@ -27,10 +27,9 @@ var string G_CLUST  = "⑤ Clustering & Confluence"
 var string G_DOL    = "⑥ Level Confidence"
 var string G_STYLE  = "⑦ Style"
 var string G_TESTED = "⑧ Tested Levels"
-var string G_EXEC   = "⑨ FVG Execution (setups)"
-var string G_BIAS   = "⑩ Daily Bias"
-var string G_REGIME = "⑪ Market Condition (shared)"
-var string G_ORB    = "⑫ Opening Range Breakout (ORB)"
+var string G_BIAS   = "⑨ Daily Bias"
+var string G_REGIME = "⑩ Market Condition (shared)"
+var string G_ORB    = "⑪ Opening Range Breakout (ORB)"
 
 // -----------------------------------------------------------------------------
 // INPUTS — PREVIOUS-PERIOD LEVELS
@@ -176,7 +175,7 @@ confVWAP    = input.bool(true, "  VWAP proximity in confluence", tooltip = "Adds
 showLvlConf = input.bool(true, "Show per-level confidence % (target likelihood)", tooltip = "Each level/zone gets a 0-100 score for how likely price heads THERE next. The single most-likely target is flagged 🎯.", group = G_DOL)
 projStacked = input.bool(true,  "Stacked-agreement flag ⭐", tooltip = "Flags a level where multiple independent signals align — DOL bias side + primary magnet + an overlapping order block / FVG. 3+ agreeing signals is the highest-conviction projection. Adds ⭐ to that level.", group = G_DOL)
 // DOL gravity model — fixed internal settings (powers level confidence %, 🎯 target, ⭐ flag,
-// path-clearance and the FVG execution DOL gate).
+// and path-clearance).
 dolSens          = "Medium"   // distance-decay sharpness
 dolUseType       = true       // major levels pull harder
 dolUseAge        = true       // older resting liquidity pulls harder
@@ -231,25 +230,6 @@ testKeep = 120
 // -----------------------------------------------------------------------------
 // Turns high-quality gaps into actionable setups: wait for price to RETURN to the gap's CE
 // (50%), then arm an entry with a stop and R-multiple targets, with alerts at each stage.
-execOn       = input.bool(false, "Enable FVG execution setups", tooltip = "Wait for the OPTIMAL setup on strong fair value gaps: the indicator stays quiet until price RETRACES back into a qualifying gap's CE (50% — the mitigation entry), then it ARMS the setup and draws an entry / stop / target with the risk:reward. Alerts fire at each stage so you don't have to watch. Nothing here places orders — it is a planning / signalling overlay.", group = G_EXEC)
-execMinStr   = input.int(70, "  Min gap strength % to arm", minval = 0, maxval = 100, tooltip = "Only gaps scoring at least this (the 0-100 FVG strength) can become setups. Higher = only A+ gaps arm. This is the primary quality gate.", group = G_EXEC)
-execNeedPD   = input.bool(true, "  Require correct premium/discount", tooltip = "Only arm a BULLISH gap when it sits in DISCOUNT (lower half of the dealing range) and a BEARISH gap when it sits in PREMIUM (upper half) — i.e. buy low / sell high relative to the range. Uncheck to arm regardless of range location.", group = G_EXEC)
-execNeedDOL  = input.bool(true, "  Require DOL bias agreement", tooltip = "Only arm a setup whose direction agrees with the current Draw-on-Liquidity bias (long setups when DOL points UP, shorts when DOL points DOWN). Keeps you trading with the dominant draw. Uncheck to arm against the bias too.", group = G_EXEC)
-execNeedDay  = input.bool(true, "  Require Daily Bias agreement", tooltip = "Only arm a setup whose direction agrees with the Daily Bias (see group ⑪): long setups when the daily bias is LONG, shorts when SHORT. When the daily bias is NEUTRAL, both directions are allowed. This is the main 'trade with the daily bias' filter.", group = G_EXEC)
-execEntry    = input.string("CE (50%)", "  Entry at", options = ["CE (50%)","Proximal edge"], tooltip = "Where the entry level sits. 'CE (50%)': the gap midpoint — price often reacts there rather than at the full fill (recommended). 'Proximal edge': the near edge of the gap (the first touch).", group = G_EXEC)
-execStopATR  = input.float(0.25, "  Stop buffer beyond far edge (× ATR)", minval = 0.0, maxval = 2.0, step = 0.05, tooltip = "The stop sits beyond the FAR edge of the gap by this many ATRs (room for a stop-hunt wick). Entry-to-stop is your 1R.", group = G_EXEC)
-execTP1R     = input.float(1.0, "  TP1 (R multiple)", minval = 0.5, maxval = 10.0, step = 0.5, tooltip = "First target as a multiple of risk (entry-to-stop distance). 1.0 = 1R.", group = G_EXEC)
-execTP2R     = input.float(2.0, "  TP2 (R multiple)", minval = 0.5, maxval = 20.0, step = 0.5, tooltip = "Second target as a multiple of risk. 2.0 = 2R.", group = G_EXEC)
-execConfirm  = input.bool(false, "  Require confirmation close before 'confirmed'", tooltip = "After price taps the entry (ARMED), wait for a candle to CLOSE rejecting back out of the gap on the setup's side before flagging the setup CONFIRMED (and firing the confirmation alert). Off = the setup is treated as confirmed on the CE tap itself.", group = G_EXEC)
-execNoRepaint = input.bool(true, "  Commit setup states on bar close (no repaint)", tooltip = "Only advance a setup (arm / confirm) and fire its alert once the bar has CLOSED, so an intrabar tap that pulls back before close can't arm a setup and then un-arm it. Strongly recommended — without it, arm/confirm react to the still-forming candle and can flash then vanish. (Historical bars are unaffected; this only holds the live forming bar until close.)", group = G_EXEC)
-execExpiry   = input.int(40, "  Setup expiry (bars after arming)", minval = 0, maxval = 500, tooltip = "An armed/confirmed setup that neither hits its stop nor is resolved within this many bars is marked DEAD and stops drawing — stale setups don't linger forever. 0 = never expire (only a stop-out kills it).", group = G_EXEC)
-execStopKill = input.bool(true, "  Invalidate setup on stop breach", tooltip = "Mark a setup DEAD the moment price trades through its stop level (far edge of the gap + the ATR buffer). The setup stops drawing and fires the 'FVG setup invalidated' alert. This is the explicit 'the trade idea is wrong now' trigger.", group = G_EXEC)
-execMinRR    = input.float(1.5, "  Min reward:risk to a liquidity target", minval = 0.0, maxval = 10.0, step = 0.25, tooltip = "Feasibility check: before arming, the engine finds the nearest OPPOSING liquidity pool in the trade's direction (the realistic target price is drawn to) and measures reward:risk from the entry to that pool vs the entry-to-stop distance (1R). A setup whose reachable target offers less than this R:R is either skipped or flagged (see below) — so you don't take a long into a wall 0.5R away. 0 = disable the feasibility check.", group = G_EXEC)
-execRRReject = input.bool(true, "    Skip setups below min R:R (else just flag)", tooltip = "ON: a setup that fails the min-R:R feasibility check does NOT arm at all. OFF: it still arms/draws but is visibly flagged 'low R:R' so you can judge it yourself.", group = G_EXEC)
-execMaxShow  = input.int(2, "  Max active setups drawn", minval = 1, maxval = 6, tooltip = "How many armed setups (nearest to price first) draw their entry/stop/target lines at once, to keep the chart readable. All qualifying gaps still arm and still fire alerts.", group = G_EXEC)
-execColEntry = input.color(color.new(#42a5f5, 0), "  Entry line color", group = G_EXEC)
-execColStop  = input.color(color.new(#ef5350, 0), "  Stop line color", group = G_EXEC)
-execColTP    = input.color(color.new(#26a69a, 0), "  Target line color", group = G_EXEC)
 
 // -----------------------------------------------------------------------------
 // INPUTS — DAILY BIAS
@@ -257,7 +237,7 @@ execColTP    = input.color(color.new(#26a69a, 0), "  Target line color", group =
 // A sticky, structural daily bias from daily candle structure + the last PDH/PDL sweep.
 // Built from resolved HTF structure (not intraday proximity or momentum), so it LEADS rather
 // than reacts. Used as a directional anchor: it drives the bias banner, fades counter-bias
-// FVGs, and can gate which execution setups arm.
+// FVGs and counter-bias levels.
 biasOn       = input.bool(true,  "Show Daily Bias", tooltip = "A sticky daily directional read built from the last 1-2 DAILY candles (market structure + close position) and the most recent PDH/PDL sweep + reclaim/reject. Because it is derived from resolved higher-timeframe structure — not intraday proximity or momentum — it LEADS price instead of reacting to it, and it HOLDS between real events (a new daily candle or a confirmed sweep) rather than flickering on 5-minute noise.", group = G_BIAS)
 biasFast     = input.bool(true,  "  Fast flip (vs conservative)", tooltip = "FAST (default): a confirmed counter-direction PDH/PDL sweep + reclaim flips the bias immediately — catches reversals early. CONSERVATIVE (off): a counter sweep only raises a 'caution' flag; the bias doesn't actually flip until the DAILY STRUCTURE itself breaks — slower but higher-conviction.", group = G_BIAS)
 biasBanner   = input.bool(true,  "  Show bias banner", group = G_BIAS)
@@ -272,11 +252,10 @@ biasFadeLvls = input.bool(false, "Fade counter-bias-side levels", tooltip = "Als
 // INPUTS — MARKET CONDITIONS (REGIME)
 // -----------------------------------------------------------------------------
 // One shared TREND / RANGE / TRANSITION classifier (computed in MARKET CONDITION below). Feeds
-// the FVG execution gate and the Brooks setups' market-suitability factor.
-regimeOn   = input.bool(true,  "Show market condition (TREND / RANGE / TRANSITION)", tooltip = "One shared classifier used by the whole indicator (FVG execution gate + Brooks setups). Blends efficiency ratio, bar overlap, VWAP-cross frequency and EMA slope; TRANSITION = a trend losing efficiency, especially right after a genuine microtrendline break. Display only: shown in the context panel (or in the Brooks dashboard when that is on); the execution gate below works independently.", group = G_REGIME)
+// the Brooks setups' market-suitability factor and the context panel.
+regimeOn   = input.bool(true,  "Show market condition (TREND / RANGE / TRANSITION)", tooltip = "One shared classifier used by the whole indicator (Brooks setups + context panel). Blends efficiency ratio, bar overlap, VWAP-cross frequency and EMA slope; TRANSITION = a trend losing efficiency, especially right after a genuine microtrendline break. Display only: shown in the context panel (or in the Brooks dashboard when that is on);", group = G_REGIME)
 mtTrendHi   = input.float(0.55, "  Trend score threshold", minval = 0.2, maxval = 0.9, step = 0.05, group = G_REGIME)
 mtTransBars = input.int(15, "  Transition window after a microtrendline break (bars)", minval = 3, maxval = 60, group = G_REGIME)
-regimeGateExec = input.bool(false, "  Gate execution: suppress continuation setups mid-range", tooltip = "When ON and the market condition is RANGE with VWAP chop or price in the middle of the dealing range, the FVG execution engine will NOT arm CONTINUATION setups in the middle of the range — but still allows REVERSAL setups near the range extremes (premium/discount). This directly targets getting chopped up trading the middle of a range. OFF = the regime is informational only and never blocks a setup.", group = G_REGIME)
 
 // -----------------------------------------------------------------------------
 // INPUTS — OPENING RANGE BREAKOUT (ORB)
@@ -293,14 +272,14 @@ orbBrkBuf  = input.float(0.10, "  Break buffer (× ATR beyond edge)", minval = 0
 orbBrkBars = input.int(1, "  Break confirmation (consecutive closes)", minval = 1, maxval = 5, tooltip = "How many CONSECUTIVE confirmed closes beyond the buffered edge are required before a break is registered. 1 = a single qualifying close (legacy). 2+ filters flash-breaks that immediately reverse, raising the hold rate.", group = G_ORB)
 
 // -----------------------------------------------------------------------------
-// INPUTS — ⑬ BROOKS MICROTRENDLINES (execution + entries)
+// INPUTS — ⑫ BROOKS MICROTRENDLINES (execution + entries)
 // -----------------------------------------------------------------------------
-var string G_MT  = "⑬ Brooks Microtrendlines · Core & Display"
-var string G_MTD = "⑬ Brooks Microtrendlines · Detection"
-var string G_MTS = "⑬ Brooks Microtrendlines · Setups & Signal Bar"
-var string G_MTC = "⑬ Brooks Microtrendlines · Confidence Weights"
-var string G_MTT = "⑬ Brooks Microtrendlines · Trade Plan"
-var string G_MTA = "⑬ Brooks Microtrendlines · Alerts & Stats"
+var string G_MT  = "⑫ Brooks Microtrendlines · Core & Display"
+var string G_MTD = "⑫ Brooks Microtrendlines · Detection"
+var string G_MTS = "⑫ Brooks Microtrendlines · Setups & Signal Bar"
+var string G_MTC = "⑫ Brooks Microtrendlines · Confidence Weights"
+var string G_MTT = "⑫ Brooks Microtrendlines · Trade Plan"
+var string G_MTA = "⑫ Brooks Microtrendlines · Alerts & Stats"
 
 // ---- core & display ----
 mtOn        = input.bool(true, "Enable Brooks microtrendline module", tooltip = "Master on/off for the whole microtrendline price-action module (trendlines, setups, dashboard, alerts, stats). Off = nothing from this module is calculated or drawn.", group = G_MT)
@@ -726,12 +705,6 @@ type MtEv
     bool mtEvSetupL = false
     bool mtEvSetupS = false
 
-type ExecEv
-    bool execArmNow = false
-    bool execConfirmNow = false
-    bool execReturnNow = false
-    bool execInvalidNow = false
-
 var MtState mtS = MtState.new()   // Brooks module persistent state
 
 // -----------------------------------------------------------------------------
@@ -740,7 +713,6 @@ var MtState mtS = MtState.new()   // Brooks module persistent state
 // Efficiency ratio (net move / path), bar overlap, VWAP-cross frequency and EMA slope blend into
 // a 0..1 trend score. TRANSITION = efficiency collapsing from a trending read, especially right
 // after a genuine microtrendline break (mtS.mtLastGenBar is set by the Brooks engine, one bar lag).
-// regimeState mapping for consumers: 1 TREND, -1 RANGE, 0 TRANSITION.
 float mtEma20  = ta.ema(close, 20)
 float mtPath   = math.sum(math.abs(ta.change(close)), 20)
 float mtEr20   = mtPath > 0 ? math.abs(close - close[20]) / mtPath : 0.0
@@ -763,10 +735,6 @@ f_mtCondCalc(int lastGen) =>
     c
 int mtCond = f_mtCondCalc(mtS.mtLastGenBar)
 mtS.cond := mtCond
-int regimeState = mtCond == 1 ? 1 : mtCond == 2 ? -1 : 0
-// "chop" for the FVG execution gate: VWAP chop OR price rotating in the middle of the dealing range
-float regimePos = (not na(rngHi) and not na(rngLo) and rngHi > rngLo) ? math.min(1.0, math.max(0.0, (close - rngLo) / (rngHi - rngLo))) : 0.5
-bool  regimeMidRange = regimePos > 0.38 and regimePos < 0.62
 
 // historical swing storage
 var swHi   = array.new<float>()
@@ -1396,14 +1364,6 @@ var fvgIsBull = array.new<bool>()
 var fvgStr    = array.new<float>()   // 0-100 strength score per gap
 var fvgLabels = array.new<label>()   // optional strength label per gap (na if none)
 var fvgCE     = array.new<line>()    // optional consequent-encroachment (50%) line per gap (na if none)
-var fvgArmed  = array.new<int>()     // execution state per gap: 0 watching · 1 armed · 2 confirmed · 3 dead (stop hit / expired)
-var fvgArmBar = array.new<int>()     // bar_index the gap ARMED on (for setup expiry); na while watching
-var fvgApproached = array.new<bool>() // approach alert already fired for this gap (cooldown)
-ExecEv xE = ExecEv.new()   // per-bar FVG execution events (fresh each bar)
-// FVG execution setup drawings (entry/stop/target lines + label), redrawn each bar from the
-// armed gaps so only the nearest active setups show. Alert flags are raised in the gap loop.
-var exec_lines  = array.new<line>()
-var exec_labels = array.new<label>()
 // HTF (higher-timeframe) FVG state — tracked box-less (plain floats, zero draw-object cost).
 // They boost the score of aligned chart-TF gaps and feed the DOL model; never drawn.
 var htfFvgTop   = array.new<float>()
@@ -1522,50 +1482,6 @@ f_gapTrapped(float gTop, float gBot, bool isBull) =>
                 if array.get(obBull, i) and f_inBand(array.get(obBot, i), wLo, wHi)  // bullish OB below
                     wall := math.max(wall, 0.8)
     wall
-
-// pick the closer opposing-pool candidate (top-level; Pine has no nested functions).
-// Returns the candidate p if it is a valid target beyond fromP and nearer than the running best.
-f_closerOpp(float best, float p, float fromP, bool isBull) =>
-    float r = best
-    if not na(p)
-        if isBull and p > fromP and (na(best) or p < best)
-            r := p
-        else if (not isBull) and p < fromP and (na(best) or p > best)
-            r := p
-    r
-// Nearest OPPOSING liquidity pool in the trade's direction, used as a realistic TARGET for the
-// feasibility / R:R check. For a long (isBull) that's the nearest pool ABOVE fromP (prev-period
-// highs, equal highs, session highs, swing highs); for a short, the nearest pool BELOW. Returns
-// the target price, or na if none is tracked above/below.
-f_nextOppLiq(float fromP, bool isBull) =>
-    float best = na
-    if isBull
-        best := f_closerOpp(best, pdhM, fromP, isBull)
-        best := f_closerOpp(best, pwhM, fromP, isBull)
-        best := f_closerOpp(best, pmhM, fromP, isBull)
-        best := f_closerOpp(best, nyH, fromP, isBull)
-        best := f_closerOpp(best, londH, fromP, isBull)
-        best := f_closerOpp(best, asiaH, fromP, isBull)
-        if array.size(eqHiA) > 0
-            for i = 0 to array.size(eqHiA) - 1
-                best := f_closerOpp(best, array.get(eqHiA, i), fromP, isBull)
-        if array.size(swHi) > 0
-            for i = 0 to array.size(swHi) - 1
-                best := f_closerOpp(best, array.get(swHi, i), fromP, isBull)
-    else
-        best := f_closerOpp(best, pdlM, fromP, isBull)
-        best := f_closerOpp(best, pwlM, fromP, isBull)
-        best := f_closerOpp(best, pmlM, fromP, isBull)
-        best := f_closerOpp(best, nyL, fromP, isBull)
-        best := f_closerOpp(best, londL, fromP, isBull)
-        best := f_closerOpp(best, asiaL, fromP, isBull)
-        if array.size(eqLoA) > 0
-            for i = 0 to array.size(eqLoA) - 1
-                best := f_closerOpp(best, array.get(eqLoA, i), fromP, isBull)
-        if array.size(swLo) > 0
-            for i = 0 to array.size(swLo) - 1
-                best := f_closerOpp(best, array.get(swLo, i), fromP, isBull)
-    best
 
 // RANK a fair value gap 0-100 (a relative quality ranking, NOT a probability). CORE BASE (the
 // quality every gap has: size · volume · displacement · premium-discount → ~40-55 for a clean
@@ -2380,9 +2296,6 @@ f_delFvgAt(int ix) =>
     array.remove(fvgStr, ix)
     array.remove(fvgLabels, ix)
     array.remove(fvgCE, ix)
-    array.remove(fvgArmed, ix)
-    array.remove(fvgArmBar, ix)
-    array.remove(fvgApproached, ix)
 
 if (not masterOn or not showFVG) and array.size(fvgBoxes) > 0
     while array.size(fvgBoxes) > 0
@@ -2439,19 +2352,9 @@ f_blkFvgNew() =>
                     float ceMid = (gTop + gBot) / 2.0
                     ce := line.new(bar_index[2], ceMid, bar_index + extendR, ceMid, color = fvgCECol, style = line.style_dashed, width = 1)
                 array.push(fvgCE, ce)
-                array.push(fvgArmed, 0)   // execution state starts at 'watching'
-                array.push(fvgArmBar, na) // bar it armed on (set when it arms)
-                array.push(fvgApproached, false)
     true
 f_blkFvgNew()
 
-// reset this bar's execution alert flags + clear the setup drawing pool (redrawn below)
-if array.size(exec_lines) > 0
-    while array.size(exec_lines) > 0
-        line.delete(array.shift(exec_lines))
-if array.size(exec_labels) > 0
-    while array.size(exec_labels) > 0
-        label.delete(array.shift(exec_labels))
 
 // (wrapped in a function to keep the main body under TradingView's size limit)
 f_blkFvgUpdate() =>
@@ -2489,146 +2392,10 @@ f_blkFvgUpdate() =>
                 line ce = array.get(fvgCE, i)
                 if not na(ce)
                     line.set_x2(ce, bar_index + extendR)
-                // ---- execution state machine: watch -> armed -> confirmed ----
-                if execOn
-                    int    st  = array.get(fvgArmed, i)
-                    // no-repaint gate: only advance state / fire alerts on a CLOSED bar (unless the
-                    // user opts into intrabar). Historical bars are always confirmed, so unaffected.
-                    bool   commitOK = (not execNoRepaint) or barstate.isconfirmed
-                    float  gsc = array.get(fvgStr, i)
-                    float  ceP = mid
-                    // qualification gates: strength, premium/discount side, DOL agreement
-                    bool qStr = gsc >= execMinStr
-                    bool qPD  = true
-                    if execNeedPD and not na(rngHi) and not na(rngLo) and rngHi > rngLo
-                        float pos = (ceP - rngLo) / (rngHi - rngLo)
-                        qPD := isBull ? (pos <= 0.5) : (pos >= 0.5)
-                    bool qDOL = (not execNeedDOL) or (isBull ? dm_dirState > 0 : dm_dirState < 0)
-                    // daily-bias agreement: NEUTRAL bias (dayBias == 0) allows both directions
-                    bool qBias = (not execNeedDay) or dayBias == 0 or (isBull ? dayBias > 0 : dayBias < 0)
-                    // the stop level for this gap (far edge + ATR buffer) — used for invalidation + R:R
-                    float atrX = math.max(nz(atr), syminfo.mintick)
-                    float stopLvl = isBull ? (bot - execStopATR * atrX) : (top + execStopATR * atrX)
-                    // feasibility: reward:risk to the nearest OPPOSING liquidity pool (the realistic
-                    // target). If below execMinRR the setup has no room — skip it (or just flag it).
-                    float entryQ = execEntry == "CE (50%)" ? ceP : (isBull ? top : bot)
-                    float riskQ  = math.max(math.abs(entryQ - stopLvl), syminfo.mintick)
-                    float tgtLiq = f_nextOppLiq(entryQ, isBull)
-                    float feasRR = na(tgtLiq) ? na : (math.abs(tgtLiq - entryQ) / riskQ)
-                    bool  lowRR  = execMinRR > 0 and not na(feasRR) and feasRR < execMinRR
-                    bool  qRR    = (execMinRR <= 0) or (not execRRReject) or (not lowRR)
-                    // regime gate: in RANGE + chop / mid-range, suppress CONTINUATION setups (gap in the middle
-                    // of the range) but still allow REVERSAL setups at the extremes (bull gap in deep
-                    // discount / bear gap in deep premium). Only active when regimeGateExec is on.
-                    bool qRegime = true
-                    if regimeGateExec and regimeState == -1 and (regimeChop or regimeMidRange)
-                        bool atExtreme = na(rngHi) or na(rngLo) or rngHi <= rngLo ? false : (isBull ? (ceP - rngLo) / (rngHi - rngLo) <= 0.38 : (ceP - rngLo) / (rngHi - rngLo) >= 0.62)
-                        qRegime := atExtreme
-                    bool qualifies = qStr and qPD and qDOL and qBias and qRR and qRegime
-                    // price returning toward a still-watching qualifying gap (approach alert, once per gap)
-                    if st == 0 and qualifies and commitOK and not array.get(fvgApproached, i)
-                        bool nearing = isBull ? (low <= top and low > ceP) : (high >= bot and high < ceP)
-                        if nearing
-                            xE.execReturnNow := true
-                            array.set(fvgApproached, i, true)   // cooldown: don't re-announce this gap
-                    // ARM when price taps the entry (CE by default, else proximal edge)
-                    if st == 0 and qualifies and commitOK
-                        float entryP = execEntry == "CE (50%)" ? ceP : (isBull ? top : bot)
-                        bool tapped = low <= entryP and high >= entryP
-                        if tapped
-                            array.set(fvgArmed, i, execConfirm ? 1 : 2)
-                            array.set(fvgArmBar, i, bar_index)   // stamp arm bar for expiry
-                            xE.execArmNow := true
-                            if not execConfirm
-                                xE.execConfirmNow := true
-                    // CONFIRM an armed gap once a candle closes rejecting back out on the setup side
-                    else if st == 1 and commitOK
-                        bool rejectClose = isBull ? (close > ceP) : (close < ceP)
-                        if rejectClose
-                            array.set(fvgArmed, i, 2)
-                            xE.execConfirmNow := true
-                    // ---- lifecycle: invalidate an armed/confirmed setup on stop breach or expiry ----
-                    if (st == 1 or st == 2) and commitOK
-                        bool stopHit = execStopKill and (isBull ? (low <= stopLvl) : (high >= stopLvl))
-                        int  armedBar = array.get(fvgArmBar, i)
-                        bool expired  = execExpiry > 0 and not na(armedBar) and (bar_index - armedBar) >= execExpiry
-                        if stopHit or expired
-                            array.set(fvgArmed, i, 3)            // dead — stops drawing + no more alerts
-                            xE.execInvalidNow := true
                 i += 1
     true
 f_blkFvgUpdate()
 
-// ---- draw the nearest active setups (entry / stop / TP1 / TP2 + R:R) ----
-// Only the execMaxShow armed gaps closest to price draw lines, to keep the chart readable.
-// (wrapped in a function to keep the main body under TradingView's size limit)
-f_blkExecDraw() =>
-    if execOn and masterOn and barstate.islast and array.size(fvgBoxes) > 0
-        float atrE = math.max(nz(atr), syminfo.mintick)
-        int drawn = 0
-        // repeatedly pick the nearest armed-but-undrawn gap
-        var drawnIx = array.new<bool>()
-        array.clear(drawnIx)
-        for di = 0 to array.size(fvgBoxes) - 1
-            array.push(drawnIx, false)
-        while drawn < execMaxShow
-            float bestD = na
-            int   bestI = -1
-            for gi = 0 to array.size(fvgBoxes) - 1
-                // draw only LIVE setups (armed=1 / confirmed=2); skip dead=3 and watching=0
-                int gSt0 = array.get(fvgArmed, gi)
-                if (gSt0 == 1 or gSt0 == 2) and not array.get(drawnIx, gi)
-                    float gmid = (box.get_top(array.get(fvgBoxes, gi)) + box.get_bottom(array.get(fvgBoxes, gi))) / 2.0
-                    float d = math.abs(gmid - close)
-                    if na(bestD) or d < bestD
-                        bestD := d
-                        bestI := gi
-            if bestI < 0
-                break
-            array.set(drawnIx, bestI, true)
-            drawn := drawn + 1
-            box  gbx = array.get(fvgBoxes, bestI)
-            bool gBull = array.get(fvgIsBull, bestI)
-            int  gSt = array.get(fvgArmed, bestI)
-            float gT = box.get_top(gbx)
-            float gB = box.get_bottom(gbx)
-            float gMid = (gT + gB) / 2.0
-            float entryP = execEntry == "CE (50%)" ? gMid : (gBull ? gT : gB)
-            float stopP  = gBull ? (gB - execStopATR * atrE) : (gT + execStopATR * atrE)
-            float risk   = math.abs(entryP - stopP)
-            float tp1P   = gBull ? (entryP + execTP1R * risk) : (entryP - execTP1R * risk)
-            float tp2P   = gBull ? (entryP + execTP2R * risk) : (entryP - execTP2R * risk)
-            // realistic target = nearest opposing liquidity pool, and the feasible R:R to it
-            float liqT   = f_nextOppLiq(entryP, gBull)
-            float liqRR  = na(liqT) ? na : (math.abs(liqT - entryP) / math.max(risk, syminfo.mintick))
-            bool  gLowRR = execMinRR > 0 and not na(liqRR) and liqRR < execMinRR
-            int   xL = bar_index + 2
-            int   xR = bar_index + extendR + 15
-            array.push(exec_lines, line.new(xL, entryP, xR, entryP, color = execColEntry, style = line.style_solid,  width = 2))
-            array.push(exec_lines, line.new(xL, stopP,  xR, stopP,  color = execColStop,  style = line.style_dashed, width = 1))
-            array.push(exec_lines, line.new(xL, tp1P,   xR, tp1P,   color = execColTP,    style = line.style_dotted, width = 1))
-            array.push(exec_lines, line.new(xL, tp2P,   xR, tp2P,   color = execColTP,    style = line.style_dotted, width = 1))
-            string stTxt = gSt == 2 ? "CONFIRMED" : "ARMED"
-            string dirTxt = gBull ? "LONG" : "SHORT"
-            string rrTxt  = na(liqRR) ? "  (no liq target)" : ("  →liq " + str.tostring(math.round(liqRR * 10) / 10.0) + ":1" + (gLowRR ? " ⚠ low R:R" : ""))
-            string head = (gBull ? "▲ " : "▼ ") + dirTxt + " " + stTxt + rrTxt
-            array.push(exec_labels, label.new(xR, entryP, head + "  entry " + str.tostring(entryP, format.mintick), style = label.style_label_left, color = color.new(gLowRR ? execColStop : execColEntry, 10), textcolor = color.white, size = size.small))
-            array.push(exec_labels, label.new(xR, stopP, "SL " + str.tostring(stopP, format.mintick), style = label.style_label_left, color = color.new(execColStop, 30), textcolor = color.white, size = size.tiny))
-            array.push(exec_labels, label.new(xR, tp1P, "TP1 " + str.tostring(tp1P, format.mintick) + " (" + str.tostring(execTP1R, "#.#") + "R)", style = label.style_label_left, color = color.new(execColTP, 30), textcolor = color.white, size = size.tiny))
-            array.push(exec_labels, label.new(xR, tp2P, "TP2 " + str.tostring(tp2P, format.mintick) + " (" + str.tostring(execTP2R, "#.#") + "R)", style = label.style_label_left, color = color.new(execColTP, 30), textcolor = color.white, size = size.tiny))
-            // the realistic liquidity target line (where price is actually drawn)
-            if not na(liqT)
-                array.push(exec_lines, line.new(xL, liqT, xR, liqT, color = color.new(execColTP, 0), style = line.style_solid, width = 1))
-                array.push(exec_labels, label.new(xR, liqT, "🎯 liq " + str.tostring(liqT, format.mintick), style = label.style_label_left, color = color.new(execColTP, 10), textcolor = color.white, size = size.tiny))
-    true
-f_blkExecDraw()
-
-// wipe execution drawings when the engine is off
-if (not execOn or not masterOn) and (array.size(exec_lines) > 0 or array.size(exec_labels) > 0)
-    while array.size(exec_lines) > 0
-        line.delete(array.shift(exec_lines))
-    while array.size(exec_labels) > 0
-        label.delete(array.shift(exec_labels))
 
 // prune inversion memory beyond its window
 if array.size(invTop) > 0
@@ -2829,7 +2596,7 @@ f_blkOrbWipe() =>
 f_blkOrbWipe()
 
 // =============================================================================
-// ⑬ AL BROOKS MICROTRENDLINE PRICE ACTION MODULE  (toggle: "Enable module")
+// ⑫ AL BROOKS MICROTRENDLINE PRICE ACTION MODULE  (toggle: "Enable module")
 //   Setup A  Failed microtrendline breakout (primary)
 //   Setup B  Microtrendline break + pullback continuation
 //   Setup C  Failed-breakout reversal (stricter confirmation)
@@ -2983,6 +2750,12 @@ MtEv mtE = MtEv.new()
 // =============================================================================
 // HELPERS
 // =============================================================================
+// one key/value table row (muted key, colored value) — shared by the dashboard + stats tables
+f_row(table t, int r, string k, string v, color vc, string ksz = size.small, string vsz = size.small) =>
+    table.cell(t, 0, r, k, text_color = themeMuted, bgcolor = themeRowBg, text_size = ksz, text_halign = text.align_left)
+    table.cell(t, 1, r, v, text_color = vc, bgcolor = themeRowBg, text_size = vsz, text_halign = text.align_left)
+    true
+
 f_mtPos(string p) =>
     p == "Top Right" ? position.top_right : p == "Top Left" ? position.top_left : p == "Bottom Right" ? position.bottom_right : p == "Bottom Left" ? position.bottom_left : p == "Middle Right" ? position.middle_right : position.middle_left
 
@@ -3924,53 +3697,37 @@ f_blkMtDash() =>
         table.cell(mtTbl, 0, r, "BROOKS MICROTRENDLINE", text_color = themeTxt, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_left)
         table.cell(mtTbl, 1, r, mtOn ? "ON" : "", text_color = themeMuted, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_right)
         r += 1
-        table.cell(mtTbl, 0, r, "Market", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-        table.cell(mtTbl, 1, r, condTxt, text_color = condCol, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        f_row(mtTbl, r, "Market", condTxt, condCol)
         r += 1
-        table.cell(mtTbl, 0, r, "Bias 15m·5m·1m", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-        table.cell(mtTbl, 1, r, f_mtBias(mtD15) + "  " + f_mtBias(mtD5) + "  " + f_mtBias(mtD1), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        f_row(mtTbl, r, "Bias 15m·5m·1m", f_mtBias(mtD15) + "  " + f_mtBias(mtD5) + "  " + f_mtBias(mtD1), themeTxt)
         r += 1
-        table.cell(mtTbl, 0, r, "Trendline", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-        table.cell(mtTbl, 1, r, tlDir, text_color = tlCol, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        f_row(mtTbl, r, "Trendline", tlDir, tlCol)
         r += 1
-        table.cell(mtTbl, 0, r, "Quality", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-        table.cell(mtTbl, 1, r, tlQ, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        f_row(mtTbl, r, "Quality", tlQ, themeTxt)
         r += 1
-        table.cell(mtTbl, 0, r, "Touches", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-        table.cell(mtTbl, 1, r, showTl.state == 0 ? "—" : str.tostring(showTl.touches), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        f_row(mtTbl, r, "Touches", showTl.state == 0 ? "—" : str.tostring(showTl.touches), themeTxt)
         r += 1
-        table.cell(mtTbl, 0, r, "Break status", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-        table.cell(mtTbl, 1, r, tlStat, text_color = showTl.state == 2 or showTl.state == 3 ? color.orange : themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        f_row(mtTbl, r, "Break status", tlStat, showTl.state == 2 or showTl.state == 3 ? color.orange : themeTxt)
         r += 1
-        table.cell(mtTbl, 0, r, "Setup", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-        table.cell(mtTbl, 1, r, mtS.stSt == 0 ? "NO TRADE" : (clsTxt + " · " + f_mtTypeName(mtS.stType)), text_color = dirCol, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        f_row(mtTbl, r, "Setup", mtS.stSt == 0 ? "NO TRADE" : (clsTxt + " · " + f_mtTypeName(mtS.stType)), dirCol)
         r += 1
-        table.cell(mtTbl, 0, r, "Direction · score", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-        table.cell(mtTbl, 1, r, mtS.stSt == 0 ? "—" : (dirTxt + " · " + str.tostring(mtS.stScore, "#") + "/100"), text_color = dirCol, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        f_row(mtTbl, r, "Direction · score", mtS.stSt == 0 ? "—" : (dirTxt + " · " + str.tostring(mtS.stScore, "#") + "/100"), dirCol)
         r += 1
-        table.cell(mtTbl, 0, r, "Signal bar · H/L", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-        table.cell(mtTbl, 1, r, (mtS.stSt == 0 ? "—" : str.tostring(100.0 * mtS.stSq, "#") + "%") + " · " + hTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        f_row(mtTbl, r, "Signal bar · H/L", (mtS.stSt == 0 ? "—" : str.tostring(100.0 * mtS.stSq, "#") + "%") + " · " + hTxt, themeTxt)
         r += 1
-        table.cell(mtTbl, 0, r, "Entry", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-        table.cell(mtTbl, 1, r, mtS.stSt == 0 ? "—" : ((mtS.stSt == 1 ? "stop-entry " : "filled ") + str.tostring(mtS.stSt == 2 or (mtS.stSt == 3 and not na(mtS.stFill)) ? mtS.stFill : mtS.stEntry, format.mintick)), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        f_row(mtTbl, r, "Entry", mtS.stSt == 0 ? "—" : ((mtS.stSt == 1 ? "stop-entry " : "filled ") + str.tostring(mtS.stSt == 2 or (mtS.stSt == 3 and not na(mtS.stFill)) ? mtS.stFill : mtS.stEntry, format.mintick)), themeTxt)
         r += 1
-        table.cell(mtTbl, 0, r, "Stop", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-        table.cell(mtTbl, 1, r, mtS.stSt == 0 ? "—" : str.tostring(mtS.stStop, format.mintick), text_color = themeDnSolid, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        f_row(mtTbl, r, "Stop", mtS.stSt == 0 ? "—" : str.tostring(mtS.stStop, format.mintick), themeDnSolid)
         r += 1
-        table.cell(mtTbl, 0, r, "Target 1 · 2", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-        table.cell(mtTbl, 1, r, mtS.stSt == 0 ? "—" : (str.tostring(mtS.stT1, format.mintick) + " · " + str.tostring(mtS.stT2, format.mintick)), text_color = themeUpSolid, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        f_row(mtTbl, r, "Target 1 · 2", mtS.stSt == 0 ? "—" : (str.tostring(mtS.stT1, format.mintick) + " · " + str.tostring(mtS.stT2, format.mintick)), themeUpSolid)
         r += 1
-        table.cell(mtTbl, 0, r, "Risk : reward", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-        table.cell(mtTbl, 1, r, mtS.stSt == 0 ? "—" : ("1 : " + str.tostring(mtT1R, "#.##") + " / 1 : " + str.tostring(math.abs(mtS.stT2 - mtS.stEntry) / math.max(mtS.stRisk, syminfo.mintick), "#.##")), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        f_row(mtTbl, r, "Risk : reward", mtS.stSt == 0 ? "—" : ("1 : " + str.tostring(mtT1R, "#.##") + " / 1 : " + str.tostring(math.abs(mtS.stT2 - mtS.stEntry) / math.max(mtS.stRisk, syminfo.mintick), "#.##")), themeTxt)
         r += 1
-        table.cell(mtTbl, 0, r, "Status", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-        table.cell(mtTbl, 1, r, mtS.stSt == 0 ? "no active setup" : (mtS.stSt == 1 ? "PENDING ENTRY" : mtS.stSt == 2 ? ("TRIGGERED" + (mtS.stT1Hit ? " · T1 ✔" : "")) : mtS.stRes), text_color = mtS.stSt == 2 ? themeUpSolid : themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        f_row(mtTbl, r, "Status", mtS.stSt == 0 ? "no active setup" : (mtS.stSt == 1 ? "PENDING ENTRY" : mtS.stSt == 2 ? ("TRIGGERED" + (mtS.stT1Hit ? " · T1 ✔" : "")) : mtS.stRes), mtS.stSt == 2 ? themeUpSolid : themeTxt)
         r += 1
-        table.cell(mtTbl, 0, r, "Score drivers", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-        table.cell(mtTbl, 1, r, whyTxt == "" ? "—" : whyTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+        f_row(mtTbl, r, "Score drivers", whyTxt == "" ? "—" : whyTxt, themeTxt, size.small, size.tiny)
         r += 1
-        table.cell(mtTbl, 0, r, "Weak factors", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-        table.cell(mtTbl, 1, r, weakTxt == "" ? "—" : weakTxt, text_color = color.orange, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        f_row(mtTbl, r, "Weak factors", weakTxt == "" ? "—" : weakTxt, color.orange)
         table.set_frame_color(mtTbl, color.new(condCol, 35))
         table.set_frame_width(mtTbl, themeBW)
     true
@@ -3990,14 +3747,11 @@ f_blkMtStats() =>
         float nAll = array.get(mtStat, 0)
         string extra = nAll > 0 ? ("win " + str.tostring(array.get(mtStat, 1), "#") + " / loss " + str.tostring(nAll - array.get(mtStat, 1), "#") + " · avg win " + str.tostring(array.get(mtStat, 1) > 0 ? array.get(mtStat, 3) / array.get(mtStat, 1) : 0.0, "+0.00") + "R · avg loss " + str.tostring(nAll - array.get(mtStat, 1) > 0 ? array.get(mtStat, 4) / (nAll - array.get(mtStat, 1)) : 0.0, "0.00") + "R") : "no completed signals"
         for g = 0 to 15
-            table.cell(mtStTbl, 0, sr, array.get(labs, g), text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
-            table.cell(mtStTbl, 1, sr, f_mtStatTxt(g), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+            f_row(mtStTbl, sr, array.get(labs, g), f_mtStatTxt(g), themeTxt, size.tiny, size.tiny)
             sr += 1
-        table.cell(mtStTbl, 0, sr, "Totals", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
-        table.cell(mtStTbl, 1, sr, extra, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+        f_row(mtStTbl, sr, "Totals", extra, themeTxt, size.tiny, size.tiny)
         sr += 1
-        table.cell(mtStTbl, 0, sr, "Not a backtest", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
-        table.cell(mtStTbl, 1, sr, "1 position at a time · stop wins same-bar ties · no costs", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+        f_row(mtStTbl, sr, "Not a backtest", "1 position at a time · stop wins same-bar ties · no costs", themeMuted, size.tiny, size.tiny)
         table.set_frame_color(mtStTbl, color.new(themeMuted, 40))
         table.set_frame_width(mtStTbl, themeBW)
     true
@@ -4033,11 +3787,6 @@ alertcondition(f_touch(nyH) or f_touch(nyL) or f_touch(londH) or f_touch(londL) 
 alertcondition(sfpLong or sfpShort, "SFP fired", "Sweep + reversal (liquidity grab) detected")
 alertcondition(sfpLong, "SFP long", "Bullish sweep + reversal")
 alertcondition(sfpShort, "SFP short", "Bearish sweep + reversal")
-// --- FVG execution engine ---
-alertcondition(xE.execReturnNow,  "FVG setup approaching", "Price is returning into a qualifying fair value gap — setup may arm soon")
-alertcondition(xE.execArmNow,     "FVG setup armed",       "Price tapped a qualifying FVG entry — setup ARMED (entry/stop/target active)")
-alertcondition(xE.execConfirmNow, "FVG setup confirmed",   "FVG setup CONFIRMED — entry trigger met")
-alertcondition(xE.execInvalidNow, "FVG setup invalidated", "FVG setup INVALIDATED — stop breached or expired")
 alertcondition(biasFlipNow,    "Daily bias flipped",    "The Daily Bias direction changed")
 alertcondition(orbE.orbBreakUpNow or orbE.orbBreakDnNow, "ORB break", "Opening range: confirmed break")
 alertcondition(orbE.orbFailNow, "ORB failed break", "Opening range: break failed back inside")
