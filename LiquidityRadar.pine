@@ -6,9 +6,10 @@
 //     equal highs/lows — all removed once swept.
 //   • Stacked liquidity: nearby levels merge into strength-rated zones.
 //   • Confluence score (0-100) per zone.
-//   • Draw-on-Liquidity (DOL) bias gauge + conviction.
-//   • Order Blocks and Fair Value Gaps.
-//   • Sweep + reversal (SFP) markers, per-level countdown, age-scaled extension.
+//   • Per-level confidence % + 🎯 most-likely target (draw-on-liquidity model).
+//   • Order Blocks / Breakers and Fair Value Gaps (strength-ranked) + FVG execution setups.
+//   • Sweep + reversal (SFP) markers, per-level countdown, Daily Bias, ORB.
+//   • ⑰ Brooks microtrendline module for execution + entries (toggle).
 // =============================================================================
 indicator("Liquidity Radar", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 5000)
 
@@ -80,7 +81,7 @@ fvgFillMode = input.string("Body close through", "  FVG invalidation", options =
 fvgFilterOn   = input.bool(true,  "  Filter FVGs by strength", tooltip = "RANK every fair value gap 0-100 (a relative QUALITY ranking, not a probability) and only draw the ones that clear the threshold below. The rank = a CORE BASE (the quality every gap has: size vs ATR · creation volume · displacement · premium/discount — a clean ordinary gap lands ~40-55) PLUS BONUS points added on top only when the occasional factors fire (inside an order/breaker block, inversion/IFVG, higher-timeframe-gap alignment, round-number/VWAP/OTE confluence, liquidity-pool confluence, sweep precedence), minus a discount if the gap is already tested or poorly located. Absent bonuses never penalise — so a valid gap keeps a usable score and confluent gaps rise above ordinary ones. Typical: trivial gap <30, ordinary 40-55, confluent 65-90+.", group = G_STRUCT)
 fvgMinStr     = input.int(35, "    Min FVG strength % to draw", minval = 0, maxval = 100, tooltip = "Fair value gaps ranking below this are hidden (or dimmed, if 'Dim weak FVGs' is on). On the core-base+bonus scale a TYPICAL valid gap ranks ~45-60 and confluent gaps 65-90+, so ~35 keeps genuine gaps while dimming only the trivial ones. TUNE THIS to the % values you actually see on your chart: if too many gaps dim, lower it; if too many show, raise it.", group = G_STRUCT)
 fvgDimWeak    = input.bool(true, "    Dim weak FVGs instead of hiding", tooltip = "Rather than removing sub-threshold gaps entirely, draw them very faintly so context is kept while the strong gaps stand out. Off = weak gaps are not drawn at all.", group = G_STRUCT)
-fvgShowStr    = input.bool(true, "    Label FVG strength %", tooltip = "Print each drawn gap's strength % (plus tags: 'htf' = aligns with a higher-timeframe gap, 'liq' = sits on/just beyond a liquidity pool (EQ / prev-period / open / session / swing / VP), 'swp' = formed right after a same-direction sweep (SFP), 'inv' = followed an inversion, 'blk' = inside an order/breaker block) so you can see WHY it scored the way it did.", group = G_STRUCT)
+fvgShowStr    = input.bool(true, "    Label FVG strength %", tooltip = "Print each drawn gap's strength % (plus tags: 'htf' = aligns with a higher-timeframe gap, 'liq' = sits on/just beyond a liquidity pool (EQ / prev-period / open / session / swing), 'swp' = formed right after a same-direction sweep (SFP), 'inv' = followed an inversion, 'blk' = inside an order/breaker block) so you can see WHY it scored the way it did.", group = G_STRUCT)
 fvgKeep       = input.int(50, "    Max FVGs kept", minval = 5, maxval = 100, tooltip = "How many unfilled fair value gaps to retain before the OLDEST is dropped. Raise this to keep more / older gaps far back in history (e.g. gaps sitting above the current swing high); lower it to keep the chart light. Note: gaps older than the chart's loaded history still can't be drawn, and each gap uses a drawing-object slot shared with order blocks and cluster zones (budget is 500).", group = G_STRUCT)
 // FVG strength model — fixed internal weights (1.0 = default influence) and look-backs
 fvgSizeW     = 1.0
@@ -653,7 +654,7 @@ var float pdFib3 = 0.886
 // Efficiency ratio (net move / path), bar overlap, VWAP-cross frequency and EMA slope blend into
 // a 0..1 trend score. TRANSITION = efficiency collapsing from a trending read, especially right
 // after a genuine microtrendline break (mtLastGenBar is set by the Brooks engine, one bar lag).
-// regimeState keeps the legacy mapping for consumers: 1 TREND, -1 RANGE, 0 TRANSITION.
+// regimeState mapping for consumers: 1 TREND, -1 RANGE, 0 TRANSITION.
 var int mtLastGenBar = -1000
 float mtEma20  = ta.ema(close, 20)
 float mtPath   = math.sum(math.abs(ta.change(close)), 20)
@@ -835,7 +836,7 @@ while array.size(reqLoA) > swingHist
     array.shift(reqLoB)
 
 // -----------------------------------------------------------------------------
-// BIRTH-BAR TRACKING (for age-scaled extension)
+// BIRTH-BAR TRACKING (level age → DOL age weighting)
 // -----------------------------------------------------------------------------
 var int b_pdh = na, var int b_pdl = na
 var int b_pwh = na, var int b_pwl = na
@@ -1300,7 +1301,7 @@ var invWasBull = array.new<bool>()   // polarity of the gap that got invalidated
 var invBar    = array.new<int>()     // bar it was invalidated on
 
 // How important is the strongest liquidity pool sitting on/just-beyond a gap? Returns 0..1,
-// graded by a type hierarchy (weekly/monthly > equal highs/lows > prev-day > opens > VP >
+// graded by a type hierarchy (weekly/monthly > equal highs/lows > prev-day > opens >
 // session > swing), mirroring the DOL type weights. "Near" = overlap OR within fvgLiqATR of a
 // gap edge, so it also rewards a gap that GUARDS a pool just beyond it (the fuel price hunts).
 // is a price within [lo..hi]? (helper for f_gapLiqPool; top-level since Pine has no nesting)
@@ -1689,9 +1690,9 @@ f_confScore(float mid, float loB, float hiB, int members) =>
     int s = int(math.min(math.round(score), 100))
     [s, parts]
 
-// ---- per-level DOL pull + magnet-quality (accuracy pass) ----
+// ---- per-level DOL pull + magnet-quality ----
 // Two scores are produced from the same weights:
-//   • pull  = distance-decay(#2) × type × age × freshness(#3) × confluence(#1)
+//   • pull  = distance-decay × type × age × freshness × confluence
 //             — proximity dominates. Drives the DOL arrow/bias and the 🎯 magnet.
 //   • qual  = type × age × freshness × confluence  (distance REMOVED)
 //             — "how strong a magnet is this for its distance". Drives the
@@ -2091,7 +2092,7 @@ if barstate.islast
                 float lp = lpDen > 0 ? lpNum / lpDen * 100.0 : 0.0
                 bool isTop = not na(topPullPrice) and math.abs(p - topPullPrice) <= syminfo.mintick
                 float atrUt = math.max(nz(atr), syminfo.mintick)
-                // stacked-agreement ⭐: DOL-side agrees + it's the magnet + overlaps OB/FVG (feature 8)
+                // stacked-agreement ⭐: DOL-side agrees + it's the magnet + overlaps OB/FVG
                 bool sideAgree = (dolDrawUp and p >= close) or (not dolDrawUp and p < close)
                 string stackTag = (projStacked and lInWin and isTop and sideAgree and f_hasOBFVG(p - atrUt * 0.05, p + atrUt * 0.05)) ? " ⭐" : ""
                 // tested/virgin: probed levels get a ✓ + dotted, dimmed line (still standing, just 'used')
@@ -2139,7 +2140,7 @@ if barstate.islast
                     float zPull = zDen > 0 ? zNum / zDen * 100.0 : 0.0
                     bool zTop = not na(topPullPrice) and topPullPrice >= minP - pad and topPullPrice <= maxP + pad
                     float atrUz = math.max(nz(atr), syminfo.mintick)
-                    // stacked-agreement ⭐: DOL-side agrees + it's the magnet + zone overlaps OB/FVG (feature 8)
+                    // stacked-agreement ⭐: DOL-side agrees + it's the magnet + zone overlaps OB/FVG
                     bool zSideAgree = (dolDrawUp and mid >= close) or (not dolDrawUp and mid < close)
                     string zStackTag = (projStacked and zInWin and zTop and zSideAgree and f_hasOBFVG(minP - pad, maxP + pad)) ? " ⭐" : ""
                     // tested/virgin zone: dashed hollow border + ✓ when price has probed the zone
@@ -2185,10 +2186,6 @@ if barstate.islast
                     label olb = label.new(obCx, (obT + obB) / 2.0, str.tostring(obSc) + "%", style = label.style_text_outline, textcolor = color.white, color = color.new(bull ? obColBull : obColBear, 100), size = size.small)
                     array.push(xtra_labels, olb)
 
-
-    // (DOL banner removed — it conflicted with the Daily Bias banner. The DOL COMPUTATION
-    //  above — dm_dirState / dm_bias / bslEff / sslEff / dolTgt — is retained because the
-    //  execution engine, stacked-agreement ⭐, and path-clearance all still rely on it.)
 
 // ---- CONTEXT PANEL (Daily Bias + market condition) ----
 if masterOn and barstate.islast
