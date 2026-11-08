@@ -25,7 +25,6 @@ var string G_CD     = "④ Countdown"
 var string G_CLUST  = "⑤ Clustering & Confluence"
 var string G_DOL    = "⑥ Level Confidence"
 var string G_STYLE  = "⑦ Style"
-var string G_EMO    = "⑧ Emoji Tags"
 var string G_TESTED = "⑨ Tested Levels"
 var string G_EXEC   = "⑩ FVG Execution (setups)"
 var string G_BIAS   = "⑪ Daily Bias"
@@ -82,7 +81,6 @@ fvgFilterOn   = input.bool(true,  "  Filter FVGs by strength", tooltip = "RANK e
 fvgMinStr     = input.int(35, "    Min FVG strength % to draw", minval = 0, maxval = 100, tooltip = "Fair value gaps ranking below this are hidden (or dimmed, if 'Dim weak FVGs' is on). On the core-base+bonus scale a TYPICAL valid gap ranks ~45-60 and confluent gaps 65-90+, so ~35 keeps genuine gaps while dimming only the trivial ones. TUNE THIS to the % values you actually see on your chart: if too many gaps dim, lower it; if too many show, raise it.", group = G_STRUCT)
 fvgDimWeak    = input.bool(true, "    Dim weak FVGs instead of hiding", tooltip = "Rather than removing sub-threshold gaps entirely, draw them very faintly so context is kept while the strong gaps stand out. Off = weak gaps are not drawn at all.", group = G_STRUCT)
 fvgShowStr    = input.bool(true, "    Label FVG strength %", tooltip = "Print each drawn gap's strength % (plus tags: 'htf' = aligns with a higher-timeframe gap, 'liq' = sits on/just beyond a liquidity pool (EQ / prev-period / open / session / swing / VP), 'swp' = formed right after a same-direction sweep (SFP), 'inv' = followed an inversion, 'blk' = inside an order/breaker block) so you can see WHY it scored the way it did.", group = G_STRUCT)
-fvgLblStyle   = input.string("Inside box (centered)", "    FVG label style", options = ["Inside box (centered)","Pointer (distinct)","Plain text (no box)","Callout (like levels)"], tooltip = "How the FVG strength % label is drawn, so it doesn't blend into the level/cluster callouts when zoomed out. 'Inside box (centered)': the % sits CENTERED inside the gap box itself — tied directly to its box, clearly separate from the level labels at the right edge (recommended). 'Pointer (distinct)': a tinted pointer tag at the LEFT edge of the gap. 'Plain text (no box)': borderless text in the gap color — the most minimal. 'Callout (like levels)': the original left-callout box at the right edge.", group = G_STRUCT)
 fvgKeep       = input.int(50, "    Max FVGs kept", minval = 5, maxval = 100, tooltip = "How many unfilled fair value gaps to retain before the OLDEST is dropped. Raise this to keep more / older gaps far back in history (e.g. gaps sitting above the current swing high); lower it to keep the chart light. Note: gaps older than the chart's loaded history still can't be drawn, and each gap uses a drawing-object slot shared with order blocks and cluster zones (budget is 500).", group = G_STRUCT)
 // FVG strength model — fixed internal weights (1.0 = default influence) and look-backs
 fvgSizeW     = 1.0
@@ -170,9 +168,6 @@ showConf    = input.bool(true, "Confluence score on zones (0-100)", tooltip = "R
 confMin     = input.int(0, "  Hide zones below score", minval = 0, maxval = 100, tooltip = "Only show cluster zones scoring at least this. 0 = show all.", group = G_CLUST)
 confRound   = input.float(0.0, "  Round-number step (price)", minval = 0.0, tooltip = "Adds confluence when a zone sits near a round-number multiple of this step (e.g. 50/100 indices, 1000 BTC). 0 = disable.", group = G_CLUST)
 confVWAP    = input.bool(true, "  VWAP proximity in confluence", tooltip = "Adds confluence when a level sits near the session VWAP — a heavily-defended fair-value reference. VWAP is used as a SCORING factor only (not drawn as its own magnet).", group = G_CLUST)
-showVP      = input.bool(false, "Volume Profile levels (POC / VAH / VAL)", tooltip = "Builds a rough volume profile over a lookback and adds the Point of Control (highest-volume price) and Value Area High/Low as levels. Acceptance-based levels (where volume traded), a different KIND of level from swing liquidity — they feed the clusters + DOL pull.", group = G_CLUST)
-vpLen       = input.int(240, "  VP lookback (bars)", minval = 20, maxval = 1000, tooltip = "How many recent bars to build the volume profile from.", group = G_CLUST)
-vpBins      = input.int(24, "  VP resolution (bins)", minval = 8, maxval = 60, tooltip = "Number of price buckets in the profile. More = finer POC/VA, slightly heavier.", group = G_CLUST)
 
 // -----------------------------------------------------------------------------
 // INPUTS — LEVEL CONFIDENCE (draw-on-liquidity model)
@@ -201,31 +196,24 @@ dolFlipConfirm   = true       // ...and only on a closed bar
 // -----------------------------------------------------------------------------
 // INPUTS — STYLE
 // -----------------------------------------------------------------------------
-uiTheme    = input.string("Refined Dark", "Panel theme", options = ["Refined Dark","Refined Light","Midnight","Slate","Classic (legacy)"], group = G_STYLE)
+uiTheme    = input.string("Refined Dark", "Panel theme", options = ["Refined Dark","Refined Light"], group = G_STYLE)
 uiPanelOpacity = input.int(16, "Panel background opacity boost", minval = 0, maxval = 60, group = G_STYLE)
-uiAccentTint = input.int(70, "Accent softness", minval = 0, maxval = 90, group = G_STYLE)
 uiSlimBorders = input.bool(true, "Slim panel borders", group = G_STYLE)
 lineWidth  = input.int(1, "Line width", minval = 1, maxval = 3, group = G_STYLE)
 lineStyleI = input.string("Solid", "Line style", options = ["Solid","Dashed","Dotted"], group = G_STYLE)
 labelSize  = input.string("Small", "Label size", options = ["Tiny","Small","Normal"], group = G_STYLE)
 extendR    = input.int(10, "Line extend-right (bars)", minval = 0, group = G_STYLE)
-ageExtend  = input.bool(true, "Age-scaled extension (older = longer)", tooltip = "Each level's line grows with how long it has persisted, so mature levels are visibly longer.", group = G_STYLE)
-ageMaxBars = input.int(20, "  Max extra bars from age", minval = 0, maxval = 200, group = G_STYLE)
-ageScale   = input.float(0.35, "  Age scale (bars added per bar of age)", minval = 0.05, maxval = 1.0, step = 0.05, group = G_STYLE)
 colBull  = input.color(color.new(#26a69a, 0),  "Bullish / High color", group = G_STYLE)
 colBear  = input.color(color.new(#ef5350, 0),  "Bearish / Low color",  group = G_STYLE)
 colSess  = input.color(color.new(#42a5f5, 0),  "Session color",        group = G_STYLE)
 colZone  = input.color(color.new(#ffb300, 0),  "Cluster zone color",   group = G_STYLE)
 colFVGBase = input.color(color.new(#ab47bc, 0), "FVG fill color",       group = G_STYLE)
 opacityFVG = input.int(80, "FVG zone opacity", minval = 0, maxval = 100, group = G_STYLE)
-colFVG  = color.new(colFVGBase, opacityFVG)
 
-// -----------------------------------------------------------------------------
-// INPUTS — EMOJI TAGS
-// -----------------------------------------------------------------------------
-emoPrev = input.string("⭐", "Previous-period tag", options = ["None","🔥","⭐","🟡","🔹","💧","🎯","🧲"], group = G_EMO)
-emoSess = input.string("🟡", "Session tag",         options = ["None","🔥","⭐","🟡","🔹","💧","🎯","🧲"], group = G_EMO)
-emoLiq  = input.string("💧", "Liquidity tag",       options = ["None","🔥","⭐","🟡","🔹","💧","🎯","🧲"], group = G_EMO)
+// level emoji tags (fixed)
+emoPrev = "⭐"
+emoSess = "🟡"
+emoLiq  = "💧"
 
 // -----------------------------------------------------------------------------
 // INPUTS — TESTED LEVELS
@@ -434,16 +422,13 @@ f_labelSize() =>
     labelSize == "Tiny" ? size.tiny : labelSize == "Normal" ? size.normal : size.small
 
 // --- theme palette ---
-themeBgBase  = uiTheme == "Refined Light" ? color.new(#f5f6fa, 0) : uiTheme == "Midnight" ? color.new(#0d1117, 0) : uiTheme == "Slate" ? color.new(#262b36, 0) : uiTheme == "Classic (legacy)" ? color.new(#1e222d, 0) : color.new(#171a21, 0)
+themeBgBase  = uiTheme == "Refined Light" ? color.new(#f5f6fa, 0) : color.new(#171a21, 0)
 themeTxt     = uiTheme == "Refined Light" ? color.new(#2b2f3a, 0) : color.new(#e6e9ef, 0)
 themeMuted   = uiTheme == "Refined Light" ? color.new(#6b7280, 0) : color.new(#9aa4b2, 0)
-themeHdrRaw  = uiTheme == "Refined Light" ? #b45309 : #d4b483
-themeHdr     = color.new(themeHdrRaw, uiAccentTint > 40 ? uiAccentTint - 40 : 0)
 themeUpSolid = color.new(#4db6ac, 0)
 themeDnSolid = color.new(#e08d8d, 0)
 themePanelBg = color.new(themeBgBase, math.min(100, uiPanelOpacity))
 themeRowBg   = color.new(themeBgBase, math.min(100, uiPanelOpacity + 8))
-themeBorder  = color.new(uiTheme == "Refined Light" ? #d0d4dc : #3a4150, uiSlimBorders ? 20 : 0)
 themeBW      = uiSlimBorders ? 1 : 2
 
 // core series
@@ -531,13 +516,7 @@ f_sessName(string base, bool carried) =>
     (sessReclassify and carried) ? (base + " (swing)") : base
 
 
-f_extLen(int birthBar) =>
-    if not ageExtend or na(birthBar)
-        extendR
-    else
-        int age = math.max(bar_index - birthBar, 0)
-        int extra = int(math.min(age * ageScale, ageMaxBars))
-        extendR + extra
+f_extLen(int birthBar) => extendR
 
 // -----------------------------------------------------------------------------
 // LEVEL SOURCES
@@ -558,60 +537,6 @@ if newNYDay
     midO := open
 // session VWAP (scoring factor only)
 vwapVal = ta.vwap(hlc3)
-
-// -----------------------------------------------------------------------------
-// VOLUME PROFILE — rough POC / Value Area over a lookback (computed on last bar)
-// -----------------------------------------------------------------------------
-var float vpPOC = na
-var float vpVAH = na
-var float vpVAL = na
-// ta.highest/ta.lowest must be evaluated every bar (not inside a conditional) for a consistent
-// series; compute at global scope and read the results inside the VP block below.
-float vpHiP = ta.highest(high, vpLen)
-float vpLoP = ta.lowest(low, vpLen)
-if showVP and barstate.islast
-    float hiP = vpHiP
-    float loP = vpLoP
-    if not na(hiP) and not na(loP) and hiP > loP
-        float binW = (hiP - loP) / vpBins
-        var bins = array.new<float>()
-        array.clear(bins)
-        for bni = 0 to vpBins - 1
-            array.push(bins, 0.0)
-        // distribute each bar's volume into the bin covering its hlc3
-        for bk = 0 to vpLen - 1
-            float pxk = (high[bk] + low[bk] + close[bk]) / 3.0
-            float vk  = nz(volume[bk], 1.0)
-            int bidx = int(math.floor((pxk - loP) / binW))
-            bidx := math.max(0, math.min(vpBins - 1, bidx))
-            array.set(bins, bidx, array.get(bins, bidx) + vk)
-        // POC = highest-volume bin center; total for value-area
-        float totV = array.sum(bins)
-        int pocI = 0
-        float pocV = 0.0
-        for bni = 0 to vpBins - 1
-            if array.get(bins, bni) > pocV
-                pocV := array.get(bins, bni)
-                pocI := bni
-        vpPOC := loP + (pocI + 0.5) * binW
-        // expand around POC until ~70% of volume is captured -> value area
-        float acc = pocV
-        int lo_i = pocI
-        int hi_i = pocI
-        while acc < totV * 0.70 and (lo_i > 0 or hi_i < vpBins - 1)
-            float belowV = lo_i > 0 ? array.get(bins, lo_i - 1) : -1.0
-            float aboveV = hi_i < vpBins - 1 ? array.get(bins, hi_i + 1) : -1.0
-            if aboveV >= belowV and hi_i < vpBins - 1
-                hi_i := hi_i + 1
-                acc := acc + array.get(bins, hi_i)
-            else if lo_i > 0
-                lo_i := lo_i - 1
-                acc := acc + array.get(bins, lo_i)
-            else if hi_i < vpBins - 1
-                hi_i := hi_i + 1
-                acc := acc + array.get(bins, hi_i)
-        vpVAL := loP + lo_i * binW
-        vpVAH := loP + (hi_i + 1) * binW
 
 // -----------------------------------------------------------------------------
 // SESSIONS
@@ -1414,12 +1339,6 @@ f_gapLiqPool(float gTop, float gBot, bool isBull) =>
         best := math.max(best, 0.85)
     if f_inBand(dOpen, lo, hi) or f_inBand(midO, lo, hi)
         best := math.max(best, 0.65)
-    // volume-profile acceptance levels
-    if showVP
-        if f_inBand(vpPOC, lo, hi)
-            best := math.max(best, 0.80)
-        if f_inBand(vpVAH, lo, hi) or f_inBand(vpVAL, lo, hi)
-            best := math.max(best, 0.65)
     // session highs/lows
     if f_inBand(asiaH, lo, hi) or f_inBand(asiaL, lo, hi) or f_inBand(londH, lo, hi) or f_inBand(londL, lo, hi) or f_inBand(nyH, lo, hi) or f_inBand(nyL, lo, hi)
         best := math.max(best, 0.55)
@@ -1792,14 +1711,10 @@ f_pull(float pk, string nk, int bk, float sensK, float atrU) =>
             typeW := 2.4                 // exact equal H/L — engineered liquidity, top
         else if str.contains(nk, "PMH") or str.contains(nk, "PML")
             typeW := 2.2
-        else if str.contains(nk, "POC")
-            typeW := 2.1                 // volume point of control — heavy acceptance
         else if str.contains(nk, "PWH") or str.contains(nk, "PWL")
             typeW := 1.9
         else if str.contains(nk, "M.Open") or str.contains(nk, "W.Open")
             typeW := 1.8                 // monthly / weekly opens — institutional refs
-        else if str.contains(nk, "VAH") or str.contains(nk, "VAL")
-            typeW := 1.7                 // value-area edges
         else if str.contains(nk, "Breaker")
             typeW := 1.7                 // flipped OB — strong reaction zone
         else if str.contains(nk, "PDH") or str.contains(nk, "PDL")
@@ -1973,10 +1888,6 @@ if barstate.islast
             float bmid = (array.get(brkTop, bri) + array.get(brkBot, bri)) / 2.0
             bool  bbl  = array.get(brkBull, bri)
             f_addLevel(true, bmid, bbl ? "Breaker▲" : "Breaker▼", bbl ? colBull : colBear, emoLiq, array.get(brkBirth, bri), bbl ? 1 : -1)
-    if showVP
-        f_addLevel(not na(vpPOC), vpPOC, "POC", colZone, emoPrev, na, 0)
-        f_addLevel(not na(vpVAH), vpVAH, "VAH", colZone, emoPrev, na, 1)
-        f_addLevel(not na(vpVAL), vpVAL, "VAL", colZone, emoPrev, na, -1)
 
     // ---- DOL gravity: pull = distance x type x age, per side ----
     float bslStrength = 0.0
@@ -2379,20 +2290,9 @@ if masterOn and showFVG and (bullFVG or bearFVG)
             if fvgShowStr and not weak
                 string suffix = (htfAl ? " htf" : "") + (liqAl ? " liq" : "") + (swpAl ? " swp" : "") + (isInv ? " inv" : "") + (inBlock ? " blk" : "")
                 float ceY = (gTop + gBot) / 2.0
-                if fvgLblStyle == "Inside box (centered)"
-                    // % sits CENTERED inside the gap box itself — tied to its box, no callout,
-                    // so it can't blend with the level labels bunched at the right edge.
-                    int cx = int(math.round((bar_index[2] + bar_index + extendR) / 2.0))
-                    lb := label.new(cx, ceY, str.tostring(sc) + "%" + suffix, style = label.style_text_outline, textcolor = color.white, color = color.new(baseCol, 100), size = size.small)
-                else if fvgLblStyle == "Plain text (no box)"
-                    // borderless text in the gap color — most minimal, cannot blend with the solid callouts
-                    lb := label.new(bar_index + extendR, ceY, "◆ " + str.tostring(sc) + "%" + suffix, style = label.style_none, textcolor = baseCol, size = size.small)
-                else if fvgLblStyle == "Callout (like levels)"
-                    lb := label.new(bar_index + extendR, ceY, "◆ " + str.tostring(sc) + "%" + suffix, style = label.style_label_left, color = color.new(baseCol, 25), textcolor = color.white, size = size.small)
-                else
-                    // Pointer (distinct): anchored at the LEFT edge of the gap (away from the
-                    // right-edge level labels) with the pointer facing right into the gap.
-                    lb := label.new(bar_index[2], ceY, "◆ " + str.tostring(sc) + "%" + suffix, style = label.style_label_right, color = color.new(baseCol, 10), textcolor = color.white, size = size.small)
+                // % sits centered inside the gap box (tied to its box, away from the level labels)
+                int cx = int(math.round((bar_index[2] + bar_index + extendR) / 2.0))
+                lb := label.new(cx, ceY, str.tostring(sc) + "%" + suffix, style = label.style_text_outline, textcolor = color.white, color = color.new(baseCol, 100), size = size.small)
             array.push(fvgLabels, lb)
             // consequent-encroachment (CE) line at the gap midpoint — the 50% price reacts to
             line ce = na
@@ -2444,15 +2344,9 @@ if array.size(fvgBoxes) > 0
         else
             box.set_right(bx, bar_index + extendR)
             label lb = array.get(fvgLabels, i)
-            // keep each label correctly placed as the box extends right:
-            //  • Inside box (centered): re-center over the (growing) box
-            //  • Right-edge styles (Plain / Callout): follow the right edge
-            //  • Pointer: stays anchored at the gap's left edge — don't move it
+            // keep the label centered over the (growing) box
             if not na(lb)
-                if fvgLblStyle == "Inside box (centered)"
-                    label.set_x(lb, int(math.round((box.get_left(bx) + bar_index + extendR) / 2.0)))
-                else if fvgLblStyle != "Pointer (distinct)"
-                    label.set_x(lb, bar_index + extendR)
+                label.set_x(lb, int(math.round((box.get_left(bx) + bar_index + extendR) / 2.0)))
             line ce = array.get(fvgCE, i)
             if not na(ce)
                 line.set_x2(ce, bar_index + extendR)
