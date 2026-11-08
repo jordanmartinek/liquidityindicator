@@ -63,7 +63,7 @@ SETTINGS
 • Setups: A failed microtrendline breakout (primary), B break + pullback continuation, C failed-breakout reversal (stricter), D High 2 / Low 2. H1 / H2 / L1 / L2 markers.
 • Signal-bar quality and a 0-100 confluence score (A+ ≥ 85, A ≥ 75, B ≥ 65) with configurable weights — a technical rating, not a probability.
 • Pending stop-entry beyond the signal bar, stop, T1 / T2 / T3; status moves pending → triggered → stop / target / invalidated / expired.
-• Dashboard (top-right) and signal statistics by setup, market condition, time of day and score. Statistics are not a backtest: one position at a time, no costs, stop wins same-bar ties.
+• Dashboard (top-right) and signal statistics. Both default to a compact layout (Dashboard layout: Compact / Full · Stats layout: Summary / Full · text size Tiny / Small). Full stats break results down by setup, market condition, time of day and score. Statistics are not a backtest: one position at a time, no costs, stop wins same-bar ties.
 • 5m / 15m context uses the last closed higher-timeframe bar; everything confirms on closed candles.
 
 

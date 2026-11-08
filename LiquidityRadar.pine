@@ -11,7 +11,7 @@
 //   • Sweep + reversal (SFP) markers, per-level countdown, Daily Bias, ORB.
 //   • ⑫ Brooks microtrendline module for execution + entries (toggle).
 // =============================================================================
-indicator("Liquidity Radar", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 5000)
+indicator("Liquidity Radar", overlay = true, scale = scale.right, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 5000)
 
 // Anchor plot so the compiler always sees a top-level drawing output.
 plot(na, "anchor", display = display.none)
@@ -287,6 +287,8 @@ mtTF5       = input.timeframe("5", "  Secondary context timeframe", group = G_MT
 mtTF15      = input.timeframe("15", "  Higher-timeframe directional context", group = G_MT)
 mtCtxPiv    = input.int(3, "  Context swing pivot length", minval = 2, maxval = 10, group = G_MT)
 mtShowDash  = input.bool(true, "Show dashboard", group = G_MT)
+mtDashMode  = input.string("Compact", "  Dashboard layout", options = ["Compact","Full"], tooltip = "Compact: 3-5 short rows (market + bias, trendline, setup, levels, status). Full: every field on its own row, plus score drivers.", group = G_MT)
+mtTblSz     = input.string("Tiny", "  Dashboard / stats text size", options = ["Tiny","Small"], group = G_MT)
 mtDashPos   = input.string("Top Right", "  Dashboard position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_MT)
 mtShowTL    = input.bool(true, "Show active trendlines", group = G_MT)
 mtShowHist  = input.bool(true, "Show historical trendlines", group = G_MT)
@@ -365,6 +367,7 @@ mtMaxHold   = input.int(60, "Max bars in trade before time-out", minval = 5, max
 // ---- alerts & stats ----
 mtAlertFn   = input.bool(true, "Send detailed alert() messages (instrument · TF · setup · direction · score)", tooltip = "Create the alert with condition 'Any alert() function call'. The alertcondition() entries below are always available too.", group = G_MTA)
 mtShowStats = input.bool(true, "Show historical signal statistics table", group = G_MTA)
+mtStatsMode = input.string("Summary", "  Stats layout", options = ["Summary","Full"], tooltip = "Summary: overall + by score grade (2 rows). Full: by setup, market condition, time of day and score.", group = G_MTA)
 mtStatsPos  = input.string("Bottom Right", "  Stats table position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_MTA)
 mtStatsTgt  = input.string("Target 1", "  A signal 'wins' when it reaches", options = ["Target 1","Target 2"], group = G_MTA)
 mtStatsRng  = input.bool(false, "  Restrict statistics to date range", group = G_MTA)
@@ -3693,41 +3696,53 @@ f_blkMtDash() =>
                     whyTxt += array.get(names, q) + " " + str.tostring(pts, "#") + "/" + str.tostring(mx, "#") + "  "
                     if pts < 0.5 * mx
                         weakTxt += array.get(names, q) + " "
-        int r = 0
-        table.cell(mtTbl, 0, r, "BROOKS MICROTRENDLINE", text_color = themeTxt, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_left)
-        table.cell(mtTbl, 1, r, mtOn ? "ON" : "", text_color = themeMuted, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_right)
-        r += 1
-        f_row(mtTbl, r, "Market", condTxt, condCol)
-        r += 1
-        f_row(mtTbl, r, "Bias 15m·5m·1m", f_mtBias(mtD15) + "  " + f_mtBias(mtD5) + "  " + f_mtBias(mtD1), themeTxt)
-        r += 1
-        f_row(mtTbl, r, "Trendline", tlDir, tlCol)
-        r += 1
-        f_row(mtTbl, r, "Quality", tlQ, themeTxt)
-        r += 1
-        f_row(mtTbl, r, "Touches", showTl.state == 0 ? "—" : str.tostring(showTl.touches), themeTxt)
-        r += 1
-        f_row(mtTbl, r, "Break status", tlStat, showTl.state == 2 or showTl.state == 3 ? color.orange : themeTxt)
-        r += 1
-        f_row(mtTbl, r, "Setup", mtS.stSt == 0 ? "NO TRADE" : (clsTxt + " · " + f_mtTypeName(mtS.stType)), dirCol)
-        r += 1
-        f_row(mtTbl, r, "Direction · score", mtS.stSt == 0 ? "—" : (dirTxt + " · " + str.tostring(mtS.stScore, "#") + "/100"), dirCol)
-        r += 1
-        f_row(mtTbl, r, "Signal bar · H/L", (mtS.stSt == 0 ? "—" : str.tostring(100.0 * mtS.stSq, "#") + "%") + " · " + hTxt, themeTxt)
-        r += 1
-        f_row(mtTbl, r, "Entry", mtS.stSt == 0 ? "—" : ((mtS.stSt == 1 ? "stop-entry " : "filled ") + str.tostring(mtS.stSt == 2 or (mtS.stSt == 3 and not na(mtS.stFill)) ? mtS.stFill : mtS.stEntry, format.mintick)), themeTxt)
-        r += 1
-        f_row(mtTbl, r, "Stop", mtS.stSt == 0 ? "—" : str.tostring(mtS.stStop, format.mintick), themeDnSolid)
-        r += 1
-        f_row(mtTbl, r, "Target 1 · 2", mtS.stSt == 0 ? "—" : (str.tostring(mtS.stT1, format.mintick) + " · " + str.tostring(mtS.stT2, format.mintick)), themeUpSolid)
-        r += 1
-        f_row(mtTbl, r, "Risk : reward", mtS.stSt == 0 ? "—" : ("1 : " + str.tostring(mtT1R, "#.##") + " / 1 : " + str.tostring(math.abs(mtS.stT2 - mtS.stEntry) / math.max(mtS.stRisk, syminfo.mintick), "#.##")), themeTxt)
-        r += 1
-        f_row(mtTbl, r, "Status", mtS.stSt == 0 ? "no active setup" : (mtS.stSt == 1 ? "PENDING ENTRY" : mtS.stSt == 2 ? ("TRIGGERED" + (mtS.stT1Hit ? " · T1 ✔" : "")) : mtS.stRes), mtS.stSt == 2 ? themeUpSolid : themeTxt)
-        r += 1
-        f_row(mtTbl, r, "Score drivers", whyTxt == "" ? "—" : whyTxt, themeTxt, size.small, size.tiny)
-        r += 1
-        f_row(mtTbl, r, "Weak factors", weakTxt == "" ? "—" : weakTxt, color.orange)
+        string tsz = mtTblSz == "Small" ? size.small : size.tiny
+        if mtDashMode == "Compact"
+            // one column, 3-5 short rows
+            string tlS = showTl.state == 0 ? "no trendline" : ((showTl.dir > 0 ? "TL ▲ " : "TL ▼ ") + str.tostring(100.0 * showTl.quality, "#") + "% · " + str.tostring(showTl.touches) + "t · " + (showTl.state == 1 ? "intact" : showTl.state == 2 ? "pierced" : showTl.state == 4 ? "FAILED BO ✔" : ("broken " + str.tostring(bar_index - showTl.brkBar) + "b")))
+            table.cell(mtTbl, 0, 0, "BROOKS · " + condTxt + " · 15m" + f_mtBias(mtD15) + " 5m" + f_mtBias(mtD5) + " 1m" + f_mtBias(mtD1), text_color = condCol, bgcolor = themePanelBg, text_size = tsz, text_halign = text.align_left)
+            table.cell(mtTbl, 0, 1, tlS, text_color = tlCol, bgcolor = themeRowBg, text_size = tsz, text_halign = text.align_left)
+            table.cell(mtTbl, 0, 2, mtS.stSt == 0 ? "no setup" + (hTxt == "—" ? "" : " · " + hTxt) : (dirTxt + " " + clsTxt + " " + str.tostring(mtS.stScore, "#") + " · " + f_mtTypeName(mtS.stType)), text_color = dirCol, bgcolor = themeRowBg, text_size = tsz, text_halign = text.align_left)
+            if mtS.stSt != 0
+                float eShow = mtS.stSt == 2 or (mtS.stSt == 3 and not na(mtS.stFill)) ? mtS.stFill : mtS.stEntry
+                table.cell(mtTbl, 0, 3, "E " + str.tostring(eShow, format.mintick) + "  S " + str.tostring(mtS.stStop, format.mintick) + "  T1 " + str.tostring(mtS.stT1, format.mintick) + "  T2 " + str.tostring(mtS.stT2, format.mintick), text_color = themeTxt, bgcolor = themeRowBg, text_size = tsz, text_halign = text.align_left)
+                table.cell(mtTbl, 0, 4, (mtS.stSt == 1 ? "PENDING ENTRY" : mtS.stSt == 2 ? ("TRIGGERED" + (mtS.stT1Hit ? " · T1 ✔" : "")) : mtS.stRes) + (weakTxt == "" ? "" : "  · weak: " + weakTxt), text_color = mtS.stSt == 2 ? themeUpSolid : themeMuted, bgcolor = themeRowBg, text_size = tsz, text_halign = text.align_left)
+        else
+            int r = 0
+            table.cell(mtTbl, 0, r, "BROOKS MICROTRENDLINE", text_color = themeTxt, bgcolor = themePanelBg, text_size = tsz, text_halign = text.align_left)
+            table.cell(mtTbl, 1, r, mtOn ? "ON" : "", text_color = themeMuted, bgcolor = themePanelBg, text_size = tsz, text_halign = text.align_right)
+            r += 1
+            f_row(mtTbl, r, "Market", condTxt, condCol, tsz, tsz)
+            r += 1
+            f_row(mtTbl, r, "Bias 15m·5m·1m", f_mtBias(mtD15) + "  " + f_mtBias(mtD5) + "  " + f_mtBias(mtD1), themeTxt, tsz, tsz)
+            r += 1
+            f_row(mtTbl, r, "Trendline", tlDir, tlCol, tsz, tsz)
+            r += 1
+            f_row(mtTbl, r, "Quality", tlQ, themeTxt, tsz, tsz)
+            r += 1
+            f_row(mtTbl, r, "Touches", showTl.state == 0 ? "—" : str.tostring(showTl.touches), themeTxt, tsz, tsz)
+            r += 1
+            f_row(mtTbl, r, "Break status", tlStat, showTl.state == 2 or showTl.state == 3 ? color.orange : themeTxt, tsz, tsz)
+            r += 1
+            f_row(mtTbl, r, "Setup", mtS.stSt == 0 ? "NO TRADE" : (clsTxt + " · " + f_mtTypeName(mtS.stType)), dirCol, tsz, tsz)
+            r += 1
+            f_row(mtTbl, r, "Direction · score", mtS.stSt == 0 ? "—" : (dirTxt + " · " + str.tostring(mtS.stScore, "#") + "/100"), dirCol, tsz, tsz)
+            r += 1
+            f_row(mtTbl, r, "Signal bar · H/L", (mtS.stSt == 0 ? "—" : str.tostring(100.0 * mtS.stSq, "#") + "%") + " · " + hTxt, themeTxt, tsz, tsz)
+            r += 1
+            f_row(mtTbl, r, "Entry", mtS.stSt == 0 ? "—" : ((mtS.stSt == 1 ? "stop-entry " : "filled ") + str.tostring(mtS.stSt == 2 or (mtS.stSt == 3 and not na(mtS.stFill)) ? mtS.stFill : mtS.stEntry, format.mintick)), themeTxt, tsz, tsz)
+            r += 1
+            f_row(mtTbl, r, "Stop", mtS.stSt == 0 ? "—" : str.tostring(mtS.stStop, format.mintick), themeDnSolid, tsz, tsz)
+            r += 1
+            f_row(mtTbl, r, "Target 1 · 2", mtS.stSt == 0 ? "—" : (str.tostring(mtS.stT1, format.mintick) + " · " + str.tostring(mtS.stT2, format.mintick)), themeUpSolid, tsz, tsz)
+            r += 1
+            f_row(mtTbl, r, "Risk : reward", mtS.stSt == 0 ? "—" : ("1 : " + str.tostring(mtT1R, "#.##") + " / 1 : " + str.tostring(math.abs(mtS.stT2 - mtS.stEntry) / math.max(mtS.stRisk, syminfo.mintick), "#.##")), themeTxt, tsz, tsz)
+            r += 1
+            f_row(mtTbl, r, "Status", mtS.stSt == 0 ? "no active setup" : (mtS.stSt == 1 ? "PENDING ENTRY" : mtS.stSt == 2 ? ("TRIGGERED" + (mtS.stT1Hit ? " · T1 ✔" : "")) : mtS.stRes), mtS.stSt == 2 ? themeUpSolid : themeTxt, tsz, tsz)
+            r += 1
+            f_row(mtTbl, r, "Score drivers", whyTxt == "" ? "—" : whyTxt, themeTxt, tsz, size.tiny)
+            r += 1
+            f_row(mtTbl, r, "Weak factors", weakTxt == "" ? "—" : weakTxt, color.orange, tsz, tsz)
         table.set_frame_color(mtTbl, color.new(condCol, 35))
         table.set_frame_width(mtTbl, themeBW)
     true
@@ -3740,18 +3755,23 @@ f_blkMtStats() =>
         table.set_position(mtStTbl, f_mtPos(mtStatsPos))
         table.clear(mtStTbl, 0, 0, 1, 19)
         array<string> labs = array.from("ALL SIGNALS", "Failed BO", "Pullback cont.", "Reversal", "H2/L2", "Trend", "Range", "Transition", "Open 9:30-10:30", "10:30-12:00", "12:00-14:00", "14:00-16:00", "Other hours", "Score A+ (85+)", "Score A (75-84)", "Score B (<75)")
+        string ssz = mtTblSz == "Small" ? size.small : size.tiny
         int sr = 0
-        table.cell(mtStTbl, 0, sr, "SIGNAL STATS", text_color = themeTxt, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_left)
-        table.cell(mtStTbl, 1, sr, "n · win% · expectancy (R)", text_color = themeMuted, bgcolor = themePanelBg, text_size = size.tiny, text_halign = text.align_left)
-        sr += 1
-        float nAll = array.get(mtStat, 0)
-        string extra = nAll > 0 ? ("win " + str.tostring(array.get(mtStat, 1), "#") + " / loss " + str.tostring(nAll - array.get(mtStat, 1), "#") + " · avg win " + str.tostring(array.get(mtStat, 1) > 0 ? array.get(mtStat, 3) / array.get(mtStat, 1) : 0.0, "+0.00") + "R · avg loss " + str.tostring(nAll - array.get(mtStat, 1) > 0 ? array.get(mtStat, 4) / (nAll - array.get(mtStat, 1)) : 0.0, "0.00") + "R") : "no completed signals"
-        for g = 0 to 15
-            f_row(mtStTbl, sr, array.get(labs, g), f_mtStatTxt(g), themeTxt, size.tiny, size.tiny)
+        if mtStatsMode == "Summary"
+            table.cell(mtStTbl, 0, 0, "STATS " + f_mtStatTxt(0), text_color = themeTxt, bgcolor = themePanelBg, text_size = ssz, text_halign = text.align_left)
+            table.cell(mtStTbl, 0, 1, "A+ " + f_mtStatTxt(13) + " | A " + f_mtStatTxt(14) + " | B " + f_mtStatTxt(15), text_color = themeMuted, bgcolor = themeRowBg, text_size = ssz, text_halign = text.align_left)
+        else
+            table.cell(mtStTbl, 0, sr, "SIGNAL STATS", text_color = themeTxt, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_left)
+            table.cell(mtStTbl, 1, sr, "n · win% · expectancy (R)", text_color = themeMuted, bgcolor = themePanelBg, text_size = size.tiny, text_halign = text.align_left)
             sr += 1
-        f_row(mtStTbl, sr, "Totals", extra, themeTxt, size.tiny, size.tiny)
-        sr += 1
-        f_row(mtStTbl, sr, "Not a backtest", "1 position at a time · stop wins same-bar ties · no costs", themeMuted, size.tiny, size.tiny)
+            float nAll = array.get(mtStat, 0)
+            string extra = nAll > 0 ? ("win " + str.tostring(array.get(mtStat, 1), "#") + " / loss " + str.tostring(nAll - array.get(mtStat, 1), "#") + " · avg win " + str.tostring(array.get(mtStat, 1) > 0 ? array.get(mtStat, 3) / array.get(mtStat, 1) : 0.0, "+0.00") + "R · avg loss " + str.tostring(nAll - array.get(mtStat, 1) > 0 ? array.get(mtStat, 4) / (nAll - array.get(mtStat, 1)) : 0.0, "0.00") + "R") : "no completed signals"
+            for g = 0 to 15
+                f_row(mtStTbl, sr, array.get(labs, g), f_mtStatTxt(g), themeTxt, size.tiny, size.tiny)
+                sr += 1
+            f_row(mtStTbl, sr, "Totals", extra, themeTxt, size.tiny, size.tiny)
+            sr += 1
+            f_row(mtStTbl, sr, "Not a backtest", "1 position at a time · stop wins same-bar ties · no costs", themeMuted, size.tiny, size.tiny)
         table.set_frame_color(mtStTbl, color.new(themeMuted, 40))
         table.set_frame_width(mtStTbl, themeBW)
     true
