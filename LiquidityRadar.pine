@@ -2138,8 +2138,8 @@ f_confScore(float mid, float loB, float hiB, int members) =>
             if hiB >= ob and loB <= ot
                 float sizeW = math.min((ot - ob) / atrC, 1.5) / 1.5      // 0..1 by zone size vs ATR
                 float freshW = 1.0 - math.min(math.max(0.0, bar_index - array.get(obBirth, oi)) / 60.0, 1.0)  // 1 fresh -> 0 old
-                float obStr = 12.0 + sizeW * 10.0 + freshW * 4.0          // 12 .. 26
-                obBest := math.max(obBest, obStr)
+                float obStrL = 12.0 + sizeW * 10.0 + freshW * 4.0          // 12 .. 26
+                obBest := math.max(obBest, obStrL)
     if obBest > 0
         score := score + obBest
         parts := parts + (obBest >= 20.0 ? "OB+ " : "OB ")
@@ -4075,14 +4075,14 @@ float mtSqBear = close < open ? math.max(0.0, math.min(1.0, 0.30 * math.min(1.0,
 
 // ---- market-condition inputs ----
 float mtEma20 = ta.ema(close, 20)
-float mtPath  = ta.sum(math.abs(ta.change(close)), 20)
+float mtPath  = math.sum(math.abs(ta.change(close)), 20)
 float mtEr20  = mtPath > 0 ? math.abs(close - close[20]) / mtPath : 0.0
-float mtPath10 = ta.sum(math.abs(ta.change(close)), 10)
+float mtPath10 = math.sum(math.abs(ta.change(close)), 10)
 float mtErNow = mtPath10 > 0 ? math.abs(close - close[10]) / mtPath10 : 0.0
 float mtErPrev = nz(mtErNow[10])
 float mtOvl = mtRngBar > 0 ? math.max(0.0, math.min(1.0, (math.min(high, high[1]) - math.max(low, low[1])) / mtRngBar)) : 1.0
 float mtOvlAvg = ta.sma(mtOvl, 20)
-float mtVCross = ta.sum((not na(vwapVal) and ((close > vwapVal and close[1] <= nz(vwapVal[1])) or (close < vwapVal and close[1] >= nz(vwapVal[1])))) ? 1.0 : 0.0, 20)
+float mtVCross = math.sum((not na(vwapVal) and ((close > vwapVal and close[1] <= nz(vwapVal[1])) or (close < vwapVal and close[1] >= nz(vwapVal[1])))) ? 1.0 : 0.0, 20)
 float mtSlopeAtr = atr > 0 ? math.abs(mtEma20 - mtEma20[5]) / atr : 0.0
 float mtTrendScore = 0.4 * mtEr20 + 0.2 * (1.0 - mtOvlAvg) + 0.2 * (1.0 - math.min(1.0, mtVCross / 4.0)) + 0.2 * math.min(1.0, mtSlopeAtr)
 float mtVwapSlp = (not na(vwapVal) and atr > 0) ? (vwapVal - nz(vwapVal[5], vwapVal)) / atr : 0.0
@@ -4155,6 +4155,7 @@ f_mtCopy(MtTL dst, MtTL src) =>
     dst.brkPen := src.brkPen
     dst.failBar := src.failBar
     dst.structLvl := src.structLvl
+    true   // explicit return: keeps the function's return type consistent
 
 // retire the drawn line (to history or delete) and mark the record empty
 f_mtRetire(MtTL t, color fc) =>
@@ -4172,6 +4173,7 @@ f_mtRetire(MtTL t, color fc) =>
             line.delete(t.ln)
         t.ln := na
     t.state := 0
+    true   // explicit return: keeps the function's return type consistent
 
 // genuine break: keep a post-break record (b) for setups B / C, retire the live line
 f_mtGenuine(MtTL t, MtTL b) =>
@@ -4185,6 +4187,7 @@ f_mtGenuine(MtTL t, MtTL b) =>
     b.retestExt := na
     t.evGenuine := true
     f_mtRetire(t, mtColBrk)
+    true   // explicit return: keeps the function's return type consistent
 
 f_mtDraw(MtTL t) =>
     if mtShowTL and (t.state == 1 or t.state == 2 or t.state == 4) and f_mtValid(t)
@@ -4197,6 +4200,7 @@ f_mtDraw(MtTL t) =>
             line.set_xy2(t.ln, bar_index, yEnd)
             line.set_color(t.ln, col)
         line.set_style(t.ln, t.state == 2 ? line.style_dashed : line.style_solid)
+    true   // explicit return: keeps the function's return type consistent
 
 // ---- the per-direction trendline state machine (s = +1 support line / bull, -1 resistance line / bear)
 f_mtStep(MtTL t, MtTL b, int s, array<float> pPx, array<int> pBr, bool newPiv, int mcLen) =>
@@ -4340,6 +4344,7 @@ f_mtStep(MtTL t, MtTL b, int s, array<float> pPx, array<int> pBr, bool newPiv, i
             t.evFail := true
         else if bi - t.brkBar >= mtFailBars
             f_mtGenuine(t, b)
+    true   // explicit return: keeps the function's return type consistent
 
 // post-break record upkeep for setups B (pullback) and C (reversal)
 f_mtPost(MtTL b, int s) =>
@@ -4358,6 +4363,7 @@ f_mtPost(MtTL b, int s) =>
             b.retestExt := na(b.retestExt) ? re : (s > 0 ? math.max(b.retestExt, re) : math.min(b.retestExt, re))
         if since > mtPostBreak
             b.state := 0
+    true   // explicit return: keeps the function's return type consistent
 
 // ---- candidate list ----
 f_mtAddCand(int typ, int d, float fbo, float tlq, float stp, float t3) =>
@@ -4367,6 +4373,7 @@ f_mtAddCand(int typ, int d, float fbo, float tlq, float stp, float t3) =>
     array.push(mtCQ, tlq)
     array.push(mtCS, stp)
     array.push(mtC3, t3)
+    true   // explicit return: keeps the function's return type consistent
 
 // ---- plan + confluence score for one candidate. Returns [score, entry, stop, risk, t1, t2, t3, ok, roomR]
 f_mtEval(int typ, int d, float fboF, float tlQ, float stopStruct, float tgt3Ovr) =>
@@ -4470,6 +4477,7 @@ f_mtRecG(int g, float r) =>
         array.set(mtStat, bs + 3, array.get(mtStat, bs + 3) + r)
     else
         array.set(mtStat, bs + 4, array.get(mtStat, bs + 4) + r)
+    true   // explicit return: keeps the function's return type consistent
 
 f_mtRec(float r, int typ, int cnd, int tod, float sc) =>
     f_mtRecG(0, r)
@@ -4477,6 +4485,7 @@ f_mtRec(float r, int typ, int cnd, int tod, float sc) =>
     f_mtRecG(5 + cnd - 1, r)
     f_mtRecG(8 + tod, r)
     f_mtRecG(13 + (sc >= 85 ? 0 : sc >= 75 ? 1 : 2), r)
+    true   // explicit return: keeps the function's return type consistent
 
 f_mtStatTxt(int g) =>
     int bs = g * 5
@@ -4489,6 +4498,7 @@ f_mtSigLabel(string txt, int x, float y, color col, string sty) =>
     array.push(mtSigLbls, l)
     if array.size(mtSigLbls) > 60
         label.delete(array.shift(mtSigLbls))
+    true   // explicit return: keeps the function's return type consistent
 
 f_mtKeepObj(line ln, label lb) =>
     if mtKeepLvls
@@ -4501,6 +4511,7 @@ f_mtKeepObj(line ln, label lb) =>
     else
         line.delete(ln)
         label.delete(lb)
+    true   // explicit return: keeps the function's return type consistent
 
 // =============================================================================
 // ENGINE (confirmed bars only → no repainting)
