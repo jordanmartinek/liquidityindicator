@@ -84,22 +84,25 @@ fvgDimWeak    = input.bool(true, "    Dim weak FVGs instead of hiding", tooltip 
 fvgShowStr    = input.bool(true, "    Label FVG strength %", tooltip = "Print each drawn gap's strength % (plus tags: 'htf' = aligns with a higher-timeframe gap, 'liq' = sits on/just beyond a liquidity pool (EQ / prev-period / open / session / swing / VP), 'swp' = formed right after a same-direction sweep (SFP), 'inv' = followed an inversion, 'blk' = inside an order/breaker block) so you can see WHY it scored the way it did.", group = G_STRUCT)
 fvgLblStyle   = input.string("Inside box (centered)", "    FVG label style", options = ["Inside box (centered)","Pointer (distinct)","Plain text (no box)","Callout (like levels)"], tooltip = "How the FVG strength % label is drawn, so it doesn't blend into the level/cluster callouts when zoomed out. 'Inside box (centered)': the % sits CENTERED inside the gap box itself — tied directly to its box, clearly separate from the level labels at the right edge (recommended). 'Pointer (distinct)': a tinted pointer tag at the LEFT edge of the gap. 'Plain text (no box)': borderless text in the gap color — the most minimal. 'Callout (like levels)': the original left-callout box at the right edge.", group = G_STRUCT)
 fvgKeep       = input.int(50, "    Max FVGs kept", minval = 5, maxval = 100, tooltip = "How many unfilled fair value gaps to retain before the OLDEST is dropped. Raise this to keep more / older gaps far back in history (e.g. gaps sitting above the current swing high); lower it to keep the chart light. Note: gaps older than the chart's loaded history still can't be drawn, and each gap uses a drawing-object slot shared with order blocks and cluster zones (budget is 500).", group = G_STRUCT)
-fvgSizeW      = input.float(1.0, "    Weight: gap size vs ATR", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "How much the gap's own size (displacement) counts toward its strength. Bigger gaps = stronger imbalance.", group = G_STRUCT)
-fvgVolW       = input.float(1.0, "    Weight: creation volume", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "How much the relative volume of the candle that CREATED the gap counts. High-volume displacement gaps are respected more often. Uses the Rel-volume lookback from the SFP section.", group = G_STRUCT)
-fvgBlockW     = input.float(1.0, "    Weight: inside OB / breaker", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap overlaps an order block or breaker block — a gap defended by a resting institutional zone is far more likely to hold.", group = G_STRUCT)
-fvgInvW       = input.float(1.0, "    Weight: inversion (IFVG)", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap forms right after an opposite gap in the same zone was invalidated (an inverted FVG / IFVG). Inversions mark a decisive flip and tend to be respected hard on the retest.", group = G_STRUCT)
-fvgInvBars    = input.int(30, "    Inversion memory (bars)", minval = 1, maxval = 200, tooltip = "How many bars back a recently-invalidated opposite gap still counts as the parent of an inversion.", group = G_STRUCT)
-fvgHtfW       = input.float(1.0, "    Weight: HTF-gap alignment", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap overlaps a higher-timeframe fair value gap. HTF alignment is the single biggest accuracy signal — a chart-TF gap sitting inside an HTF imbalance is defended by far heavier flow. The bonus scales with the HTF gap's own strength.", group = G_STRUCT)
-fvgPdW        = input.float(1.0, "    Weight: premium/discount location", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap sits on the 'correct' side of the live dealing range: a BULLISH gap in DISCOUNT (lower half) or a BEARISH gap in PREMIUM (upper half) aligns with where institutions fill, so it is respected more often. A bullish gap in premium (or bearish in discount) earns little here.", group = G_STRUCT)
-fvgDispW      = input.float(1.0, "    Weight: displacement quality", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus for a decisive creating candle: a large real body (vs its range) and/or a move that broke recent structure (took out a swing). A gap left by conviction holds better than one from an indecisive wick.", group = G_STRUCT)
-fvgConflW     = input.float(1.0, "    Weight: confluence (round / VWAP / OTE)", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap's midpoint sits near a round number, the session VWAP, or an OTE retracement level of the dealing range — defended fair-value references that reinforce the gap.", group = G_STRUCT)
-fvgLiqW       = input.float(1.0, "    Weight: liquidity-pool confluence", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap sits on or just beyond a tracked liquidity pool — equal highs/lows (engineered stops), previous-period levels (PDH/PDL · PWH/PWL · PMH/PML), daily/weekly/monthly/midnight opens, session highs/lows, swing BSL/SSL, or volume-profile POC/VAH/VAL. Graded by the MOST IMPORTANT nearby pool (a weekly high counts far more than a session low), so a gap positioned exactly where resting liquidity lives — the fuel price is drawn to — scores much higher.", group = G_STRUCT)
-fvgLiqATR     = input.float(0.5, "      Liquidity proximity (× ATR)", minval = 0.1, maxval = 2.0, step = 0.1, tooltip = "How close (in ATRs) a liquidity pool must be to the gap to count toward the liquidity-pool confluence factor. Covers both overlap and 'the gap guards a pool just beyond its edge'.", group = G_STRUCT)
-fvgSweepW     = input.float(1.0, "    Weight: sweep precedence (SFP→FVG)", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap forms right after a liquidity sweep + reversal (SFP) in the SAME direction — the textbook ICT sweep → displacement → fair value gap sequence. A gap born out of a stop-run is a far higher-probability reaction zone.", group = G_STRUCT)
-fvgSweepBars  = input.int(3, "      Sweep look-back (bars)", minval = 1, maxval = 20, tooltip = "How many bars before the gap formed to look for a same-direction SFP/sweep that qualifies the gap for the sweep-precedence bonus.", group = G_STRUCT)
-fvgFreshDisc  = input.float(0.35, "    Tested-gap discount", minval = 0.0, maxval = 0.9, step = 0.05, tooltip = "How much to cut a gap's score once price has already probed into it (partially mitigated / 'used' liquidity). 0.35 = a tested gap scores 35% lower. A virgin, untouched gap keeps its full score. 0 = disable (freshness ignored).", group = G_STRUCT)
-fvgTrapDisc  = input.float(0.40, "    Poor-location (trapped) discount", minval = 0.0, maxval = 0.9, step = 0.05, tooltip = "Cut a gap's rank when it is TRAPPED against opposing structure in its intended direction — a BULLISH gap with major resistance (weekly/daily high, equal highs, order-block top, swing high) sitting just ABOVE it, or a BEARISH gap with support just below. Such a gap has little room to run and is a poor long/short despite otherwise scoring well. 0.40 = up to -40% when fully walled. 0 = disable (no location penalty).", group = G_STRUCT)
-fvgTrapATR   = input.float(0.75, "      Trap look-ahead (× ATR)", minval = 0.1, maxval = 3.0, step = 0.1, tooltip = "How far beyond the gap (in ATRs) to look for opposing structure that would 'trap' it. Larger = a wall farther away still counts as limiting the runway.", group = G_STRUCT)
+// FVG strength model — fixed internal weights (1.0 = default influence) and look-backs
+fvgSizeW     = 1.0
+fvgVolW      = 1.0
+fvgBlockW    = 1.0
+fvgInvW      = 1.0
+fvgInvBars   = 30
+fvgHtfW      = 1.0
+fvgPdW       = 1.0
+fvgDispW     = 1.0
+fvgConflW    = 1.0
+fvgLiqW      = 1.0
+fvgLiqATR    = 0.5
+fvgSweepW    = 1.0
+fvgSweepBars = 3
+fvgFreshDisc = 0.35
+fvgTrapDisc  = 0.40
+fvgTrapATR   = 0.75
+htfFvgKeep   = 6
+htfFvgMaxTF  = 5
 // --- min-gap floor: kill micro-gaps at the source before they are ever scored/drawn ---
 fvgMinGapATR  = input.float(0.0, "  Min gap size (× ATR)", minval = 0.0, maxval = 3.0, step = 0.05, tooltip = "A gap smaller than this many ATRs is ignored entirely — never scored, drawn, or tracked. A hard noise floor that kills micro-imbalances at the source on low timeframes (e.g. the 5-minute chart), complementing the strength filter. 0 = disable (keep every gap, however small).", group = G_STRUCT)
 // --- consequent encroachment (CE) line: the 50% midpoint price reacts to most ---
@@ -107,23 +110,21 @@ fvgShowCE     = input.bool(false, "  Show CE (50%) line on FVGs", tooltip = "Dra
 fvgCECol      = input.color(color.new(#ab47bc, 20), "    CE line color", group = G_STRUCT)
 // --- higher-timeframe (HTF) FVGs: detected and folded into scoring (no separate chart drawing) ---
 htfFvgOn      = input.bool(true, "  Use higher-timeframe FVGs in scoring", tooltip = "Detect fair value gaps on the HTF timeframe set above (the same '  HTF timeframe' input used for HTF swings — edit it to pick which timeframe to watch, e.g. 60 / 240 / D). HTF gaps are NOT drawn on the chart; instead they BOOST the score of any chart-TF gap that aligns with them (see 'Weight: HTF-gap alignment') and they also feed the DOL model (confluence, path-clearance / resistance, and the ⭐ stacked-agreement flag) as strong magnet zones.", group = G_STRUCT)
-htfFvgKeep    = input.int(6, "    Max HTF FVGs tracked", minval = 1, maxval = 20, tooltip = "How many recent unfilled HTF gaps to keep in memory for the alignment boost and the DOL scoring.", group = G_STRUCT)
-htfFvgMaxTF   = input.int(5, "    HTF scoring only at/below (minutes)", minval = 1, maxval = 240, tooltip = "The HTF-alignment factor and its rebalanced weighting apply ONLY when the chart timeframe is at or below this many minutes (default 5 — i.e. the 1-to-5-minute charts the HTF overlay is designed for). On HIGHER chart timeframes the gap score reverts to the original full-weight model (gap size / volume / order-block / inversion) PLUS the premium-discount, displacement, confluence and freshness factors — so HTF charts keep scoring gaps the way they did before HTF alignment was added, and nothing disappears.", group = G_STRUCT)
 // --- SFP (sweep + reversal) ---
 showSFP    = input.bool(true, "Sweep + reversal markers (SFP)", tooltip = "The core validity trigger: a wick pierces a tracked level then the candle CLOSES back on the origin side (a stop-run). Marks 🎯 SFP long/short.", group = G_STRUCT)
 sfpUseVol  = input.bool(true, "  Require volume confirmation", tooltip = "Only flag a sweep as a real grab on elevated relative volume.", group = G_STRUCT)
 sfpConfirm = input.bool(true, "  Confirm on bar close (no repaint)", tooltip = "An SFP is 'a wick pierces a level then the candle CLOSES back on the origin side' — a CLOSE-based event. With this on, the SFP marker/alert only fires once the bar has CLOSED, so it can't flash on the forming bar and then disappear (no repaint). Turn OFF to see a provisional intrabar preview (which may vanish before the bar closes).", group = G_STRUCT)
-sfpCooldown = input.int(10, "  Same-level SFP cooldown (bars)", minval = 0, maxval = 100, tooltip = "After an SFP fires on a level, suppress further SFPs on that SAME level for this many bars — so a wick repeatedly poking one high/low doesn't re-fire the signal every bar. 0 = no cooldown (every qualifying bar fires, legacy behavior).", group = G_STRUCT)
+sfpCooldown = 10
 rvolLen    = input.int(20, "  Rel-volume lookback", minval = 5, maxval = 200, group = G_STRUCT)
 rvolMult   = input.float(1.5, "  Min rel-volume for grab", minval = 1.0, maxval = 5.0, step = 0.1, group = G_STRUCT)
 sfpColLong  = input.color(color.new(#26a69a, 0), "  Bullish SFP color", group = G_STRUCT)
 sfpColShort = input.color(color.new(#ef5350, 0), "  Bearish SFP color", group = G_STRUCT)
 // --- Order Blocks ---
 showOB     = input.bool(true, "Order blocks after displacement", tooltip = "After a sweep+displacement, mark the last opposing candle as a demand/supply zone until mitigated.", group = G_STRUCT)
-obDisp     = input.float(1.2, "  Displacement size (× ATR)", minval = 0.3, step = 0.1, tooltip = "How large the breakout candle body must be (in ATRs) to leave a valid order block.", group = G_STRUCT)
+obDisp = 1.2
 obColBull  = input.color(color.new(#26a69a, 80), "  Bullish OB color", group = G_STRUCT)
 obColBear  = input.color(color.new(#ef5350, 80), "  Bearish OB color", group = G_STRUCT)
-obKeep     = input.int(8, "  Max order blocks kept", minval = 1, maxval = 40, group = G_STRUCT)
+obKeep = 8
 obFilterOn = input.bool(true, "  Filter order blocks by strength", tooltip = "Score every order block 0-100 at formation (decisive displacement body + the block's zone size + whether it formed from a SWEEP + relative volume) and only draw the ones that clear the threshold below — so only high-quality blocks show. The score is printed INSIDE the block.", group = G_STRUCT)
 obMinStr   = input.int(45, "    Min OB strength % to draw", minval = 0, maxval = 100, tooltip = "Order blocks scoring below this are not drawn. A decisive, swept, high-volume block scores high; a marginal displacement scores low. Raise to show only the strongest blocks.", group = G_STRUCT)
 obShowStr  = input.bool(true, "    Show OB strength % inside the block", tooltip = "Print the 0-100 strength centered inside the order block box (like the FVG inside-box label) so there's no right-edge label clutter.", group = G_STRUCT)
@@ -231,10 +232,10 @@ emoLiq  = input.string("💧", "Liquidity tag",       options = ["None","🔥","
 // -----------------------------------------------------------------------------
 // --- tested / virgin state: has price already PROBED a level (wicked in, not swept through)? ---
 showTested   = input.bool(true, "Flag tested levels (probed, not swept)", tooltip = "Marks levels a wick has already PROBED into (reacted off) but not fully swept — 'used' liquidity vs a virgin untouched level. Tested levels get a ✓ and a dotted/dimmed outline; untouched ones stay solid. (Fully swept levels are removed already.)", group = G_TESTED)
-testDepthATR = input.float(0.10, "  Tested probe depth (× ATR)", minval = 0.02, maxval = 1.0, step = 0.02, tooltip = "How far a wick must poke INTO a level (in ATRs) to count as tested. Small = only genuine probes register; larger = grazes count too.", group = G_TESTED)
-testDiscount = input.bool(true, "  Discount tested levels in scoring", tooltip = "A tested level is a slightly weaker magnet (some of its liquidity was already taken / defended), so reduce its DOL pull. Visual-only if this is off.", group = G_TESTED)
-testDiscAmt  = input.float(0.25, "    Tested pull discount", minval = 0.0, maxval = 0.9, step = 0.05, tooltip = "How much to cut a tested level's pull (0.25 = -25%). 0 = no discount.", group = G_TESTED)
-testKeep     = input.int(120, "  Max tested levels tracked", minval = 10, maxval = 500, group = G_TESTED)
+testDepthATR = 0.10
+testDiscount = true
+testDiscAmt = 0.25
+testKeep = 120
 
 // -----------------------------------------------------------------------------
 // INPUTS — FVG EXECUTION (setups)
