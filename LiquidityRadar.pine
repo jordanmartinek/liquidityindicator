@@ -649,13 +649,98 @@ var float pdFib2 = 0.788
 var float pdFib3 = 0.886
 
 // -----------------------------------------------------------------------------
+// MODULE STATE OBJECTS — persistent state + per-bar event flags live in objects so the large
+// engine blocks can run inside functions (Pine forbids assigning globals from a function, but
+// object fields can be updated). Keeps the script's main body under TradingView's size limit.
+// -----------------------------------------------------------------------------
+type MtState
+    int cond = 2
+    float hbRef = na
+    bool hbPb = false
+    int hbCnt = 0
+    bool hbLeg = false
+    float hbLow = na
+    int hbBars = 0
+    float lbRef = na
+    bool lbPb = false
+    int lbCnt = 0
+    bool lbLeg = false
+    float lbHigh = na
+    int lbBars = 0
+    int mtLastGenBar = -1000
+    int mtLastHBar = -1000
+    int mtLastHDir = 0
+    int mtLastHCnt = 0
+    int stSt = 0
+    int stDir = 0
+    int stType = 0
+    float stScore = 0.0
+    float stEntry = na
+    float stStop = na
+    float stT1 = na
+    float stT2 = na
+    float stT3 = na
+    float stRisk = na
+    float stFill = na
+    float stSq = 0.0
+    int stSigBar = 0
+    int stEntryBar = 0
+    bool stT1Hit = false
+    bool stT2Hit = false
+    bool stResolved = false
+    int stCond = 2
+    int stTod = 4
+    string stRes = ""
+    line stLnE = na
+    line stLnS = na
+    line stLnT1 = na
+    line stLnT2 = na
+    line stLnT3 = na
+    label stLbE = na
+    label stLbS = na
+    label stLbT1 = na
+    label stLbT2 = na
+    label stLbT3 = na
+
+type MtEv
+    bool mtEvNewBull = false
+    bool mtEvNewBear = false
+    bool mtEvBrkBull = false
+    bool mtEvBrkBear = false
+    bool mtEvFboBull = false
+    bool mtEvFboBear = false
+    bool mtEvH1 = false
+    bool mtEvH2 = false
+    bool mtEvL1 = false
+    bool mtEvL2 = false
+    bool mtEvContL = false
+    bool mtEvContS = false
+    bool mtEvRevL = false
+    bool mtEvRevS = false
+    bool mtEvH2L = false
+    bool mtEvL2S = false
+    bool mtEvEntry = false
+    bool mtEvStop = false
+    bool mtEvT1 = false
+    bool mtEvT2 = false
+    bool mtEvSetupL = false
+    bool mtEvSetupS = false
+
+type ExecEv
+    bool execArmNow = false
+    bool execConfirmNow = false
+    bool execReturnNow = false
+    bool execInvalidNow = false
+
+var MtState mtS = MtState.new()   // Brooks module persistent state
+
+// -----------------------------------------------------------------------------
 // MARKET CONDITION — one shared classifier: 1 TREND · 2 RANGE · 3 TRANSITION
 // -----------------------------------------------------------------------------
 // Efficiency ratio (net move / path), bar overlap, VWAP-cross frequency and EMA slope blend into
 // a 0..1 trend score. TRANSITION = efficiency collapsing from a trending read, especially right
-// after a genuine microtrendline break (mtLastGenBar is set by the Brooks engine, one bar lag).
+// after a genuine microtrendline break (mtS.mtLastGenBar is set by the Brooks engine, one bar lag).
 // regimeState mapping for consumers: 1 TREND, -1 RANGE, 0 TRANSITION.
-var int mtLastGenBar = -1000
 float mtEma20  = ta.ema(close, 20)
 float mtPath   = math.sum(math.abs(ta.change(close)), 20)
 float mtEr20   = mtPath > 0 ? math.abs(close - close[20]) / mtPath : 0.0
@@ -676,7 +761,8 @@ f_mtCondCalc(int lastGen) =>
     else if mtTrendScore >= mtTrendHi
         c := 1
     c
-int mtCond = f_mtCondCalc(mtLastGenBar)
+int mtCond = f_mtCondCalc(mtS.mtLastGenBar)
+mtS.cond := mtCond
 int regimeState = mtCond == 1 ? 1 : mtCond == 2 ? -1 : 0
 // "chop" for the FVG execution gate: VWAP chop OR price rotating in the middle of the dealing range
 float regimePos = (not na(rngHi) and not na(rngLo) and rngHi > rngLo) ? math.min(1.0, math.max(0.0, (close - rngLo) / (rngHi - rngLo))) : 0.5
@@ -741,59 +827,67 @@ var reqHiB = array.new<int>()
 var reqLoA = array.new<float>()   // relative (near) equal lows
 var reqLoB = array.new<int>()
 
-if showEQ and not na(ph)
-    bool found = false
-    bool relFound = false
-    float matched = na
-    float relMatched = na
-    int hs = array.size(pvHi)
-    if hs > 0
-        int start = math.max(hs - eqLookback, 0)
-        for qi = start to hs - 1
-            float prevH = array.get(pvHi, qi)
-            float d = math.abs(ph - prevH)
-            if d <= eqTolPrice
-                found := true
-                matched := math.max(ph, prevH)
-            else if showRelEQ and d <= relEqTolPrice
-                relFound := true
-                relMatched := math.max(ph, prevH)
-    if found
-        array.push(eqHiA, matched)
-        array.push(eqHiB, bar_index - swingLen)
-    else if relFound
-        array.push(reqHiA, relMatched)
-        array.push(reqHiB, bar_index - swingLen)
-    array.push(pvHi, ph)
-    while array.size(pvHi) > 40
-        array.shift(pvHi)
+// (wrapped in a function to keep the main body under TradingView's size limit)
+f_blkEqHigh() =>
+    if showEQ and not na(ph)
+        bool found = false
+        bool relFound = false
+        float matched = na
+        float relMatched = na
+        int hs = array.size(pvHi)
+        if hs > 0
+            int start = math.max(hs - eqLookback, 0)
+            for qi = start to hs - 1
+                float prevH = array.get(pvHi, qi)
+                float d = math.abs(ph - prevH)
+                if d <= eqTolPrice
+                    found := true
+                    matched := math.max(ph, prevH)
+                else if showRelEQ and d <= relEqTolPrice
+                    relFound := true
+                    relMatched := math.max(ph, prevH)
+        if found
+            array.push(eqHiA, matched)
+            array.push(eqHiB, bar_index - swingLen)
+        else if relFound
+            array.push(reqHiA, relMatched)
+            array.push(reqHiB, bar_index - swingLen)
+        array.push(pvHi, ph)
+        while array.size(pvHi) > 40
+            array.shift(pvHi)
+    true
+f_blkEqHigh()
 
-if showEQ and not na(pl)
-    bool found = false
-    bool relFound = false
-    float matched = na
-    float relMatched = na
-    int ls = array.size(pvLo)
-    if ls > 0
-        int start = math.max(ls - eqLookback, 0)
-        for qi = start to ls - 1
-            float prevL = array.get(pvLo, qi)
-            float d = math.abs(pl - prevL)
-            if d <= eqTolPrice
-                found := true
-                matched := math.min(pl, prevL)
-            else if showRelEQ and d <= relEqTolPrice
-                relFound := true
-                relMatched := math.min(pl, prevL)
-    if found
-        array.push(eqLoA, matched)
-        array.push(eqLoB, bar_index - swingLen)
-    else if relFound
-        array.push(reqLoA, relMatched)
-        array.push(reqLoB, bar_index - swingLen)
-    array.push(pvLo, pl)
-    while array.size(pvLo) > 40
-        array.shift(pvLo)
+// (wrapped in a function to keep the main body under TradingView's size limit)
+f_blkEqLow() =>
+    if showEQ and not na(pl)
+        bool found = false
+        bool relFound = false
+        float matched = na
+        float relMatched = na
+        int ls = array.size(pvLo)
+        if ls > 0
+            int start = math.max(ls - eqLookback, 0)
+            for qi = start to ls - 1
+                float prevL = array.get(pvLo, qi)
+                float d = math.abs(pl - prevL)
+                if d <= eqTolPrice
+                    found := true
+                    matched := math.min(pl, prevL)
+                else if showRelEQ and d <= relEqTolPrice
+                    relFound := true
+                    relMatched := math.min(pl, prevL)
+        if found
+            array.push(eqLoA, matched)
+            array.push(eqLoB, bar_index - swingLen)
+        else if relFound
+            array.push(reqLoA, relMatched)
+            array.push(reqLoB, bar_index - swingLen)
+        array.push(pvLo, pl)
+        while array.size(pvLo) > 40
+            array.shift(pvLo)
+    true
+f_blkEqLow()
 
 if array.size(eqHiA) > 0
     int i = 0
@@ -965,43 +1059,47 @@ bool biasFlipNow = biasOn and dayBias != nz(dayBias[1], 0) and dayBias != 0
 // -----------------------------------------------------------------------------
 lvHiNow = array.new<float>()
 lvLoNow = array.new<float>()
-if showSFP
-    if not na(pdhM)
-        array.push(lvHiNow, pdhM)
-    if not na(pwhM)
-        array.push(lvHiNow, pwhM)
-    if not na(pmhM)
-        array.push(lvHiNow, pmhM)
-    if not na(pdlM)
-        array.push(lvLoNow, pdlM)
-    if not na(pwlM)
-        array.push(lvLoNow, pwlM)
-    if not na(pmlM)
-        array.push(lvLoNow, pmlM)
-    if not na(asiaH)
-        array.push(lvHiNow, asiaH)
-    if not na(londH)
-        array.push(lvHiNow, londH)
-    if not na(nyH)
-        array.push(lvHiNow, nyH)
-    if not na(asiaL)
-        array.push(lvLoNow, asiaL)
-    if not na(londL)
-        array.push(lvLoNow, londL)
-    if not na(nyL)
-        array.push(lvLoNow, nyL)
-    if array.size(swHi) > 0
-        for si = 0 to array.size(swHi) - 1
-            array.push(lvHiNow, array.get(swHi, si))
-    if array.size(swLo) > 0
-        for si = 0 to array.size(swLo) - 1
-            array.push(lvLoNow, array.get(swLo, si))
-    if array.size(eqHiA) > 0
-        for si = 0 to array.size(eqHiA) - 1
-            array.push(lvHiNow, array.get(eqHiA, si))
-    if array.size(eqLoA) > 0
-        for si = 0 to array.size(eqLoA) - 1
-            array.push(lvLoNow, array.get(eqLoA, si))
+// (wrapped in a function to keep the main body under TradingView's size limit)
+f_blkSfpLevels() =>
+    if showSFP  // collect levels
+        if not na(pdhM)
+            array.push(lvHiNow, pdhM)
+        if not na(pwhM)
+            array.push(lvHiNow, pwhM)
+        if not na(pmhM)
+            array.push(lvHiNow, pmhM)
+        if not na(pdlM)
+            array.push(lvLoNow, pdlM)
+        if not na(pwlM)
+            array.push(lvLoNow, pwlM)
+        if not na(pmlM)
+            array.push(lvLoNow, pmlM)
+        if not na(asiaH)
+            array.push(lvHiNow, asiaH)
+        if not na(londH)
+            array.push(lvHiNow, londH)
+        if not na(nyH)
+            array.push(lvHiNow, nyH)
+        if not na(asiaL)
+            array.push(lvLoNow, asiaL)
+        if not na(londL)
+            array.push(lvLoNow, londL)
+        if not na(nyL)
+            array.push(lvLoNow, nyL)
+        if array.size(swHi) > 0
+            for si = 0 to array.size(swHi) - 1
+                array.push(lvHiNow, array.get(swHi, si))
+        if array.size(swLo) > 0
+            for si = 0 to array.size(swLo) - 1
+                array.push(lvLoNow, array.get(swLo, si))
+        if array.size(eqHiA) > 0
+            for si = 0 to array.size(eqHiA) - 1
+                array.push(lvHiNow, array.get(eqHiA, si))
+        if array.size(eqLoA) > 0
+            for si = 0 to array.size(eqLoA) - 1
+                array.push(lvLoNow, array.get(eqLoA, si))
+    true
+f_blkSfpLevels()
 
 // per-level SFP fired-memory: suppress re-firing on the SAME level within sfpCooldown bars.
 var sfpFiredPx  = array.new<float>()   // price of a level that recently fired an SFP
@@ -1036,6 +1134,10 @@ if showSFP and array.size(lvLoNow) > 0
 bool sfpConfOK = (not sfpConfirm) or barstate.isconfirmed
 bool sfpShort = showSFP and not na(sweptHiLvl) and volOK and sfpConfOK
 bool sfpLong  = showSFP and not na(sweptLoLvl) and volOK and sfpConfOK
+// was there a bullish / bearish SFP within the last fvgSweepBars bars (incl. this one)?
+// computed every bar here so f_fvgStrength needs no history references (CW10003)
+bool sfpLongRecent  = ta.barssince(sfpLong)  <= fvgSweepBars
+bool sfpShortRecent = ta.barssince(sfpShort) <= fvgSweepBars
 // record the fired level into the cooldown memory (so it won't re-fire for sfpCooldown bars)
 if sfpCooldown > 0 and sfpShort and not na(sweptHiLvl)
     array.push(sfpFiredPx, sweptHiLvl)
@@ -1044,17 +1146,21 @@ if sfpCooldown > 0 and sfpLong and not na(sweptLoLvl)
     array.push(sfpFiredPx, sweptLoLvl)
     array.push(sfpFiredBar, bar_index)
 // prune cooldown memory beyond the window (also hard-capped so it can't grow unbounded)
-if array.size(sfpFiredPx) > 0
-    int sfi = 0
-    while sfi < array.size(sfpFiredPx)
-        if (bar_index - array.get(sfpFiredBar, sfi)) >= sfpCooldown
-            array.remove(sfpFiredPx, sfi)
-            array.remove(sfpFiredBar, sfi)
-        else
-            sfi += 1
-    while array.size(sfpFiredPx) > 50
-        array.shift(sfpFiredPx)
-        array.shift(sfpFiredBar)
+// (wrapped in a function to keep the main body under TradingView's size limit)
+f_blkSfpCool() =>
+    if array.size(sfpFiredPx) > 0
+        int sfi = 0
+        while sfi < array.size(sfpFiredPx)
+            if (bar_index - array.get(sfpFiredBar, sfi)) >= sfpCooldown
+                array.remove(sfpFiredPx, sfi)
+                array.remove(sfpFiredBar, sfi)
+            else
+                sfi += 1
+        while array.size(sfpFiredPx) > 50
+            array.shift(sfpFiredPx)
+            array.shift(sfpFiredBar)
+    true
+f_blkSfpCool()
 
 // -----------------------------------------------------------------------------
 // TESTED-STATE CAPTURE — a wick PROBES a level (enters within depth×ATR) but does NOT
@@ -1062,74 +1168,78 @@ if array.size(sfpFiredPx) > 0
 // per-bar level rebuild. Fully-swept levels are removed elsewhere, so this is the
 // "touched but still standing" middle state.
 // -----------------------------------------------------------------------------
-if showTested
-    float tDepth = math.max(nz(atr) * testDepthATR, syminfo.mintick)
-    float tDedup = math.max(nz(atr) * 0.05, syminfo.mintick)
-    tHiNow = array.new<float>()
-    tLoNow = array.new<float>()
-    if not na(pdhM)
-        array.push(tHiNow, pdhM)
-    if not na(pwhM)
-        array.push(tHiNow, pwhM)
-    if not na(pmhM)
-        array.push(tHiNow, pmhM)
-    if not na(pdlM)
-        array.push(tLoNow, pdlM)
-    if not na(pwlM)
-        array.push(tLoNow, pwlM)
-    if not na(pmlM)
-        array.push(tLoNow, pmlM)
-    if not na(asiaH)
-        array.push(tHiNow, asiaH)
-    if not na(londH)
-        array.push(tHiNow, londH)
-    if not na(nyH)
-        array.push(tHiNow, nyH)
-    if not na(asiaL)
-        array.push(tLoNow, asiaL)
-    if not na(londL)
-        array.push(tLoNow, londL)
-    if not na(nyL)
-        array.push(tLoNow, nyL)
-    if array.size(swHi) > 0
-        for si = 0 to array.size(swHi) - 1
-            array.push(tHiNow, array.get(swHi, si))
-    if array.size(swLo) > 0
-        for si = 0 to array.size(swLo) - 1
-            array.push(tLoNow, array.get(swLo, si))
-    if array.size(eqHiA) > 0
-        for si = 0 to array.size(eqHiA) - 1
-            array.push(tHiNow, array.get(eqHiA, si))
-    if array.size(eqLoA) > 0
-        for si = 0 to array.size(eqLoA) - 1
-            array.push(tLoNow, array.get(eqLoA, si))
-    // highs: wick pokes up to within tDepth BELOW the level but doesn't reach it (no sweep)
-    if array.size(tHiNow) > 0
-        for si = 0 to array.size(tHiNow) - 1
-            float lv = array.get(tHiNow, si)
-            if high >= lv - tDepth and high < lv
-                bool dup = false
-                if array.size(testedP) > 0
-                    for dj = 0 to array.size(testedP) - 1
-                        if math.abs(array.get(testedP, dj) - lv) <= tDedup
-                            dup := true
-                if not dup
-                    array.push(testedP, lv)
-    // lows: wick pokes down to within tDepth ABOVE the level but doesn't reach it
-    if array.size(tLoNow) > 0
-        for si = 0 to array.size(tLoNow) - 1
-            float lv = array.get(tLoNow, si)
-            if low <= lv + tDepth and low > lv
-                bool dup = false
-                if array.size(testedP) > 0
-                    for dj = 0 to array.size(testedP) - 1
-                        if math.abs(array.get(testedP, dj) - lv) <= tDedup
-                            dup := true
-                if not dup
-                    array.push(testedP, lv)
-    // cap (oldest dropped first)
-    while array.size(testedP) > testKeep
-        array.shift(testedP)
+// (wrapped in a function to keep the main body under TradingView's size limit)
+f_blkTested() =>
+    if showTested
+        float tDepth = math.max(nz(atr) * testDepthATR, syminfo.mintick)
+        float tDedup = math.max(nz(atr) * 0.05, syminfo.mintick)
+        tHiNow = array.new<float>()
+        tLoNow = array.new<float>()
+        if not na(pdhM)
+            array.push(tHiNow, pdhM)
+        if not na(pwhM)
+            array.push(tHiNow, pwhM)
+        if not na(pmhM)
+            array.push(tHiNow, pmhM)
+        if not na(pdlM)
+            array.push(tLoNow, pdlM)
+        if not na(pwlM)
+            array.push(tLoNow, pwlM)
+        if not na(pmlM)
+            array.push(tLoNow, pmlM)
+        if not na(asiaH)
+            array.push(tHiNow, asiaH)
+        if not na(londH)
+            array.push(tHiNow, londH)
+        if not na(nyH)
+            array.push(tHiNow, nyH)
+        if not na(asiaL)
+            array.push(tLoNow, asiaL)
+        if not na(londL)
+            array.push(tLoNow, londL)
+        if not na(nyL)
+            array.push(tLoNow, nyL)
+        if array.size(swHi) > 0
+            for si = 0 to array.size(swHi) - 1
+                array.push(tHiNow, array.get(swHi, si))
+        if array.size(swLo) > 0
+            for si = 0 to array.size(swLo) - 1
+                array.push(tLoNow, array.get(swLo, si))
+        if array.size(eqHiA) > 0
+            for si = 0 to array.size(eqHiA) - 1
+                array.push(tHiNow, array.get(eqHiA, si))
+        if array.size(eqLoA) > 0
+            for si = 0 to array.size(eqLoA) - 1
+                array.push(tLoNow, array.get(eqLoA, si))
+        // highs: wick pokes up to within tDepth BELOW the level but doesn't reach it (no sweep)
+        if array.size(tHiNow) > 0
+            for si = 0 to array.size(tHiNow) - 1
+                float lv = array.get(tHiNow, si)
+                if high >= lv - tDepth and high < lv
+                    bool dup = false
+                    if array.size(testedP) > 0
+                        for dj = 0 to array.size(testedP) - 1
+                            if math.abs(array.get(testedP, dj) - lv) <= tDedup
+                                dup := true
+                    if not dup
+                        array.push(testedP, lv)
+        // lows: wick pokes down to within tDepth ABOVE the level but doesn't reach it
+        if array.size(tLoNow) > 0
+            for si = 0 to array.size(tLoNow) - 1
+                float lv = array.get(tLoNow, si)
+                if low <= lv + tDepth and low > lv
+                    bool dup = false
+                    if array.size(testedP) > 0
+                        for dj = 0 to array.size(testedP) - 1
+                            if math.abs(array.get(testedP, dj) - lv) <= tDedup
+                                dup := true
+                    if not dup
+                        array.push(testedP, lv)
+        // cap (oldest dropped first)
+        while array.size(testedP) > testKeep
+            array.shift(testedP)
+    true
+f_blkTested()
 
 // signal markers — capped rolling pool so they never exhaust the label budget
 var mk_labels = array.new<label>()
@@ -1182,25 +1292,29 @@ if showOB and disp and close < open and (sfpShort or (close < low[1]))
     array.push(obBull, false)
     array.push(obBirth, bar_index - 1)
     array.push(obStr, f_obStrength(sfpShort))
-if array.size(obTop) > 0
-    int oi = 0
-    while oi < array.size(obTop)
-        bool bull = array.get(obBull, oi)
-        bool dead = bull ? (close < array.get(obBot, oi)) : (close > array.get(obTop, oi))
-        if dead
-            // on violation, convert to a breaker with flipped polarity (if enabled)
-            if showBreaker
-                array.push(brkTop, array.get(obTop, oi))
-                array.push(brkBot, array.get(obBot, oi))
-                array.push(brkBull, not bull)
-                array.push(brkBirth, bar_index)
-            array.remove(obTop, oi)
-            array.remove(obBot, oi)
-            array.remove(obBull, oi)
-            array.remove(obBirth, oi)
-            array.remove(obStr, oi)
-        else
-            oi += 1
+// (wrapped in a function to keep the main body under TradingView's size limit)
+f_blkObUpd() =>
+    if array.size(obTop) > 0
+        int oi = 0
+        while oi < array.size(obTop)
+            bool bull = array.get(obBull, oi)
+            bool dead = bull ? (close < array.get(obBot, oi)) : (close > array.get(obTop, oi))
+            if dead
+                // on violation, convert to a breaker with flipped polarity (if enabled)
+                if showBreaker
+                    array.push(brkTop, array.get(obTop, oi))
+                    array.push(brkBot, array.get(obBot, oi))
+                    array.push(brkBull, not bull)
+                    array.push(brkBirth, bar_index)
+                array.remove(obTop, oi)
+                array.remove(obBot, oi)
+                array.remove(obBull, oi)
+                array.remove(obBirth, oi)
+                array.remove(obStr, oi)
+            else
+                oi += 1
+    true
+f_blkObUpd()
 while array.size(obTop) > obKeep
     array.shift(obTop)
     array.shift(obBot)
@@ -1285,14 +1399,11 @@ var fvgCE     = array.new<line>()    // optional consequent-encroachment (50%) l
 var fvgArmed  = array.new<int>()     // execution state per gap: 0 watching · 1 armed · 2 confirmed · 3 dead (stop hit / expired)
 var fvgArmBar = array.new<int>()     // bar_index the gap ARMED on (for setup expiry); na while watching
 var fvgApproached = array.new<bool>() // approach alert already fired for this gap (cooldown)
+ExecEv xE = ExecEv.new()   // per-bar FVG execution events (fresh each bar)
 // FVG execution setup drawings (entry/stop/target lines + label), redrawn each bar from the
 // armed gaps so only the nearest active setups show. Alert flags are raised in the gap loop.
 var exec_lines  = array.new<line>()
 var exec_labels = array.new<label>()
-var bool execArmNow     = false   // a gap armed on THIS bar (for alertcondition)
-var bool execConfirmNow = false   // a gap confirmed on THIS bar
-var bool execReturnNow  = false   // price is returning into a qualifying gap (approach alert)
-var bool execInvalidNow = false   // a setup was invalidated (stop breach / expiry) THIS bar
 // HTF (higher-timeframe) FVG state — tracked box-less (plain floats, zero draw-object cost).
 // They boost the score of aligned chart-TF gaps and feed the DOL model; never drawn.
 var htfFvgTop   = array.new<float>()
@@ -1587,9 +1698,7 @@ f_fvgStrength(float gTop, float gBot, bool isBull, float dispVol, float dispQual
     // 11) sweep precedence (SFP -> displacement -> FVG) — chart-TF gaps only
     bool  sweptBefore = false
     if not isHtf
-        for sb = 0 to fvgSweepBars
-            if (isBull and sfpLong[sb]) or ((not isBull) and sfpShort[sb])
-                sweptBefore := true
+        sweptBefore := isBull ? sfpLongRecent : sfpShortRecent
         if sweptBefore
             bonus := bonus + 10.0 * fvgSweepW
     // formation score = core base + bonuses (capped at 100 before freshness/trap)
@@ -1839,392 +1948,401 @@ f_hasOBFVG(float loB, float hiB) =>
 var float dm_dirState = 1.0
 
 // ---- DOL gravity tally + shared direction (last bar) ----
-if barstate.islast
-    f_clearPools()
-    array.clear(lv_price)
-    array.clear(lv_name)
-    array.clear(lv_col)
-    array.clear(lv_emo)
-    array.clear(lv_birth)
-    array.clear(lv_side)
-    array.clear(lv_pull)
-    array.clear(lv_qual)
-    array.clear(lv_inwin)
-    array.clear(lv_nomag)
-    array.clear(lv_primary)
+// (wrapped in a function to keep the main body under TradingView's size limit)
+f_blkRender() =>
+    dirLocal = dm_dirState
+    if barstate.islast
+        f_clearPools()
+        array.clear(lv_price)
+        array.clear(lv_name)
+        array.clear(lv_col)
+        array.clear(lv_emo)
+        array.clear(lv_birth)
+        array.clear(lv_side)
+        array.clear(lv_pull)
+        array.clear(lv_qual)
+        array.clear(lv_inwin)
+        array.clear(lv_nomag)
+        array.clear(lv_primary)
 
-    f_addLevel(showPDHL, pdhM,   "PDH",     colBull, emoPrev, b_pdh,  1)
-    f_addLevel(showPDHL, pdlM,   "PDL",     colBear, emoPrev, b_pdl, -1)
-    f_addLevel(showPWHL, pwhM,   "PWH",     colBull, emoPrev, b_pwh,  1)
-    f_addLevel(showPWHL, pwlM,   "PWL",     colBear, emoPrev, b_pwl, -1)
-    f_addLevel(showPMHL, pmhM,   "PMH",     colBull, emoPrev, b_pmh,  1)
-    f_addLevel(showPMHL, pmlM,   "PML",     colBear, emoPrev, b_pml, -1)
-    f_addLevel(showDO,   dOpen,  "D.Open",  colSess, emoPrev, b_do,   0)
-    f_addLevel(showWO,   wOpen,  "W.Open",  colSess, emoPrev, b_wo,   0)
-    f_addLevel(showMO,   mOpen,  "M.Open",  colSess, emoPrev, b_mo,   0)
-    f_addLevel(showMidO, midO,   "Midnight",colSess, emoPrev, b_mid,  0)
-    f_addLevelM(showAsia, asiaH,  f_sessName("Asia H", asiaHc),   colSess, emoSess, b_ah,   1, projLiveSess and asiaHf)
-    f_addLevelM(showAsia, asiaL,  f_sessName("Asia L", asiaLc),   colSess, emoSess, b_al,  -1, projLiveSess and asiaLf)
-    f_addLevelM(showLond, londH,  f_sessName("London H", londHc), colSess, emoSess, b_lh,   1, projLiveSess and londHf)
-    f_addLevelM(showLond, londL,  f_sessName("London L", londLc), colSess, emoSess, b_ll,  -1, projLiveSess and londLf)
-    f_addLevelM(showNY,   nyH,    f_sessName("NY H", nyHc),       colSess, emoSess, b_nh,   1, projLiveSess and nyHf)
-    f_addLevelM(showNY,   nyL,    f_sessName("NY L", nyLc),       colSess, emoSess, b_nl,  -1, projLiveSess and nyLf)
-    if showSwing
-        if array.size(swHi) > 0
-            for si = 0 to array.size(swHi) - 1
-                f_addLevel(true, array.get(swHi, si), "BSL", colBull, emoLiq, array.get(swHiB, si), 1)
-        if array.size(swLo) > 0
-            for si = 0 to array.size(swLo) - 1
-                f_addLevel(true, array.get(swLo, si), "SSL", colBear, emoLiq, array.get(swLoB, si), -1)
-    if showEQ
-        if array.size(eqHiA) > 0
-            for ei = 0 to array.size(eqHiA) - 1
-                f_addLevel(true, array.get(eqHiA, ei), "EQH", colBull, emoLiq, array.get(eqHiB, ei), 1)
-        if array.size(eqLoA) > 0
-            for ei = 0 to array.size(eqLoA) - 1
-                f_addLevel(true, array.get(eqLoA, ei), "EQL", colBear, emoLiq, array.get(eqLoB, ei), -1)
-    if showEQ and showRelEQ
-        if array.size(reqHiA) > 0
-            for ei = 0 to array.size(reqHiA) - 1
-                f_addLevel(true, array.get(reqHiA, ei), "rEQH", colBull, emoLiq, array.get(reqHiB, ei), 1)
-        if array.size(reqLoA) > 0
-            for ei = 0 to array.size(reqLoA) - 1
-                f_addLevel(true, array.get(reqLoA, ei), "rEQL", colBear, emoLiq, array.get(reqLoB, ei), -1)
-    if showBreaker and array.size(brkTop) > 0
-        for bri = 0 to array.size(brkTop) - 1
-            float bmid = (array.get(brkTop, bri) + array.get(brkBot, bri)) / 2.0
-            bool  bbl  = array.get(brkBull, bri)
-            f_addLevel(true, bmid, bbl ? "Breaker▲" : "Breaker▼", bbl ? colBull : colBear, emoLiq, array.get(brkBirth, bri), bbl ? 1 : -1)
+        f_addLevel(showPDHL, pdhM,   "PDH",     colBull, emoPrev, b_pdh,  1)
+        f_addLevel(showPDHL, pdlM,   "PDL",     colBear, emoPrev, b_pdl, -1)
+        f_addLevel(showPWHL, pwhM,   "PWH",     colBull, emoPrev, b_pwh,  1)
+        f_addLevel(showPWHL, pwlM,   "PWL",     colBear, emoPrev, b_pwl, -1)
+        f_addLevel(showPMHL, pmhM,   "PMH",     colBull, emoPrev, b_pmh,  1)
+        f_addLevel(showPMHL, pmlM,   "PML",     colBear, emoPrev, b_pml, -1)
+        f_addLevel(showDO,   dOpen,  "D.Open",  colSess, emoPrev, b_do,   0)
+        f_addLevel(showWO,   wOpen,  "W.Open",  colSess, emoPrev, b_wo,   0)
+        f_addLevel(showMO,   mOpen,  "M.Open",  colSess, emoPrev, b_mo,   0)
+        f_addLevel(showMidO, midO,   "Midnight",colSess, emoPrev, b_mid,  0)
+        f_addLevelM(showAsia, asiaH,  f_sessName("Asia H", asiaHc),   colSess, emoSess, b_ah,   1, projLiveSess and asiaHf)
+        f_addLevelM(showAsia, asiaL,  f_sessName("Asia L", asiaLc),   colSess, emoSess, b_al,  -1, projLiveSess and asiaLf)
+        f_addLevelM(showLond, londH,  f_sessName("London H", londHc), colSess, emoSess, b_lh,   1, projLiveSess and londHf)
+        f_addLevelM(showLond, londL,  f_sessName("London L", londLc), colSess, emoSess, b_ll,  -1, projLiveSess and londLf)
+        f_addLevelM(showNY,   nyH,    f_sessName("NY H", nyHc),       colSess, emoSess, b_nh,   1, projLiveSess and nyHf)
+        f_addLevelM(showNY,   nyL,    f_sessName("NY L", nyLc),       colSess, emoSess, b_nl,  -1, projLiveSess and nyLf)
+        if showSwing
+            if array.size(swHi) > 0
+                for si = 0 to array.size(swHi) - 1
+                    f_addLevel(true, array.get(swHi, si), "BSL", colBull, emoLiq, array.get(swHiB, si), 1)
+            if array.size(swLo) > 0
+                for si = 0 to array.size(swLo) - 1
+                    f_addLevel(true, array.get(swLo, si), "SSL", colBear, emoLiq, array.get(swLoB, si), -1)
+        if showEQ
+            if array.size(eqHiA) > 0
+                for ei = 0 to array.size(eqHiA) - 1
+                    f_addLevel(true, array.get(eqHiA, ei), "EQH", colBull, emoLiq, array.get(eqHiB, ei), 1)
+            if array.size(eqLoA) > 0
+                for ei = 0 to array.size(eqLoA) - 1
+                    f_addLevel(true, array.get(eqLoA, ei), "EQL", colBear, emoLiq, array.get(eqLoB, ei), -1)
+        if showEQ and showRelEQ
+            if array.size(reqHiA) > 0
+                for ei = 0 to array.size(reqHiA) - 1
+                    f_addLevel(true, array.get(reqHiA, ei), "rEQH", colBull, emoLiq, array.get(reqHiB, ei), 1)
+            if array.size(reqLoA) > 0
+                for ei = 0 to array.size(reqLoA) - 1
+                    f_addLevel(true, array.get(reqLoA, ei), "rEQL", colBear, emoLiq, array.get(reqLoB, ei), -1)
+        if showBreaker and array.size(brkTop) > 0
+            for bri = 0 to array.size(brkTop) - 1
+                float bmid = (array.get(brkTop, bri) + array.get(brkBot, bri)) / 2.0
+                bool  bbl  = array.get(brkBull, bri)
+                f_addLevel(true, bmid, bbl ? "Breaker▲" : "Breaker▼", bbl ? colBull : colBear, emoLiq, array.get(brkBirth, bri), bbl ? 1 : -1)
 
-    // ---- DOL gravity: pull = distance x type x age, per side ----
-    float bslStrength = 0.0
-    float sslStrength = 0.0
-    float bslTopPull  = 0.0
-    float sslTopPull  = 0.0
-    float bslTopPrice = na
-    float sslTopPrice = na
-    int nl = array.size(lv_price)
-    float totalPull = 0.0
-    float totalQual = 0.0
-    if nl > 0
-        float sensK = dolSens == "High" ? 2.0 : dolSens == "Low" ? 0.5 : 1.0
-        float atrU  = math.max(nz(atr), syminfo.mintick)
-        // pass 1: pull/qual per level + DOL bias & 🎯 magnet.
-        // Excluded levels (forming session extreme, or hugging price under the distance
-        // floor) still DRAW but contribute zero pull/qual — they take no magnet, no bias
-        // tilt, and no confidence %, so a level price is sitting on can't inflate the score.
-        for k = 0 to nl - 1
-            float pk = array.get(lv_price, k)
-            string nk = array.get(lv_name, k)
-            int   bk = array.get(lv_birth, k)
-            bool  floorHit = projDistFloor and projDistFloorATR > 0 and (math.abs(pk - close) < projDistFloorATR * atrU)
-            bool  excl = array.get(lv_nomag, k) or floorHit
-            array.set(lv_nomag, k, excl)   // fold the dynamic floor in so pass 2 + render can read it
-            [rawPull, rawQual] = f_pull(pk, nk, bk, sensK, atrU)
-            float pull = excl ? 0.0 : rawPull
-            float qual = excl ? 0.0 : rawQual
-            array.push(lv_pull, pull)
-            array.push(lv_qual, qual)
-            array.push(lv_inwin, false)
-            array.push(lv_primary, false)
-            if not excl
-                if pk >= close
-                    bslStrength := bslStrength + pull
-                    if pull > bslTopPull
-                        bslTopPull  := pull
-                        bslTopPrice := pk
-                else
-                    sslStrength := sslStrength + pull
-                    if pull > sslTopPull
-                        sslTopPull  := pull
-                        sslTopPrice := pk
-        // pass 2: confidence window — mark the N nearest levels ABOVE and N BELOW price.
-        // A level is in-window if fewer than N same-side levels sit strictly nearer to price.
-        for k = 0 to nl - 1
-            // excluded levels take no window slot and don't crowd out real levels
-            if not array.get(lv_nomag, k)
+        // ---- DOL gravity: pull = distance x type x age, per side ----
+        float bslStrength = 0.0
+        float sslStrength = 0.0
+        float bslTopPull  = 0.0
+        float sslTopPull  = 0.0
+        float bslTopPrice = na
+        float sslTopPrice = na
+        int nl = array.size(lv_price)
+        float totalPull = 0.0
+        float totalQual = 0.0
+        if nl > 0
+            float sensK = dolSens == "High" ? 2.0 : dolSens == "Low" ? 0.5 : 1.0
+            float atrU  = math.max(nz(atr), syminfo.mintick)
+            // pass 1: pull/qual per level + DOL bias & 🎯 magnet.
+            // Excluded levels (forming session extreme, or hugging price under the distance
+            // floor) still DRAW but contribute zero pull/qual — they take no magnet, no bias
+            // tilt, and no confidence %, so a level price is sitting on can't inflate the score.
+            for k = 0 to nl - 1
                 float pk = array.get(lv_price, k)
-                bool  above = pk >= close
-                float dk = math.abs(pk - close)
-                int nearer = 0
-                for j = 0 to nl - 1
-                    if j != k and not array.get(lv_nomag, j)
-                        float pj = array.get(lv_price, j)
-                        bool  aboveJ = pj >= close
-                        if aboveJ == above and math.abs(pj - close) < dk
-                            nearer := nearer + 1
-                if nearer < eConfWin
-                    array.set(lv_inwin, k, true)
-                    totalPull := totalPull + array.get(lv_pull, k)
-                    totalQual := totalQual + array.get(lv_qual, k)
-        // pass 2b: declutter rank — mark the Top-N by confidence on each side as PRIMARY
-        // (bold). A level is primary if fewer than eTopN same-side levels have higher
-        // confidence. Below-Top-N or below the gate levels are drawn faintly at render.
-        bool useQualR = lvlConfMode == "Magnet quality"
-        for k = 0 to nl - 1
-            if not array.get(lv_nomag, k)
-                float pk = array.get(lv_price, k)
-                bool  above = pk >= close
-                float ck = useQualR ? array.get(lv_qual, k) : array.get(lv_pull, k)
-                int stronger = 0
-                for j = 0 to nl - 1
-                    if j != k and not array.get(lv_nomag, j)
-                        float pj = array.get(lv_price, j)
-                        bool  aboveJ = pj >= close
-                        float cj = useQualR ? array.get(lv_qual, j) : array.get(lv_pull, j)
-                        if aboveJ == above and cj > ck
-                            stronger := stronger + 1
-                if stronger < eTopN
-                    array.set(lv_primary, k, true)
+                string nk = array.get(lv_name, k)
+                int   bk = array.get(lv_birth, k)
+                bool  floorHit = projDistFloor and projDistFloorATR > 0 and (math.abs(pk - close) < projDistFloorATR * atrU)
+                bool  excl = array.get(lv_nomag, k) or floorHit
+                array.set(lv_nomag, k, excl)   // fold the dynamic floor in so pass 2 + render can read it
+                [rawPull, rawQual] = f_pull(pk, nk, bk, sensK, atrU)
+                float pull = excl ? 0.0 : rawPull
+                float qual = excl ? 0.0 : rawQual
+                array.push(lv_pull, pull)
+                array.push(lv_qual, qual)
+                array.push(lv_inwin, false)
+                array.push(lv_primary, false)
+                if not excl
+                    if pk >= close
+                        bslStrength := bslStrength + pull
+                        if pull > bslTopPull
+                            bslTopPull  := pull
+                            bslTopPrice := pk
+                    else
+                        sslStrength := sslStrength + pull
+                        if pull > sslTopPull
+                            sslTopPull  := pull
+                            sslTopPrice := pk
+            // pass 2: confidence window — mark the N nearest levels ABOVE and N BELOW price.
+            // A level is in-window if fewer than N same-side levels sit strictly nearer to price.
+            for k = 0 to nl - 1
+                // excluded levels take no window slot and don't crowd out real levels
+                if not array.get(lv_nomag, k)
+                    float pk = array.get(lv_price, k)
+                    bool  above = pk >= close
+                    float dk = math.abs(pk - close)
+                    int nearer = 0
+                    for j = 0 to nl - 1
+                        if j != k and not array.get(lv_nomag, j)
+                            float pj = array.get(lv_price, j)
+                            bool  aboveJ = pj >= close
+                            if aboveJ == above and math.abs(pj - close) < dk
+                                nearer := nearer + 1
+                    if nearer < eConfWin
+                        array.set(lv_inwin, k, true)
+                        totalPull := totalPull + array.get(lv_pull, k)
+                        totalQual := totalQual + array.get(lv_qual, k)
+            // pass 2b: declutter rank — mark the Top-N by confidence on each side as PRIMARY
+            // (bold). A level is primary if fewer than eTopN same-side levels have higher
+            // confidence. Below-Top-N or below the gate levels are drawn faintly at render.
+            bool useQualR = lvlConfMode == "Magnet quality"
+            for k = 0 to nl - 1
+                if not array.get(lv_nomag, k)
+                    float pk = array.get(lv_price, k)
+                    bool  above = pk >= close
+                    float ck = useQualR ? array.get(lv_qual, k) : array.get(lv_pull, k)
+                    int stronger = 0
+                    for j = 0 to nl - 1
+                        if j != k and not array.get(lv_nomag, j)
+                            float pj = array.get(lv_price, j)
+                            bool  aboveJ = pj >= close
+                            float cj = useQualR ? array.get(lv_qual, j) : array.get(lv_pull, j)
+                            if aboveJ == above and cj > ck
+                                stronger := stronger + 1
+                    if stronger < eTopN
+                        array.set(lv_primary, k, true)
 
-    // ---- landscape cap: stop ONE hugging level from dominating its side ----
-    // Distance decay makes the nearest level's pull huge, so a single level price is sitting
-    // next to can out-weigh a whole cluster on the other side and flip the bias. Clamp each
-    // level's contribution to biasCap × its side's raw total, so the bias reflects the mass /
-    // cluster of levels (the liquidity landscape) rather than one proximity outlier.
-    // The 🎯 magnet (bslTopPull/sslTopPull) is untouched — proximity read stays available.
-    if biasCap < 1.0 and nl > 0
-        float bslCapAbs = bslStrength * biasCap
-        float sslCapAbs = sslStrength * biasCap
-        float bslCapped = 0.0
-        float sslCapped = 0.0
-        for k = 0 to nl - 1
-            if not array.get(lv_nomag, k)
-                float pk2 = array.get(lv_price, k)
-                float p2  = array.get(lv_pull, k)
-                if pk2 >= close
-                    bslCapped := bslCapped + math.min(p2, bslCapAbs)
-                else
-                    sslCapped := sslCapped + math.min(p2, sslCapAbs)
-        bslStrength := bslCapped
-        sslStrength := sslCapped
+        // ---- landscape cap: stop ONE hugging level from dominating its side ----
+        // Distance decay makes the nearest level's pull huge, so a single level price is sitting
+        // next to can out-weigh a whole cluster on the other side and flip the bias. Clamp each
+        // level's contribution to biasCap × its side's raw total, so the bias reflects the mass /
+        // cluster of levels (the liquidity landscape) rather than one proximity outlier.
+        // The 🎯 magnet (bslTopPull/sslTopPull) is untouched — proximity read stays available.
+        if biasCap < 1.0 and nl > 0
+            float bslCapAbs = bslStrength * biasCap
+            float sslCapAbs = sslStrength * biasCap
+            float bslCapped = 0.0
+            float sslCapped = 0.0
+            for k = 0 to nl - 1
+                if not array.get(lv_nomag, k)
+                    float pk2 = array.get(lv_price, k)
+                    float p2  = array.get(lv_pull, k)
+                    if pk2 >= close
+                        bslCapped := bslCapped + math.min(p2, bslCapAbs)
+                    else
+                        sslCapped := sslCapped + math.min(p2, sslCapAbs)
+            bslStrength := bslCapped
+            sslStrength := sslCapped
 
-    // ---- resistance-adjusted (clearance-weighted) draw ----
-    // Each side's EFFECTIVE pull = raw draw × how clear the path to that side's magnet is.
-    // Structure in the way (OBs / FVGs) discounts a side; it never adds to the other side.
-    float atrR   = math.max(nz(atr), syminfo.mintick)
-    float upClr  = 100.0
-    float dnClr  = 100.0
-    if projResist
-        if not na(bslTopPrice)
-            [uc, uo] = f_pathClear(close, bslTopPrice, atrR)
-            upClr := uc
-        if not na(sslTopPrice)
-            [dc, doo] = f_pathClear(close, sslTopPrice, atrR)
-            dnClr := dc
-    float bslEff = bslStrength * (projResist ? upClr / 100.0 : 1.0)
-    float sslEff = sslStrength * (projResist ? dnClr / 100.0 : 1.0)
+        // ---- resistance-adjusted (clearance-weighted) draw ----
+        // Each side's EFFECTIVE pull = raw draw × how clear the path to that side's magnet is.
+        // Structure in the way (OBs / FVGs) discounts a side; it never adds to the other side.
+        float atrR   = math.max(nz(atr), syminfo.mintick)
+        float upClr  = 100.0
+        float dnClr  = 100.0
+        if projResist
+            if not na(bslTopPrice)
+                [uc, uo] = f_pathClear(close, bslTopPrice, atrR)
+                upClr := uc
+            if not na(sslTopPrice)
+                [dc, doo] = f_pathClear(close, sslTopPrice, atrR)
+                dnClr := dc
+        float bslEff = bslStrength * (projResist ? upClr / 100.0 : 1.0)
+        float sslEff = sslStrength * (projResist ? dnClr / 100.0 : 1.0)
 
-    float dm_totalG = bslEff + sslEff
-    float dm_liqBias = dm_totalG > 0 ? (bslEff - sslEff) / dm_totalG : 0.0
-    float dm_bias = (1.0 - dolMomWt / 100.0) * dm_liqBias + (dolMomWt / 100.0) * dolMom
-    // ---- deadband + hysteresis: only flip when the opposing side wins DECISIVELY ----
-    // flip stability: hold the prior direction until the bias clears the deadband on the other
-    // side, committed on a closed bar only (no flicker near a key level)
-    bool crossUp   = dm_bias >  dolDeadband and dm_dirState < 0
-    bool crossDown = dm_bias < -dolDeadband and dm_dirState > 0
-    if (crossUp or crossDown) and ((not dolFlipConfirm) or barstate.isconfirmed)
-        dm_dirState := crossUp ? 1.0 : -1.0
-    bool  dolDrawUp = dm_dirState >= 0
-    float dolTgt = dolDrawUp ? bslTopPrice : sslTopPrice
-    // single MOST-LIKELY target = the level with the greatest pull overall
-    float topPullPrice = bslTopPull >= sslTopPull ? bslTopPrice : sslTopPrice
+        float dm_totalG = bslEff + sslEff
+        float dm_liqBias = dm_totalG > 0 ? (bslEff - sslEff) / dm_totalG : 0.0
+        float dm_bias = (1.0 - dolMomWt / 100.0) * dm_liqBias + (dolMomWt / 100.0) * dolMom
+        // ---- deadband + hysteresis: only flip when the opposing side wins DECISIVELY ----
+        // flip stability: hold the prior direction until the bias clears the deadband on the other
+        // side, committed on a closed bar only (no flicker near a key level)
+        bool crossUp   = dm_bias >  dolDeadband and dirLocal < 0
+        bool crossDown = dm_bias < -dolDeadband and dirLocal > 0
+        if (crossUp or crossDown) and ((not dolFlipConfirm) or barstate.isconfirmed)
+            dirLocal := crossUp ? 1.0 : -1.0
+        bool  dolDrawUp = dirLocal >= 0
+        float dolTgt = dolDrawUp ? bslTopPrice : sslTopPrice
+        // single MOST-LIKELY target = the level with the greatest pull overall
+        float topPullPrice = bslTopPull >= sslTopPull ? bslTopPrice : sslTopPrice
 
-    // ---- sort + cluster + render ----
-    int n = array.size(lv_price)
-    if n > 0
-        idx = array.new<int>()
-        for i = 0 to n - 1
-            array.push(idx, i)
-        int idxN = array.size(idx)
-        if idxN > 1
-            for i = 1 to idxN - 1
-                int keyIdx = array.get(idx, i)
-                float keyVal = array.get(lv_price, keyIdx)
-                int j = i - 1
-                while j >= 0 and array.get(lv_price, array.get(idx, j)) > keyVal
-                    array.set(idx, j + 1, array.get(idx, j))
-                    j := j - 1
-                array.set(idx, j + 1, keyIdx)
+        // ---- sort + cluster + render ----
+        int n = array.size(lv_price)
+        if n > 0
+            idx = array.new<int>()
+            for i = 0 to n - 1
+                array.push(idx, i)
+            int idxN = array.size(idx)
+            if idxN > 1
+                for i = 1 to idxN - 1
+                    int keyIdx = array.get(idx, i)
+                    float keyVal = array.get(lv_price, keyIdx)
+                    int j = i - 1
+                    while j >= 0 and array.get(lv_price, array.get(idx, j)) > keyVal
+                        array.set(idx, j + 1, array.get(idx, j))
+                        j := j - 1
+                    array.set(idx, j + 1, keyIdx)
 
-        float mergeDist = nz(atr) * clustDist
-        int gi = 0
-        while gi < idxN
-            int startI = gi
-            float sumP = array.get(lv_price, array.get(idx, gi))
-            float minP = sumP
-            float maxP = sumP
-            int members = 1
-            string names = array.get(lv_name, array.get(idx, gi))
-            int oldestBirth = array.get(lv_birth, array.get(idx, gi))
-            int sideSum = array.get(lv_side, array.get(idx, gi))
-            // accumulate only IN-WINDOW members' pull/qual so the zone % matches the windowed normalization
-            bool  zInWin  = array.get(lv_inwin, array.get(idx, gi))
-            bool  zPrimary = array.get(lv_primary, array.get(idx, gi))   // declutter: any Top-N member?
-            float sumPull = zInWin ? array.get(lv_pull, array.get(idx, gi)) : 0.0
-            float sumQual = zInWin ? array.get(lv_qual, array.get(idx, gi)) : 0.0
-            while clusterOn and gi + 1 < idxN and (array.get(lv_price, array.get(idx, gi + 1)) - array.get(lv_price, array.get(idx, gi))) <= mergeDist
-                gi := gi + 1
-                float p = array.get(lv_price, array.get(idx, gi))
-                sumP := sumP + p
-                minP := math.min(minP, p)
-                maxP := math.max(maxP, p)
-                members := members + 1
-                names := names + "·" + array.get(lv_name, array.get(idx, gi))
-                int mb = array.get(lv_birth, array.get(idx, gi))
-                oldestBirth := na(oldestBirth) ? mb : (na(mb) ? oldestBirth : math.min(oldestBirth, mb))
-                sideSum := sideSum + array.get(lv_side, array.get(idx, gi))
-                if array.get(lv_primary, array.get(idx, gi))
-                    zPrimary := true
-                if array.get(lv_inwin, array.get(idx, gi))
-                    zInWin  := true
-                    sumPull := sumPull + array.get(lv_pull, array.get(idx, gi))
-                    sumQual := sumQual + array.get(lv_qual, array.get(idx, gi))
+            float mergeDist = nz(atr) * clustDist
+            int gi = 0
+            while gi < idxN
+                int startI = gi
+                float sumP = array.get(lv_price, array.get(idx, gi))
+                float minP = sumP
+                float maxP = sumP
+                int members = 1
+                string names = array.get(lv_name, array.get(idx, gi))
+                int oldestBirth = array.get(lv_birth, array.get(idx, gi))
+                int sideSum = array.get(lv_side, array.get(idx, gi))
+                // accumulate only IN-WINDOW members' pull/qual so the zone % matches the windowed normalization
+                bool  zInWin  = array.get(lv_inwin, array.get(idx, gi))
+                bool  zPrimary = array.get(lv_primary, array.get(idx, gi))   // declutter: any Top-N member?
+                float sumPull = zInWin ? array.get(lv_pull, array.get(idx, gi)) : 0.0
+                float sumQual = zInWin ? array.get(lv_qual, array.get(idx, gi)) : 0.0
+                while clusterOn and gi + 1 < idxN and (array.get(lv_price, array.get(idx, gi + 1)) - array.get(lv_price, array.get(idx, gi))) <= mergeDist
+                    gi := gi + 1
+                    float p = array.get(lv_price, array.get(idx, gi))
+                    sumP := sumP + p
+                    minP := math.min(minP, p)
+                    maxP := math.max(maxP, p)
+                    members := members + 1
+                    names := names + "·" + array.get(lv_name, array.get(idx, gi))
+                    int mb = array.get(lv_birth, array.get(idx, gi))
+                    oldestBirth := na(oldestBirth) ? mb : (na(mb) ? oldestBirth : math.min(oldestBirth, mb))
+                    sideSum := sideSum + array.get(lv_side, array.get(idx, gi))
+                    if array.get(lv_primary, array.get(idx, gi))
+                        zPrimary := true
+                    if array.get(lv_inwin, array.get(idx, gi))
+                        zInWin  := true
+                        sumPull := sumPull + array.get(lv_pull, array.get(idx, gi))
+                        sumQual := sumQual + array.get(lv_qual, array.get(idx, gi))
 
-            int ext = f_extLen(oldestBirth)
-            bool drawGroup = members >= minStrength
-            if drawGroup and members == 1
-                float p = array.get(lv_price, array.get(idx, startI))
-                int  sd = array.get(lv_side, array.get(idx, startI))
-                color c = f_sideColI(sd, p, array.get(lv_col, array.get(idx, startI)))
-                string emo = sideColorOn ? f_sideEmojiI(sd, p) : array.get(lv_emo, array.get(idx, startI))
-                string tier = tieredEmoji ? (f_tierEmoji(1) + " ") : ""
-                // per-level confidence % — Magnet quality (distance removed) or Raw pull share.
-                // Only levels inside the N-nearest-each-side window get a %.
-                bool useQual = lvlConfMode == "Magnet quality"
-                bool lInWin = array.get(lv_inwin, array.get(idx, startI))
-                float lpNum = useQual ? array.get(lv_qual, array.get(idx, startI)) : array.get(lv_pull, array.get(idx, startI))
-                float lpDen = useQual ? totalQual : totalPull
-                float lp = lpDen > 0 ? lpNum / lpDen * 100.0 : 0.0
-                bool isTop = not na(topPullPrice) and math.abs(p - topPullPrice) <= syminfo.mintick
-                float atrUt = math.max(nz(atr), syminfo.mintick)
-                // stacked-agreement ⭐: DOL-side agrees + it's the magnet + overlaps OB/FVG
-                bool sideAgree = (dolDrawUp and p >= close) or (not dolDrawUp and p < close)
-                string stackTag = (projStacked and lInWin and isTop and sideAgree and f_hasOBFVG(p - atrUt * 0.05, p + atrUt * 0.05)) ? " ⭐" : ""
-                // tested/virgin: probed levels get a ✓ + dotted, dimmed line (still standing, just 'used')
-                bool lTested = f_isTested(p, atrUt)
-                string confLvlTag = (showLvlConf and lInWin) ? ((isTop ? " 🎯" : " ") + str.tostring(math.round(lp)) + "%" + stackTag) : ""
-                string testTag = (showTested and lTested) ? " ✓" : ""
-                // declutter: faint if de-prioritised (beyond Top-N) or below the confidence gate
-                bool lPrimary = array.get(lv_primary, array.get(idx, startI))
-                // bias-aligned: fade levels on the side price is NOT being drawn toward
-                bool lCounterBias = biasFadeLvls and biasOn and dayBias != 0 and (dayBias > 0 ? p < close : p > close)
-                bool lFaint = (densOn and (not lPrimary or (lInWin and lp < eGate))) or lCounterBias
-                color cLine = lFaint ? color.new(c, densFadeOp) : ((showTested and lTested) ? color.new(c, 55) : c)
-                string lStyle = (lFaint or (showTested and lTested)) ? line.style_dotted : f_lineStyle()
-                string full = lFaint ? (array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick)) : (tier + (emo == "None" ? "" : emo + " ") + array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick) + confLvlTag + testTag + f_countdown(p))
-                line ln = line.new(bar_index, p, bar_index + ext, p, color = cLine, width = lineWidth, style = lStyle)
-                color soloBg  = lFaint ? color.new(c, densFadeOp) : (outlineTags ? c : color.new(c, 85))
-                color soloTxt = lFaint ? color.new(c, math.max(densFadeOp - 30, 0)) : (outlineTags ? clustLblTxt : c)
-                label lb = label.new(bar_index + ext, p, full, style = label.style_label_left, color = soloBg, textcolor = soloTxt, size = f_labelSize())
-                array.push(pool_lines, ln)
-                array.push(pool_labels, lb)
-            else if drawGroup
-                float mid = sumP / members
-                float t = math.min((members - 1) / 4.0, 1.0)
-                int op = int(zoneOpacityMin + (zoneOpacityMax - zoneOpacityMin) * t)
-                float pad = math.max(maxP - minP, nz(atr) * 0.08) / 2.0
-                int domSide = sideSum > 0 ? 1 : sideSum < 0 ? -1 : 0
-                color zbase = f_sideColI(domSide, mid, colZone)
-                string sideTag = (showSideTag and sideColorOn) ? f_sideTagI(domSide, mid) : ""
-                [confS, confParts] = f_confScore(mid, minP, maxP, members)
-                if not showConf or confS >= confMin
-                    float heatT = showConf ? math.min(confS / 100.0, 1.0) : 0.0
-                    color zoneFillBase = color.from_gradient(heatT, 0.0, 1.0, zbase, color.new(#ffb300, 0))
-                    int   heatOp = int(op - op * 0.45 * heatT)
-                    color zoneFill = color.new(zoneFillBase, math.max(heatOp, 0))
-                    color zoneBorder = color.from_gradient(heatT, 0.0, 1.0, color.new(zbase, 25), color.new(#ffb300, 10))
-                    box bx = box.new(bar_index, mid + pad, bar_index + ext, mid - pad, border_color = zoneBorder, border_width = lineWidth, bgcolor = zoneFill)
-                    string strength = showStrengthEmoji ? (f_repeat(f_sideEmojiI(domSide, mid), members) + " x" + str.tostring(members)) : ("x" + str.tostring(members))
-                    string tier = tieredEmoji ? (f_tierEmoji(members) + " ") : ""
-                    string confTag = showConf ? ("  ⭐" + str.tostring(confS) + (confParts == "" ? "" : " [" + confParts + "]")) : ""
-                    // per-zone target-likelihood — Magnet quality (distance removed) or Raw pull share.
-                    // Only zones with a member inside the N-nearest-each-side window get a %.
-                    bool zUseQual = lvlConfMode == "Magnet quality"
-                    float zNum = zUseQual ? sumQual : sumPull
-                    float zDen = zUseQual ? totalQual : totalPull
-                    float zPull = zDen > 0 ? zNum / zDen * 100.0 : 0.0
-                    bool zTop = not na(topPullPrice) and topPullPrice >= minP - pad and topPullPrice <= maxP + pad
-                    float atrUz = math.max(nz(atr), syminfo.mintick)
-                    // stacked-agreement ⭐: DOL-side agrees + it's the magnet + zone overlaps OB/FVG
-                    bool zSideAgree = (dolDrawUp and mid >= close) or (not dolDrawUp and mid < close)
-                    string zStackTag = (projStacked and zInWin and zTop and zSideAgree and f_hasOBFVG(minP - pad, maxP + pad)) ? " ⭐" : ""
-                    // tested/virgin zone: dashed hollow border + ✓ when price has probed the zone
-                    bool zTested = showTested and (f_isTested(mid, atrUz) or f_isTested(minP, atrUz) or f_isTested(maxP, atrUz))
-                    string lvlConfTag = (showLvlConf and zInWin) ? ((zTop ? "  🎯" : "  →") + str.tostring(math.round(zPull)) + "%" + zStackTag) : ""
-                    if zTested
-                        box.set_border_style(bx, line.style_dashed)
-                        box.set_bgcolor(bx, color.new(zbase, 92))
-                    string testTagZ = zTested ? "  ✓" : ""
-                    // declutter: faint zone if no Top-N member OR below the confidence gate
-                    bool zCounterBias = biasFadeLvls and biasOn and dayBias != 0 and (dayBias > 0 ? mid < close : mid > close)
-                    bool zFaint = (densOn and (not zPrimary or (zInWin and zPull < eGate))) or zCounterBias
-                    if zFaint
-                        box.set_border_style(bx, line.style_dotted)
-                        box.set_border_color(bx, color.new(zbase, densFadeOp))
-                        box.set_bgcolor(bx, color.new(zbase, math.max(densFadeOp, 90)))
-                    string full = zFaint ? (names + "  " + str.tostring(mid, format.mintick)) : (tier + strength + (sideTag == "" ? "" : " " + sideTag) + "  " + names + "  " + str.tostring(mid, format.mintick) + confTag + lvlConfTag + testTagZ + f_countdown(mid))
-                    color lblBg  = zFaint ? color.new(zbase, densFadeOp) : (outlineTags ? zbase : color.new(#1e222d, 10))
-                    color lblTxt = zFaint ? color.new(zbase, math.max(densFadeOp - 30, 0)) : clustLblTxt
-                    label lb = label.new(bar_index + ext, mid, full, style = label.style_label_left, color = lblBg, textcolor = lblTxt, size = zFaint ? size.tiny : f_strongSize(members))
-                    array.push(pool_boxes, bx)
+                int ext = f_extLen(oldestBirth)
+                bool drawGroup = members >= minStrength
+                if drawGroup and members == 1
+                    float p = array.get(lv_price, array.get(idx, startI))
+                    int  sd = array.get(lv_side, array.get(idx, startI))
+                    color c = f_sideColI(sd, p, array.get(lv_col, array.get(idx, startI)))
+                    string emo = sideColorOn ? f_sideEmojiI(sd, p) : array.get(lv_emo, array.get(idx, startI))
+                    string tier = tieredEmoji ? (f_tierEmoji(1) + " ") : ""
+                    // per-level confidence % — Magnet quality (distance removed) or Raw pull share.
+                    // Only levels inside the N-nearest-each-side window get a %.
+                    bool useQual = lvlConfMode == "Magnet quality"
+                    bool lInWin = array.get(lv_inwin, array.get(idx, startI))
+                    float lpNum = useQual ? array.get(lv_qual, array.get(idx, startI)) : array.get(lv_pull, array.get(idx, startI))
+                    float lpDen = useQual ? totalQual : totalPull
+                    float lp = lpDen > 0 ? lpNum / lpDen * 100.0 : 0.0
+                    bool isTop = not na(topPullPrice) and math.abs(p - topPullPrice) <= syminfo.mintick
+                    float atrUt = math.max(nz(atr), syminfo.mintick)
+                    // stacked-agreement ⭐: DOL-side agrees + it's the magnet + overlaps OB/FVG
+                    bool sideAgree = (dolDrawUp and p >= close) or (not dolDrawUp and p < close)
+                    string stackTag = (projStacked and lInWin and isTop and sideAgree and f_hasOBFVG(p - atrUt * 0.05, p + atrUt * 0.05)) ? " ⭐" : ""
+                    // tested/virgin: probed levels get a ✓ + dotted, dimmed line (still standing, just 'used')
+                    bool lTested = f_isTested(p, atrUt)
+                    string confLvlTag = (showLvlConf and lInWin) ? ((isTop ? " 🎯" : " ") + str.tostring(math.round(lp)) + "%" + stackTag) : ""
+                    string testTag = (showTested and lTested) ? " ✓" : ""
+                    // declutter: faint if de-prioritised (beyond Top-N) or below the confidence gate
+                    bool lPrimary = array.get(lv_primary, array.get(idx, startI))
+                    // bias-aligned: fade levels on the side price is NOT being drawn toward
+                    bool lCounterBias = biasFadeLvls and biasOn and dayBias != 0 and (dayBias > 0 ? p < close : p > close)
+                    bool lFaint = (densOn and (not lPrimary or (lInWin and lp < eGate))) or lCounterBias
+                    color cLine = lFaint ? color.new(c, densFadeOp) : ((showTested and lTested) ? color.new(c, 55) : c)
+                    string lStyle = (lFaint or (showTested and lTested)) ? line.style_dotted : f_lineStyle()
+                    string full = lFaint ? (array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick)) : (tier + (emo == "None" ? "" : emo + " ") + array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick) + confLvlTag + testTag + f_countdown(p))
+                    line ln = line.new(bar_index, p, bar_index + ext, p, color = cLine, width = lineWidth, style = lStyle)
+                    color soloBg  = lFaint ? color.new(c, densFadeOp) : (outlineTags ? c : color.new(c, 85))
+                    color soloTxt = lFaint ? color.new(c, math.max(densFadeOp - 30, 0)) : (outlineTags ? clustLblTxt : c)
+                    label lb = label.new(bar_index + ext, p, full, style = label.style_label_left, color = soloBg, textcolor = soloTxt, size = f_labelSize())
+                    array.push(pool_lines, ln)
                     array.push(pool_labels, lb)
-            gi := gi + 1
+                else if drawGroup
+                    float mid = sumP / members
+                    float t = math.min((members - 1) / 4.0, 1.0)
+                    int op = int(zoneOpacityMin + (zoneOpacityMax - zoneOpacityMin) * t)
+                    float pad = math.max(maxP - minP, nz(atr) * 0.08) / 2.0
+                    int domSide = sideSum > 0 ? 1 : sideSum < 0 ? -1 : 0
+                    color zbase = f_sideColI(domSide, mid, colZone)
+                    string sideTag = (showSideTag and sideColorOn) ? f_sideTagI(domSide, mid) : ""
+                    [confS, confParts] = f_confScore(mid, minP, maxP, members)
+                    if not showConf or confS >= confMin
+                        float heatT = showConf ? math.min(confS / 100.0, 1.0) : 0.0
+                        color zoneFillBase = color.from_gradient(heatT, 0.0, 1.0, zbase, color.new(#ffb300, 0))
+                        int   heatOp = int(op - op * 0.45 * heatT)
+                        color zoneFill = color.new(zoneFillBase, math.max(heatOp, 0))
+                        color zoneBorder = color.from_gradient(heatT, 0.0, 1.0, color.new(zbase, 25), color.new(#ffb300, 10))
+                        box bx = box.new(bar_index, mid + pad, bar_index + ext, mid - pad, border_color = zoneBorder, border_width = lineWidth, bgcolor = zoneFill)
+                        string strength = showStrengthEmoji ? (f_repeat(f_sideEmojiI(domSide, mid), members) + " x" + str.tostring(members)) : ("x" + str.tostring(members))
+                        string tier = tieredEmoji ? (f_tierEmoji(members) + " ") : ""
+                        string confTag = showConf ? ("  ⭐" + str.tostring(confS) + (confParts == "" ? "" : " [" + confParts + "]")) : ""
+                        // per-zone target-likelihood — Magnet quality (distance removed) or Raw pull share.
+                        // Only zones with a member inside the N-nearest-each-side window get a %.
+                        bool zUseQual = lvlConfMode == "Magnet quality"
+                        float zNum = zUseQual ? sumQual : sumPull
+                        float zDen = zUseQual ? totalQual : totalPull
+                        float zPull = zDen > 0 ? zNum / zDen * 100.0 : 0.0
+                        bool zTop = not na(topPullPrice) and topPullPrice >= minP - pad and topPullPrice <= maxP + pad
+                        float atrUz = math.max(nz(atr), syminfo.mintick)
+                        // stacked-agreement ⭐: DOL-side agrees + it's the magnet + zone overlaps OB/FVG
+                        bool zSideAgree = (dolDrawUp and mid >= close) or (not dolDrawUp and mid < close)
+                        string zStackTag = (projStacked and zInWin and zTop and zSideAgree and f_hasOBFVG(minP - pad, maxP + pad)) ? " ⭐" : ""
+                        // tested/virgin zone: dashed hollow border + ✓ when price has probed the zone
+                        bool zTested = showTested and (f_isTested(mid, atrUz) or f_isTested(minP, atrUz) or f_isTested(maxP, atrUz))
+                        string lvlConfTag = (showLvlConf and zInWin) ? ((zTop ? "  🎯" : "  →") + str.tostring(math.round(zPull)) + "%" + zStackTag) : ""
+                        if zTested
+                            box.set_border_style(bx, line.style_dashed)
+                            box.set_bgcolor(bx, color.new(zbase, 92))
+                        string testTagZ = zTested ? "  ✓" : ""
+                        // declutter: faint zone if no Top-N member OR below the confidence gate
+                        bool zCounterBias = biasFadeLvls and biasOn and dayBias != 0 and (dayBias > 0 ? mid < close : mid > close)
+                        bool zFaint = (densOn and (not zPrimary or (zInWin and zPull < eGate))) or zCounterBias
+                        if zFaint
+                            box.set_border_style(bx, line.style_dotted)
+                            box.set_border_color(bx, color.new(zbase, densFadeOp))
+                            box.set_bgcolor(bx, color.new(zbase, math.max(densFadeOp, 90)))
+                        string full = zFaint ? (names + "  " + str.tostring(mid, format.mintick)) : (tier + strength + (sideTag == "" ? "" : " " + sideTag) + "  " + names + "  " + str.tostring(mid, format.mintick) + confTag + lvlConfTag + testTagZ + f_countdown(mid))
+                        color lblBg  = zFaint ? color.new(zbase, densFadeOp) : (outlineTags ? zbase : color.new(#1e222d, 10))
+                        color lblTxt = zFaint ? color.new(zbase, math.max(densFadeOp - 30, 0)) : clustLblTxt
+                        label lb = label.new(bar_index + ext, mid, full, style = label.style_label_left, color = lblBg, textcolor = lblTxt, size = zFaint ? size.tiny : f_strongSize(members))
+                        array.push(pool_boxes, bx)
+                        array.push(pool_labels, lb)
+                gi := gi + 1
 
-    // ---- Order block boxes (last bar) ----
-    f_clearXtra()
-    if masterOn and showOB and array.size(obTop) > 0
-        for oi = 0 to array.size(obTop) - 1
-            bool bull = array.get(obBull, oi)
-            color oc  = bull ? obColBull : obColBear
-            int   ob0 = array.get(obBirth, oi)
-            float obT = array.get(obTop, oi)
-            float obB = array.get(obBot, oi)
-            int   obSc = oi < array.size(obStr) ? int(array.get(obStr, oi)) : 50
-            bool  obPass = (not obFilterOn) or (obSc >= obMinStr)
-            if not na(obT) and not na(obB) and obPass
-                int   ob1 = f_clampBar(ob0)
-                box obx = box.new(ob1, obT, bar_index + extendR, obB, border_color = color.new(bull ? obColBull : obColBear, 20), border_width = 1, bgcolor = oc)
-                array.push(xtra_boxes, obx)
-                // strength % printed CENTERED inside the block (no right-edge label clutter)
-                if obShowStr
-                    int    obCx = int(math.round((ob1 + bar_index + extendR) / 2.0))
-                    label olb = label.new(obCx, (obT + obB) / 2.0, str.tostring(obSc) + "%", style = label.style_text_outline, textcolor = color.white, color = color.new(bull ? obColBull : obColBear, 100), size = size.small)
-                    array.push(xtra_labels, olb)
+        // ---- Order block boxes (last bar) ----
+        f_clearXtra()
+        if masterOn and showOB and array.size(obTop) > 0
+            for oi = 0 to array.size(obTop) - 1
+                bool bull = array.get(obBull, oi)
+                color oc  = bull ? obColBull : obColBear
+                int   ob0 = array.get(obBirth, oi)
+                float obT = array.get(obTop, oi)
+                float obB = array.get(obBot, oi)
+                int   obSc = oi < array.size(obStr) ? int(array.get(obStr, oi)) : 50
+                bool  obPass = (not obFilterOn) or (obSc >= obMinStr)
+                if not na(obT) and not na(obB) and obPass
+                    int   ob1 = f_clampBar(ob0)
+                    box obx = box.new(ob1, obT, bar_index + extendR, obB, border_color = color.new(bull ? obColBull : obColBear, 20), border_width = 1, bgcolor = oc)
+                    array.push(xtra_boxes, obx)
+                    // strength % printed CENTERED inside the block (no right-edge label clutter)
+                    if obShowStr
+                        int    obCx = int(math.round((ob1 + bar_index + extendR) / 2.0))
+                        label olb = label.new(obCx, (obT + obB) / 2.0, str.tostring(obSc) + "%", style = label.style_text_outline, textcolor = color.white, color = color.new(bull ? obColBull : obColBear, 100), size = size.small)
+                        array.push(xtra_labels, olb)
+    dirLocal
+dm_dirState := f_blkRender()
 
 
 // ---- CONTEXT PANEL (Daily Bias + market condition) ----
-if masterOn and barstate.islast
-    bool ctxBias   = biasOn and biasBanner
-    bool ctxRegime = regimeOn and not (mtOn and mtShowDash)   // Brooks dashboard already shows it
-    if ctxBias or ctxRegime
-        // --- Daily Bias rows ---
-        color  biasAccent = dayBias > 0 ? themeUpSolid : dayBias < 0 ? themeDnSolid : themeMuted
-        string biasWord = dayBias > 0 ? "LONG" : dayBias < 0 ? "SHORT" : "NEUTRAL"
-        string biasArrow = dayBias > 0 ? "🔼" : dayBias < 0 ? "🔽" : "⏸"
-        string cautionTxt = dayCaution ? " ⚠ caution" : ""
-        string whyTxt = dayBias == 0 ? "no clean structure" : (biasWhyStruct + biasWhySweep)
-        biasSzB = biasBanSize == "Huge" ? size.large : biasBanSize == "Large" ? size.normal : size.small
-        // --- Regime row ---
-        string regWord = mtCond == 1 ? "TREND" : mtCond == 3 ? "TRANSITION" : "RANGE"
-        string regEmo  = mtCond == 1 ? "➡" : mtCond == 3 ? "⤴" : "↔"
-        color  regCol  = mtCond == 1 ? themeUpSolid : mtCond == 3 ? color.orange : themeMuted
-        string regTxt  = regEmo + " MARKET: " + regWord + "  · trend score " + str.tostring(100.0 * mtTrendScore, "#") + (regimeChop ? ("  ⚠ VWAP chop (" + str.tostring(int(vwapCrosses)) + "x)") : "")
-        // build the panel (up to 3 rows: bias title, bias why, market condition)
-        var table ctxTbl = table.new(position.top_left, 1, 3, border_width = 1)
-        table.set_position(ctxTbl, f_tablePos(biasBanPos))
-        table.clear(ctxTbl, 0, 0, 0, 2)
-        int cr = 0
-        if ctxBias
-            table.cell(ctxTbl, 0, cr, biasArrow + " TODAY: " + biasWord + cautionTxt, text_color = biasAccent, bgcolor = themePanelBg, text_size = biasSzB)
-            cr := cr + 1
-            table.cell(ctxTbl, 0, cr, whyTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
-            cr := cr + 1
-        if ctxRegime
-            table.cell(ctxTbl, 0, cr, regTxt, text_color = regCol, bgcolor = cr == 0 ? themePanelBg : themeRowBg, text_size = size.small)
-            cr := cr + 1
-        table.set_frame_color(ctxTbl, color.new(biasAccent, 35))
-        table.set_frame_width(ctxTbl, themeBW)
+// (wrapped in a function to keep the main body under TradingView's size limit)
+f_blkCtx() =>
+    if masterOn and barstate.islast
+        bool ctxBias   = biasOn and biasBanner
+        bool ctxRegime = regimeOn and not (mtOn and mtShowDash)   // Brooks dashboard already shows it
+        if ctxBias or ctxRegime
+            // --- Daily Bias rows ---
+            color  biasAccent = dayBias > 0 ? themeUpSolid : dayBias < 0 ? themeDnSolid : themeMuted
+            string biasWord = dayBias > 0 ? "LONG" : dayBias < 0 ? "SHORT" : "NEUTRAL"
+            string biasArrow = dayBias > 0 ? "🔼" : dayBias < 0 ? "🔽" : "⏸"
+            string cautionTxt = dayCaution ? " ⚠ caution" : ""
+            string whyTxt = dayBias == 0 ? "no clean structure" : (biasWhyStruct + biasWhySweep)
+            biasSzB = biasBanSize == "Huge" ? size.large : biasBanSize == "Large" ? size.normal : size.small
+            // --- Regime row ---
+            string regWord = mtCond == 1 ? "TREND" : mtCond == 3 ? "TRANSITION" : "RANGE"
+            string regEmo  = mtCond == 1 ? "➡" : mtCond == 3 ? "⤴" : "↔"
+            color  regCol  = mtCond == 1 ? themeUpSolid : mtCond == 3 ? color.orange : themeMuted
+            string regTxt  = regEmo + " MARKET: " + regWord + "  · trend score " + str.tostring(100.0 * mtTrendScore, "#") + (regimeChop ? ("  ⚠ VWAP chop (" + str.tostring(int(vwapCrosses)) + "x)") : "")
+            // build the panel (up to 3 rows: bias title, bias why, market condition)
+            var table ctxTbl = table.new(position.top_left, 1, 3, border_width = 1)
+            table.set_position(ctxTbl, f_tablePos(biasBanPos))
+            table.clear(ctxTbl, 0, 0, 0, 2)
+            int cr = 0
+            if ctxBias
+                table.cell(ctxTbl, 0, cr, biasArrow + " TODAY: " + biasWord + cautionTxt, text_color = biasAccent, bgcolor = themePanelBg, text_size = biasSzB)
+                cr := cr + 1
+                table.cell(ctxTbl, 0, cr, whyTxt, text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small)
+                cr := cr + 1
+            if ctxRegime
+                table.cell(ctxTbl, 0, cr, regTxt, text_color = regCol, bgcolor = cr == 0 ? themePanelBg : themeRowBg, text_size = size.small)
+                cr := cr + 1
+            table.set_frame_color(ctxTbl, color.new(biasAccent, 35))
+            table.set_frame_width(ctxTbl, themeBW)
+    true
+f_blkCtx()
 
 // wipe extra pool when master/OB off
 if (not masterOn or not showOB) and array.size(xtra_boxes) + array.size(xtra_labels) > 0
@@ -2258,60 +2376,60 @@ bullFVG = low > nz(high[2], low)
 bearFVG = high < nz(low[2], high)
 // A newly confirmed gap is scored for strength; weak gaps are hidden (or dimmed) so the
 // chart isn't flooded with trivial imbalances on low timeframes.
-if masterOn and showFVG and (bullFVG or bearFVG)
-    bool  isBull = bullFVG
-    float gTop   = isBull ? low   : low[2]
-    float gBot   = isBull ? high[2] : high
-    // min-gap floor: a micro-gap below the ATR floor is ignored entirely (never scored/drawn)
-    float gapATR = math.abs(gTop - gBot) / math.max(nz(atr), syminfo.mintick)
-    bool  bigEnough = fvgMinGapATR <= 0.0 or gapATR >= fvgMinGapATR
-    if bigEnough
-        // the displacement candle that opened the gap is the middle bar [1]
-        float dispVol = nz(volume[1], volume)
-        // displacement quality (0..1): body dominance of the creating candle + a structure-break
-        // bonus if that candle's close took out the most recent opposing swing.
-        float dRange = math.max(high[1] - low[1], syminfo.mintick)
-        float bodyDom = math.abs(close[1] - open[1]) / dRange                 // 0..1
-        bool  brokeStruct = isBull ? (not na(lastPH) and close[1] > lastPH) : (not na(lastPL) and close[1] < lastPL)
-        float dispQual = math.min(1.0, bodyDom * 0.7 + (brokeStruct ? 0.3 : 0.0))
-        [sc, isInv, inBlock, htfAl, liqAl, swpAl] = f_fvgStrength(gTop, gBot, isBull, dispVol, dispQual, false)
-        // bias-aligned declutter: a gap opposing the committed daily bias is counter-bias.
-        bool counterBias = biasOn and dayBias != 0 and (isBull ? dayBias < 0 : dayBias > 0)
-        bool biasHide = counterBias and biasHideFVG
-        bool pass = (not fvgFilterOn) or (sc >= fvgMinStr)
-        if (pass or fvgDimWeak) and not biasHide
-            // counter-bias gaps are drawn faint (like weak) when fading is on
-            bool weak = (fvgFilterOn and sc < fvgMinStr) or (counterBias and biasFadeFVG)
-            color baseCol = isBull ? colBull : colBear
-            int   fillOp  = weak ? math.min(opacityFVG + 15, 97) : opacityFVG
-            int   bordOp  = weak ? 85 : 40
-            box b = box.new(bar_index[2], gTop, bar_index + extendR, gBot, border_color = color.new(baseCol, bordOp), bgcolor = color.new(colFVGBase, fillOp))
-            array.push(fvgBoxes, b)
-            array.push(fvgIsBull, isBull)
-            array.push(fvgStr, sc)
-            label lb = na
-            if fvgShowStr and not weak
-                string suffix = (htfAl ? " htf" : "") + (liqAl ? " liq" : "") + (swpAl ? " swp" : "") + (isInv ? " inv" : "") + (inBlock ? " blk" : "")
-                float ceY = (gTop + gBot) / 2.0
-                // % sits centered inside the gap box (tied to its box, away from the level labels)
-                int cx = int(math.round((bar_index[2] + bar_index + extendR) / 2.0))
-                lb := label.new(cx, ceY, str.tostring(sc) + "%" + suffix, style = label.style_text_outline, textcolor = color.white, color = color.new(baseCol, 100), size = size.small)
-            array.push(fvgLabels, lb)
-            // consequent-encroachment (CE) line at the gap midpoint — the 50% price reacts to
-            line ce = na
-            if fvgShowCE and not weak
-                float ceMid = (gTop + gBot) / 2.0
-                ce := line.new(bar_index[2], ceMid, bar_index + extendR, ceMid, color = fvgCECol, style = line.style_dashed, width = 1)
-            array.push(fvgCE, ce)
-            array.push(fvgArmed, 0)   // execution state starts at 'watching'
-            array.push(fvgArmBar, na) // bar it armed on (set when it arms)
-            array.push(fvgApproached, false)
+// (wrapped in a function to keep the main body under TradingView's size limit)
+f_blkFvgNew() =>
+    if masterOn and showFVG and (bullFVG or bearFVG)
+        bool  isBull = bullFVG
+        float gTop   = isBull ? low   : low[2]
+        float gBot   = isBull ? high[2] : high
+        // min-gap floor: a micro-gap below the ATR floor is ignored entirely (never scored/drawn)
+        float gapATR = math.abs(gTop - gBot) / math.max(nz(atr), syminfo.mintick)
+        bool  bigEnough = fvgMinGapATR <= 0.0 or gapATR >= fvgMinGapATR
+        if bigEnough
+            // the displacement candle that opened the gap is the middle bar [1]
+            float dispVol = nz(volume[1], volume)
+            // displacement quality (0..1): body dominance of the creating candle + a structure-break
+            // bonus if that candle's close took out the most recent opposing swing.
+            float dRange = math.max(high[1] - low[1], syminfo.mintick)
+            float bodyDom = math.abs(close[1] - open[1]) / dRange                 // 0..1
+            bool  brokeStruct = isBull ? (not na(lastPH) and close[1] > lastPH) : (not na(lastPL) and close[1] < lastPL)
+            float dispQual = math.min(1.0, bodyDom * 0.7 + (brokeStruct ? 0.3 : 0.0))
+            [sc, isInv, inBlock, htfAl, liqAl, swpAl] = f_fvgStrength(gTop, gBot, isBull, dispVol, dispQual, false)
+            // bias-aligned declutter: a gap opposing the committed daily bias is counter-bias.
+            bool counterBias = biasOn and dayBias != 0 and (isBull ? dayBias < 0 : dayBias > 0)
+            bool biasHide = counterBias and biasHideFVG
+            bool pass = (not fvgFilterOn) or (sc >= fvgMinStr)
+            if (pass or fvgDimWeak) and not biasHide
+                // counter-bias gaps are drawn faint (like weak) when fading is on
+                bool weak = (fvgFilterOn and sc < fvgMinStr) or (counterBias and biasFadeFVG)
+                color baseCol = isBull ? colBull : colBear
+                int   fillOp  = weak ? math.min(opacityFVG + 15, 97) : opacityFVG
+                int   bordOp  = weak ? 85 : 40
+                box b = box.new(bar_index[2], gTop, bar_index + extendR, gBot, border_color = color.new(baseCol, bordOp), bgcolor = color.new(colFVGBase, fillOp))
+                array.push(fvgBoxes, b)
+                array.push(fvgIsBull, isBull)
+                array.push(fvgStr, sc)
+                label lb = na
+                if fvgShowStr and not weak
+                    string suffix = (htfAl ? " htf" : "") + (liqAl ? " liq" : "") + (swpAl ? " swp" : "") + (isInv ? " inv" : "") + (inBlock ? " blk" : "")
+                    float ceY = (gTop + gBot) / 2.0
+                    // % sits centered inside the gap box (tied to its box, away from the level labels)
+                    int cx = int(math.round((bar_index[2] + bar_index + extendR) / 2.0))
+                    lb := label.new(cx, ceY, str.tostring(sc) + "%" + suffix, style = label.style_text_outline, textcolor = color.white, color = color.new(baseCol, 100), size = size.small)
+                array.push(fvgLabels, lb)
+                // consequent-encroachment (CE) line at the gap midpoint — the 50% price reacts to
+                line ce = na
+                if fvgShowCE and not weak
+                    float ceMid = (gTop + gBot) / 2.0
+                    ce := line.new(bar_index[2], ceMid, bar_index + extendR, ceMid, color = fvgCECol, style = line.style_dashed, width = 1)
+                array.push(fvgCE, ce)
+                array.push(fvgArmed, 0)   // execution state starts at 'watching'
+                array.push(fvgArmBar, na) // bar it armed on (set when it arms)
+                array.push(fvgApproached, false)
+    true
+f_blkFvgNew()
 
 // reset this bar's execution alert flags + clear the setup drawing pool (redrawn below)
-execArmNow     := false
-execConfirmNow := false
-execReturnNow  := false
-execInvalidNow := false
 if array.size(exec_lines) > 0
     while array.size(exec_lines) > 0
         line.delete(array.shift(exec_lines))
@@ -2319,167 +2437,175 @@ if array.size(exec_labels) > 0
     while array.size(exec_labels) > 0
         label.delete(array.shift(exec_labels))
 
-if array.size(fvgBoxes) > 0
-    while array.size(fvgBoxes) > fvgKeep
-        f_delFvgAt(0)
-    int i = 0
-    while i < array.size(fvgBoxes)
-        box bx     = array.get(fvgBoxes, i)
-        bool isBull = array.get(fvgIsBull, i)
-        float top  = box.get_top(bx)
-        float bot  = box.get_bottom(bx)
-        float mid  = (top + bot) / 2.0
-        bool invalid = false
-        if hideMitFVG
-            if fvgFillMode == "Body close through"
-                invalid := isBull ? (close < bot) : (close > top)
-            else if fvgFillMode == "Wick touch (50%)"
-                invalid := isBull ? (low <= mid) : (high >= mid)
+// (wrapped in a function to keep the main body under TradingView's size limit)
+f_blkFvgUpdate() =>
+    if array.size(fvgBoxes) > 0
+        while array.size(fvgBoxes) > fvgKeep
+            f_delFvgAt(0)
+        int i = 0
+        while i < array.size(fvgBoxes)
+            box bx     = array.get(fvgBoxes, i)
+            bool isBull = array.get(fvgIsBull, i)
+            float top  = box.get_top(bx)
+            float bot  = box.get_bottom(bx)
+            float mid  = (top + bot) / 2.0
+            bool invalid = false
+            if hideMitFVG
+                if fvgFillMode == "Body close through"
+                    invalid := isBull ? (close < bot) : (close > top)
+                else if fvgFillMode == "Wick touch (50%)"
+                    invalid := isBull ? (low <= mid) : (high >= mid)
+                else
+                    invalid := high >= top and low <= bot
+            if invalid
+                // remember this zone briefly so a later opposite gap here counts as an inversion
+                array.push(invTop, top)
+                array.push(invBot, bot)
+                array.push(invWasBull, isBull)
+                array.push(invBar, bar_index)
+                f_delFvgAt(i)
             else
-                invalid := high >= top and low <= bot
-        if invalid
-            // remember this zone briefly so a later opposite gap here counts as an inversion
-            array.push(invTop, top)
-            array.push(invBot, bot)
-            array.push(invWasBull, isBull)
-            array.push(invBar, bar_index)
-            f_delFvgAt(i)
-        else
-            box.set_right(bx, bar_index + extendR)
-            label lb = array.get(fvgLabels, i)
-            // keep the label centered over the (growing) box
-            if not na(lb)
-                label.set_x(lb, int(math.round((box.get_left(bx) + bar_index + extendR) / 2.0)))
-            line ce = array.get(fvgCE, i)
-            if not na(ce)
-                line.set_x2(ce, bar_index + extendR)
-            // ---- execution state machine: watch -> armed -> confirmed ----
-            if execOn
-                int    st  = array.get(fvgArmed, i)
-                // no-repaint gate: only advance state / fire alerts on a CLOSED bar (unless the
-                // user opts into intrabar). Historical bars are always confirmed, so unaffected.
-                bool   commitOK = (not execNoRepaint) or barstate.isconfirmed
-                float  gsc = array.get(fvgStr, i)
-                float  ceP = mid
-                // qualification gates: strength, premium/discount side, DOL agreement
-                bool qStr = gsc >= execMinStr
-                bool qPD  = true
-                if execNeedPD and not na(rngHi) and not na(rngLo) and rngHi > rngLo
-                    float pos = (ceP - rngLo) / (rngHi - rngLo)
-                    qPD := isBull ? (pos <= 0.5) : (pos >= 0.5)
-                bool qDOL = (not execNeedDOL) or (isBull ? dm_dirState > 0 : dm_dirState < 0)
-                // daily-bias agreement: NEUTRAL bias (dayBias == 0) allows both directions
-                bool qBias = (not execNeedDay) or dayBias == 0 or (isBull ? dayBias > 0 : dayBias < 0)
-                // the stop level for this gap (far edge + ATR buffer) — used for invalidation + R:R
-                float atrX = math.max(nz(atr), syminfo.mintick)
-                float stopLvl = isBull ? (bot - execStopATR * atrX) : (top + execStopATR * atrX)
-                // feasibility: reward:risk to the nearest OPPOSING liquidity pool (the realistic
-                // target). If below execMinRR the setup has no room — skip it (or just flag it).
-                float entryQ = execEntry == "CE (50%)" ? ceP : (isBull ? top : bot)
-                float riskQ  = math.max(math.abs(entryQ - stopLvl), syminfo.mintick)
-                float tgtLiq = f_nextOppLiq(entryQ, isBull)
-                float feasRR = na(tgtLiq) ? na : (math.abs(tgtLiq - entryQ) / riskQ)
-                bool  lowRR  = execMinRR > 0 and not na(feasRR) and feasRR < execMinRR
-                bool  qRR    = (execMinRR <= 0) or (not execRRReject) or (not lowRR)
-                // regime gate: in RANGE + chop / mid-range, suppress CONTINUATION setups (gap in the middle
-                // of the range) but still allow REVERSAL setups at the extremes (bull gap in deep
-                // discount / bear gap in deep premium). Only active when regimeGateExec is on.
-                bool qRegime = true
-                if regimeGateExec and regimeState == -1 and (regimeChop or regimeMidRange)
-                    bool atExtreme = na(rngHi) or na(rngLo) or rngHi <= rngLo ? false : (isBull ? (ceP - rngLo) / (rngHi - rngLo) <= 0.38 : (ceP - rngLo) / (rngHi - rngLo) >= 0.62)
-                    qRegime := atExtreme
-                bool qualifies = qStr and qPD and qDOL and qBias and qRR and qRegime
-                // price returning toward a still-watching qualifying gap (approach alert, once per gap)
-                if st == 0 and qualifies and commitOK and not array.get(fvgApproached, i)
-                    bool nearing = isBull ? (low <= top and low > ceP) : (high >= bot and high < ceP)
-                    if nearing
-                        execReturnNow := true
-                        array.set(fvgApproached, i, true)   // cooldown: don't re-announce this gap
-                // ARM when price taps the entry (CE by default, else proximal edge)
-                if st == 0 and qualifies and commitOK
-                    float entryP = execEntry == "CE (50%)" ? ceP : (isBull ? top : bot)
-                    bool tapped = low <= entryP and high >= entryP
-                    if tapped
-                        array.set(fvgArmed, i, execConfirm ? 1 : 2)
-                        array.set(fvgArmBar, i, bar_index)   // stamp arm bar for expiry
-                        execArmNow := true
-                        if not execConfirm
-                            execConfirmNow := true
-                // CONFIRM an armed gap once a candle closes rejecting back out on the setup side
-                else if st == 1 and commitOK
-                    bool rejectClose = isBull ? (close > ceP) : (close < ceP)
-                    if rejectClose
-                        array.set(fvgArmed, i, 2)
-                        execConfirmNow := true
-                // ---- lifecycle: invalidate an armed/confirmed setup on stop breach or expiry ----
-                if (st == 1 or st == 2) and commitOK
-                    bool stopHit = execStopKill and (isBull ? (low <= stopLvl) : (high >= stopLvl))
-                    int  armedBar = array.get(fvgArmBar, i)
-                    bool expired  = execExpiry > 0 and not na(armedBar) and (bar_index - armedBar) >= execExpiry
-                    if stopHit or expired
-                        array.set(fvgArmed, i, 3)            // dead — stops drawing + no more alerts
-                        execInvalidNow := true
-            i += 1
+                box.set_right(bx, bar_index + extendR)
+                label lb = array.get(fvgLabels, i)
+                // keep the label centered over the (growing) box
+                if not na(lb)
+                    label.set_x(lb, int(math.round((box.get_left(bx) + bar_index + extendR) / 2.0)))
+                line ce = array.get(fvgCE, i)
+                if not na(ce)
+                    line.set_x2(ce, bar_index + extendR)
+                // ---- execution state machine: watch -> armed -> confirmed ----
+                if execOn
+                    int    st  = array.get(fvgArmed, i)
+                    // no-repaint gate: only advance state / fire alerts on a CLOSED bar (unless the
+                    // user opts into intrabar). Historical bars are always confirmed, so unaffected.
+                    bool   commitOK = (not execNoRepaint) or barstate.isconfirmed
+                    float  gsc = array.get(fvgStr, i)
+                    float  ceP = mid
+                    // qualification gates: strength, premium/discount side, DOL agreement
+                    bool qStr = gsc >= execMinStr
+                    bool qPD  = true
+                    if execNeedPD and not na(rngHi) and not na(rngLo) and rngHi > rngLo
+                        float pos = (ceP - rngLo) / (rngHi - rngLo)
+                        qPD := isBull ? (pos <= 0.5) : (pos >= 0.5)
+                    bool qDOL = (not execNeedDOL) or (isBull ? dm_dirState > 0 : dm_dirState < 0)
+                    // daily-bias agreement: NEUTRAL bias (dayBias == 0) allows both directions
+                    bool qBias = (not execNeedDay) or dayBias == 0 or (isBull ? dayBias > 0 : dayBias < 0)
+                    // the stop level for this gap (far edge + ATR buffer) — used for invalidation + R:R
+                    float atrX = math.max(nz(atr), syminfo.mintick)
+                    float stopLvl = isBull ? (bot - execStopATR * atrX) : (top + execStopATR * atrX)
+                    // feasibility: reward:risk to the nearest OPPOSING liquidity pool (the realistic
+                    // target). If below execMinRR the setup has no room — skip it (or just flag it).
+                    float entryQ = execEntry == "CE (50%)" ? ceP : (isBull ? top : bot)
+                    float riskQ  = math.max(math.abs(entryQ - stopLvl), syminfo.mintick)
+                    float tgtLiq = f_nextOppLiq(entryQ, isBull)
+                    float feasRR = na(tgtLiq) ? na : (math.abs(tgtLiq - entryQ) / riskQ)
+                    bool  lowRR  = execMinRR > 0 and not na(feasRR) and feasRR < execMinRR
+                    bool  qRR    = (execMinRR <= 0) or (not execRRReject) or (not lowRR)
+                    // regime gate: in RANGE + chop / mid-range, suppress CONTINUATION setups (gap in the middle
+                    // of the range) but still allow REVERSAL setups at the extremes (bull gap in deep
+                    // discount / bear gap in deep premium). Only active when regimeGateExec is on.
+                    bool qRegime = true
+                    if regimeGateExec and regimeState == -1 and (regimeChop or regimeMidRange)
+                        bool atExtreme = na(rngHi) or na(rngLo) or rngHi <= rngLo ? false : (isBull ? (ceP - rngLo) / (rngHi - rngLo) <= 0.38 : (ceP - rngLo) / (rngHi - rngLo) >= 0.62)
+                        qRegime := atExtreme
+                    bool qualifies = qStr and qPD and qDOL and qBias and qRR and qRegime
+                    // price returning toward a still-watching qualifying gap (approach alert, once per gap)
+                    if st == 0 and qualifies and commitOK and not array.get(fvgApproached, i)
+                        bool nearing = isBull ? (low <= top and low > ceP) : (high >= bot and high < ceP)
+                        if nearing
+                            xE.execReturnNow := true
+                            array.set(fvgApproached, i, true)   // cooldown: don't re-announce this gap
+                    // ARM when price taps the entry (CE by default, else proximal edge)
+                    if st == 0 and qualifies and commitOK
+                        float entryP = execEntry == "CE (50%)" ? ceP : (isBull ? top : bot)
+                        bool tapped = low <= entryP and high >= entryP
+                        if tapped
+                            array.set(fvgArmed, i, execConfirm ? 1 : 2)
+                            array.set(fvgArmBar, i, bar_index)   // stamp arm bar for expiry
+                            xE.execArmNow := true
+                            if not execConfirm
+                                xE.execConfirmNow := true
+                    // CONFIRM an armed gap once a candle closes rejecting back out on the setup side
+                    else if st == 1 and commitOK
+                        bool rejectClose = isBull ? (close > ceP) : (close < ceP)
+                        if rejectClose
+                            array.set(fvgArmed, i, 2)
+                            xE.execConfirmNow := true
+                    // ---- lifecycle: invalidate an armed/confirmed setup on stop breach or expiry ----
+                    if (st == 1 or st == 2) and commitOK
+                        bool stopHit = execStopKill and (isBull ? (low <= stopLvl) : (high >= stopLvl))
+                        int  armedBar = array.get(fvgArmBar, i)
+                        bool expired  = execExpiry > 0 and not na(armedBar) and (bar_index - armedBar) >= execExpiry
+                        if stopHit or expired
+                            array.set(fvgArmed, i, 3)            // dead — stops drawing + no more alerts
+                            xE.execInvalidNow := true
+                i += 1
+    true
+f_blkFvgUpdate()
 
 // ---- draw the nearest active setups (entry / stop / TP1 / TP2 + R:R) ----
 // Only the execMaxShow armed gaps closest to price draw lines, to keep the chart readable.
-if execOn and masterOn and barstate.islast and array.size(fvgBoxes) > 0
-    float atrE = math.max(nz(atr), syminfo.mintick)
-    int drawn = 0
-    // repeatedly pick the nearest armed-but-undrawn gap
-    var drawnIx = array.new<bool>()
-    array.clear(drawnIx)
-    for di = 0 to array.size(fvgBoxes) - 1
-        array.push(drawnIx, false)
-    while drawn < execMaxShow
-        float bestD = na
-        int   bestI = -1
-        for gi = 0 to array.size(fvgBoxes) - 1
-            // draw only LIVE setups (armed=1 / confirmed=2); skip dead=3 and watching=0
-            int gSt0 = array.get(fvgArmed, gi)
-            if (gSt0 == 1 or gSt0 == 2) and not array.get(drawnIx, gi)
-                float gmid = (box.get_top(array.get(fvgBoxes, gi)) + box.get_bottom(array.get(fvgBoxes, gi))) / 2.0
-                float d = math.abs(gmid - close)
-                if na(bestD) or d < bestD
-                    bestD := d
-                    bestI := gi
-        if bestI < 0
-            break
-        array.set(drawnIx, bestI, true)
-        drawn := drawn + 1
-        box  gbx = array.get(fvgBoxes, bestI)
-        bool gBull = array.get(fvgIsBull, bestI)
-        int  gSt = array.get(fvgArmed, bestI)
-        float gT = box.get_top(gbx)
-        float gB = box.get_bottom(gbx)
-        float gMid = (gT + gB) / 2.0
-        float entryP = execEntry == "CE (50%)" ? gMid : (gBull ? gT : gB)
-        float stopP  = gBull ? (gB - execStopATR * atrE) : (gT + execStopATR * atrE)
-        float risk   = math.abs(entryP - stopP)
-        float tp1P   = gBull ? (entryP + execTP1R * risk) : (entryP - execTP1R * risk)
-        float tp2P   = gBull ? (entryP + execTP2R * risk) : (entryP - execTP2R * risk)
-        // realistic target = nearest opposing liquidity pool, and the feasible R:R to it
-        float liqT   = f_nextOppLiq(entryP, gBull)
-        float liqRR  = na(liqT) ? na : (math.abs(liqT - entryP) / math.max(risk, syminfo.mintick))
-        bool  gLowRR = execMinRR > 0 and not na(liqRR) and liqRR < execMinRR
-        int   xL = bar_index + 2
-        int   xR = bar_index + extendR + 15
-        array.push(exec_lines, line.new(xL, entryP, xR, entryP, color = execColEntry, style = line.style_solid,  width = 2))
-        array.push(exec_lines, line.new(xL, stopP,  xR, stopP,  color = execColStop,  style = line.style_dashed, width = 1))
-        array.push(exec_lines, line.new(xL, tp1P,   xR, tp1P,   color = execColTP,    style = line.style_dotted, width = 1))
-        array.push(exec_lines, line.new(xL, tp2P,   xR, tp2P,   color = execColTP,    style = line.style_dotted, width = 1))
-        string stTxt = gSt == 2 ? "CONFIRMED" : "ARMED"
-        string dirTxt = gBull ? "LONG" : "SHORT"
-        string rrTxt  = na(liqRR) ? "  (no liq target)" : ("  →liq " + str.tostring(math.round(liqRR * 10) / 10.0) + ":1" + (gLowRR ? " ⚠ low R:R" : ""))
-        string head = (gBull ? "▲ " : "▼ ") + dirTxt + " " + stTxt + rrTxt
-        array.push(exec_labels, label.new(xR, entryP, head + "  entry " + str.tostring(entryP, format.mintick), style = label.style_label_left, color = color.new(gLowRR ? execColStop : execColEntry, 10), textcolor = color.white, size = size.small))
-        array.push(exec_labels, label.new(xR, stopP, "SL " + str.tostring(stopP, format.mintick), style = label.style_label_left, color = color.new(execColStop, 30), textcolor = color.white, size = size.tiny))
-        array.push(exec_labels, label.new(xR, tp1P, "TP1 " + str.tostring(tp1P, format.mintick) + " (" + str.tostring(execTP1R, "#.#") + "R)", style = label.style_label_left, color = color.new(execColTP, 30), textcolor = color.white, size = size.tiny))
-        array.push(exec_labels, label.new(xR, tp2P, "TP2 " + str.tostring(tp2P, format.mintick) + " (" + str.tostring(execTP2R, "#.#") + "R)", style = label.style_label_left, color = color.new(execColTP, 30), textcolor = color.white, size = size.tiny))
-        // the realistic liquidity target line (where price is actually drawn)
-        if not na(liqT)
-            array.push(exec_lines, line.new(xL, liqT, xR, liqT, color = color.new(execColTP, 0), style = line.style_solid, width = 1))
-            array.push(exec_labels, label.new(xR, liqT, "🎯 liq " + str.tostring(liqT, format.mintick), style = label.style_label_left, color = color.new(execColTP, 10), textcolor = color.white, size = size.tiny))
+// (wrapped in a function to keep the main body under TradingView's size limit)
+f_blkExecDraw() =>
+    if execOn and masterOn and barstate.islast and array.size(fvgBoxes) > 0
+        float atrE = math.max(nz(atr), syminfo.mintick)
+        int drawn = 0
+        // repeatedly pick the nearest armed-but-undrawn gap
+        var drawnIx = array.new<bool>()
+        array.clear(drawnIx)
+        for di = 0 to array.size(fvgBoxes) - 1
+            array.push(drawnIx, false)
+        while drawn < execMaxShow
+            float bestD = na
+            int   bestI = -1
+            for gi = 0 to array.size(fvgBoxes) - 1
+                // draw only LIVE setups (armed=1 / confirmed=2); skip dead=3 and watching=0
+                int gSt0 = array.get(fvgArmed, gi)
+                if (gSt0 == 1 or gSt0 == 2) and not array.get(drawnIx, gi)
+                    float gmid = (box.get_top(array.get(fvgBoxes, gi)) + box.get_bottom(array.get(fvgBoxes, gi))) / 2.0
+                    float d = math.abs(gmid - close)
+                    if na(bestD) or d < bestD
+                        bestD := d
+                        bestI := gi
+            if bestI < 0
+                break
+            array.set(drawnIx, bestI, true)
+            drawn := drawn + 1
+            box  gbx = array.get(fvgBoxes, bestI)
+            bool gBull = array.get(fvgIsBull, bestI)
+            int  gSt = array.get(fvgArmed, bestI)
+            float gT = box.get_top(gbx)
+            float gB = box.get_bottom(gbx)
+            float gMid = (gT + gB) / 2.0
+            float entryP = execEntry == "CE (50%)" ? gMid : (gBull ? gT : gB)
+            float stopP  = gBull ? (gB - execStopATR * atrE) : (gT + execStopATR * atrE)
+            float risk   = math.abs(entryP - stopP)
+            float tp1P   = gBull ? (entryP + execTP1R * risk) : (entryP - execTP1R * risk)
+            float tp2P   = gBull ? (entryP + execTP2R * risk) : (entryP - execTP2R * risk)
+            // realistic target = nearest opposing liquidity pool, and the feasible R:R to it
+            float liqT   = f_nextOppLiq(entryP, gBull)
+            float liqRR  = na(liqT) ? na : (math.abs(liqT - entryP) / math.max(risk, syminfo.mintick))
+            bool  gLowRR = execMinRR > 0 and not na(liqRR) and liqRR < execMinRR
+            int   xL = bar_index + 2
+            int   xR = bar_index + extendR + 15
+            array.push(exec_lines, line.new(xL, entryP, xR, entryP, color = execColEntry, style = line.style_solid,  width = 2))
+            array.push(exec_lines, line.new(xL, stopP,  xR, stopP,  color = execColStop,  style = line.style_dashed, width = 1))
+            array.push(exec_lines, line.new(xL, tp1P,   xR, tp1P,   color = execColTP,    style = line.style_dotted, width = 1))
+            array.push(exec_lines, line.new(xL, tp2P,   xR, tp2P,   color = execColTP,    style = line.style_dotted, width = 1))
+            string stTxt = gSt == 2 ? "CONFIRMED" : "ARMED"
+            string dirTxt = gBull ? "LONG" : "SHORT"
+            string rrTxt  = na(liqRR) ? "  (no liq target)" : ("  →liq " + str.tostring(math.round(liqRR * 10) / 10.0) + ":1" + (gLowRR ? " ⚠ low R:R" : ""))
+            string head = (gBull ? "▲ " : "▼ ") + dirTxt + " " + stTxt + rrTxt
+            array.push(exec_labels, label.new(xR, entryP, head + "  entry " + str.tostring(entryP, format.mintick), style = label.style_label_left, color = color.new(gLowRR ? execColStop : execColEntry, 10), textcolor = color.white, size = size.small))
+            array.push(exec_labels, label.new(xR, stopP, "SL " + str.tostring(stopP, format.mintick), style = label.style_label_left, color = color.new(execColStop, 30), textcolor = color.white, size = size.tiny))
+            array.push(exec_labels, label.new(xR, tp1P, "TP1 " + str.tostring(tp1P, format.mintick) + " (" + str.tostring(execTP1R, "#.#") + "R)", style = label.style_label_left, color = color.new(execColTP, 30), textcolor = color.white, size = size.tiny))
+            array.push(exec_labels, label.new(xR, tp2P, "TP2 " + str.tostring(tp2P, format.mintick) + " (" + str.tostring(execTP2R, "#.#") + "R)", style = label.style_label_left, color = color.new(execColTP, 30), textcolor = color.white, size = size.tiny))
+            // the realistic liquidity target line (where price is actually drawn)
+            if not na(liqT)
+                array.push(exec_lines, line.new(xL, liqT, xR, liqT, color = color.new(execColTP, 0), style = line.style_solid, width = 1))
+                array.push(exec_labels, label.new(xR, liqT, "🎯 liq " + str.tostring(liqT, format.mintick), style = label.style_label_left, color = color.new(execColTP, 10), textcolor = color.white, size = size.tiny))
+    true
+f_blkExecDraw()
 
 // wipe execution drawings when the engine is off
 if (not execOn or not masterOn) and (array.size(exec_lines) > 0 or array.size(exec_labels) > 0)
@@ -2511,56 +2637,64 @@ if (not masterOn or not htfFvgOn) and array.size(htfFvgTop) > 0
     array.clear(htfFvgStr)
 
 // register a newly confirmed HTF gap (once per HTF bar), gated by the same min-gap floor
-if masterOn and htfFvgNew
-    bool  hbull = nz(hfvgBull) == 1
-    float hT = math.max(hfvgT, hfvgB)
-    float hB = math.min(hfvgT, hfvgB)
-    float hGapATR = math.abs(hT - hB) / math.max(nz(atr), syminfo.mintick)
-    bool  hBig = fvgMinGapATR <= 0.0 or hGapATR >= fvgMinGapATR
-    // avoid duplicate of a near-identical zone already tracked
-    bool  dup = false
-    if array.size(htfFvgTop) > 0
-        float tolZ = nz(atr) * 0.1
-        for di = 0 to array.size(htfFvgTop) - 1
-            if math.abs(array.get(htfFvgTop, di) - hT) <= tolZ and math.abs(array.get(htfFvgBot, di) - hB) <= tolZ
-                dup := true
-    if hBig and not dup
-        // HTF gaps: skip the HTF-alignment factor (isHtf=true) to avoid self-matching; use a
-        // neutral displacement quality since the HTF candle body isn't pulled back.
-        [hsc, hInv, hBlk, hAl, hLq, hSw] = f_fvgStrength(hT, hB, hbull, nz(hfvgVol), 0.5, true)
-        array.push(htfFvgTop, hT)
-        array.push(htfFvgBot, hB)
-        array.push(htfFvgBull, hbull)
-        array.push(htfFvgStr, hsc)
-        while array.size(htfFvgTop) > htfFvgKeep
-            array.shift(htfFvgTop)
-            array.shift(htfFvgBot)
-            array.shift(htfFvgBull)
-            array.shift(htfFvgStr)
+// (wrapped in a function to keep the main body under TradingView's size limit)
+f_blkHtfFvgNew() =>
+    if masterOn and htfFvgNew
+        bool  hbull = nz(hfvgBull) == 1
+        float hT = math.max(hfvgT, hfvgB)
+        float hB = math.min(hfvgT, hfvgB)
+        float hGapATR = math.abs(hT - hB) / math.max(nz(atr), syminfo.mintick)
+        bool  hBig = fvgMinGapATR <= 0.0 or hGapATR >= fvgMinGapATR
+        // avoid duplicate of a near-identical zone already tracked
+        bool  dup = false
+        if array.size(htfFvgTop) > 0
+            float tolZ = nz(atr) * 0.1
+            for di = 0 to array.size(htfFvgTop) - 1
+                if math.abs(array.get(htfFvgTop, di) - hT) <= tolZ and math.abs(array.get(htfFvgBot, di) - hB) <= tolZ
+                    dup := true
+        if hBig and not dup
+            // HTF gaps: skip the HTF-alignment factor (isHtf=true) to avoid self-matching; use a
+            // neutral displacement quality since the HTF candle body isn't pulled back.
+            [hsc, hInv, hBlk, hAl, hLq, hSw] = f_fvgStrength(hT, hB, hbull, nz(hfvgVol), 0.5, true)
+            array.push(htfFvgTop, hT)
+            array.push(htfFvgBot, hB)
+            array.push(htfFvgBull, hbull)
+            array.push(htfFvgStr, hsc)
+            while array.size(htfFvgTop) > htfFvgKeep
+                array.shift(htfFvgTop)
+                array.shift(htfFvgBot)
+                array.shift(htfFvgBull)
+                array.shift(htfFvgStr)
+    true
+f_blkHtfFvgNew()
 
 // invalidate tracked HTF gaps once the current (chart) price fills them, same rule set
-if array.size(htfFvgTop) > 0
-    int hi2 = 0
-    while hi2 < array.size(htfFvgTop)
-        float hT = array.get(htfFvgTop, hi2)
-        float hB = array.get(htfFvgBot, hi2)
-        bool  hbull = array.get(htfFvgBull, hi2)
-        float hMid = (hT + hB) / 2.0
-        bool hInvalid = false
-        if hideMitFVG
-            if fvgFillMode == "Body close through"
-                hInvalid := hbull ? (close < hB) : (close > hT)
-            else if fvgFillMode == "Wick touch (50%)"
-                hInvalid := hbull ? (low <= hMid) : (high >= hMid)
+// (wrapped in a function to keep the main body under TradingView's size limit)
+f_blkHtfFvgUpd() =>
+    if array.size(htfFvgTop) > 0
+        int hi2 = 0
+        while hi2 < array.size(htfFvgTop)
+            float hT = array.get(htfFvgTop, hi2)
+            float hB = array.get(htfFvgBot, hi2)
+            bool  hbull = array.get(htfFvgBull, hi2)
+            float hMid = (hT + hB) / 2.0
+            bool hInvalid = false
+            if hideMitFVG
+                if fvgFillMode == "Body close through"
+                    hInvalid := hbull ? (close < hB) : (close > hT)
+                else if fvgFillMode == "Wick touch (50%)"
+                    hInvalid := hbull ? (low <= hMid) : (high >= hMid)
+                else
+                    hInvalid := high >= hT and low <= hB
+            if hInvalid
+                array.remove(htfFvgTop, hi2)
+                array.remove(htfFvgBot, hi2)
+                array.remove(htfFvgBull, hi2)
+                array.remove(htfFvgStr, hi2)
             else
-                hInvalid := high >= hT and low <= hB
-        if hInvalid
-            array.remove(htfFvgTop, hi2)
-            array.remove(htfFvgBot, hi2)
-            array.remove(htfFvgBull, hi2)
-            array.remove(htfFvgStr, hi2)
-        else
-            hi2 += 1
+                hi2 += 1
+    true
+f_blkHtfFvgUpd()
 
 // (HTF FVGs are now folded into the gap SCORE — see f_fvgStrength's HTF-alignment factor —
 //  and still feed the DOL model; there is no separate HTF panel.)
@@ -2568,101 +2702,115 @@ if array.size(htfFvgTop) > 0
 // -----------------------------------------------------------------------------
 // OPENING RANGE BREAKOUT (ORB) — opening-window box + confirmed break / failed break
 // -----------------------------------------------------------------------------
-var float orbHi     = na
-var float orbLo     = na
-var int   orbStartB = na
-var bool  orbReady  = false       // window has closed -> range is frozen for the day
+type OrbState
+    float orbHi = na
+    float orbLo = na
+    int orbStartB = na
+    bool orbReady = false
+    int orbBreakDir = 0
+    bool orbFailed = false
+    int orbUpRun = 0
+    int orbDnRun = 0
+    box orbCurBox = na
+    line orbCurHiLn = na
+    line orbCurLoLn = na
+
+type OrbEv
+    bool orbBreakUpNow = false
+    bool orbBreakDnNow = false
+    bool orbFailNow = false
+
+var OrbState orbS = OrbState.new()   // persistent ORB state (object so the ORB block can run in a function)
+OrbEv orbE = OrbEv.new()              // per-bar ORB events
 var array<box>  orbBoxes = array.new<box>()
 var array<line> orbHiLns = array.new<line>()
 var array<line> orbLoLns = array.new<line>()
 var array<label> orbLbls = array.new<label>()   // break / fail markers, capped at 3 per kept day
-var int   orbBreakDir = 0         // 0 none, +1 confirmed break up, -1 confirmed break down
-var bool  orbFailed   = false     // a confirmed break later closed back inside (trap)
-var int   orbUpRun    = 0
-var int   orbDnRun    = 0
-var box   orbCurBox  = na
-var line  orbCurHiLn = na
-var line  orbCurLoLn = na
-bool orbBreakUpNow = false
-bool orbBreakDnNow = false
-bool orbFailNow    = false
 bool orbInWin  = not na(time(timeframe.period, orbSession, orbTZ))
 bool orbWinNew = orbInWin and not orbInWin[1]
-if masterOn and orbOn
-    if orbWinNew
-        orbHi := high
-        orbLo := low
-        orbStartB := bar_index
-        orbReady := false
-        orbBreakDir := 0
-        orbFailed := false
-        orbUpRun := 0
-        orbDnRun := 0
-        orbCurBox  := box.new(bar_index, orbHi, bar_index, orbLo, border_color = color.new(orbCol, 30), border_width = 1, bgcolor = color.new(orbCol, 90))
-        orbCurHiLn := line.new(bar_index, orbHi, bar_index, orbHi, color = orbCol, width = 1)
-        orbCurLoLn := line.new(bar_index, orbLo, bar_index, orbLo, color = orbCol, width = 1)
-        array.push(orbBoxes, orbCurBox)
-        array.push(orbHiLns, orbCurHiLn)
-        array.push(orbLoLns, orbCurLoLn)
-        if array.size(orbBoxes) > orbHist
-            box.delete(array.shift(orbBoxes))
-            line.delete(array.shift(orbHiLns))
-            line.delete(array.shift(orbLoLns))
-    else if orbInWin
-        orbHi := math.max(nz(orbHi, high), high)
-        orbLo := math.min(nz(orbLo, low), low)
-    else if orbInWin[1] and not orbInWin
-        orbReady := true
-    // draw / update only the current day's objects; past days stay frozen
-    if not na(orbHi) and not na(orbLo) and not na(orbCurBox)
-        int xr = orbExtend ? bar_index : (na(orbStartB) ? bar_index : orbStartB + 1)
-        box.set_lefttop(orbCurBox, nz(orbStartB, bar_index), orbHi)
-        box.set_rightbottom(orbCurBox, xr, orbLo)
-        line.set_xy1(orbCurHiLn, nz(orbStartB, bar_index), orbHi)
-        line.set_xy2(orbCurHiLn, xr, orbHi)
-        line.set_xy1(orbCurLoLn, nz(orbStartB, bar_index), orbLo)
-        line.set_xy2(orbCurLoLn, xr, orbLo)
-    // break state on CONFIRMED bars only: a close must clear the edge by orbBrkBuf ATRs for
-    // orbBrkBars consecutive closes; a later close back inside (past the buffer) = failed break.
-    if barstate.isconfirmed and orbReady and not na(orbHi) and not na(orbLo)
-        float orbBrkAbs = orbBrkBuf * math.max(nz(atr), syminfo.mintick)
-        if orbBreakDir == 0
-            orbUpRun := close > orbHi + orbBrkAbs ? orbUpRun + 1 : 0
-            orbDnRun := close < orbLo - orbBrkAbs ? orbDnRun + 1 : 0
-            if orbUpRun >= orbBrkBars
-                orbBreakDir := 1
-                orbBreakUpNow := true
-            else if orbDnRun >= orbBrkBars
-                orbBreakDir := -1
-                orbBreakDnNow := true
-        else if not orbFailed and ((orbBreakDir == 1 and close < orbHi - orbBrkAbs) or (orbBreakDir == -1 and close > orbLo + orbBrkAbs))
-            orbFailed := true
-            orbFailNow := true
-        if orbBreakUpNow
-            array.push(orbLbls, label.new(bar_index, high, "ORB ▲", style = label.style_label_down, color = color.new(themeUpSolid, 20), textcolor = color.white, size = size.tiny))
-        if orbBreakDnNow
-            array.push(orbLbls, label.new(bar_index, low, "ORB ▼", style = label.style_label_up, color = color.new(themeDnSolid, 20), textcolor = color.white, size = size.tiny))
-        if orbFailNow
-            array.push(orbLbls, label.new(bar_index, orbBreakDir == 1 ? high : low, "ORB fail", style = orbBreakDir == 1 ? label.style_label_down : label.style_label_up, color = color.new(color.orange, 20), textcolor = color.white, size = size.tiny))
-        while array.size(orbLbls) > 3 * orbHist
-            label.delete(array.shift(orbLbls))
+// (wrapped in a function to keep the main body under TradingView's size limit)
+f_blkOrb() =>
+    if masterOn and orbOn
+        if orbWinNew
+            orbS.orbHi := high
+            orbS.orbLo := low
+            orbS.orbStartB := bar_index
+            orbS.orbReady := false
+            orbS.orbBreakDir := 0
+            orbS.orbFailed := false
+            orbS.orbUpRun := 0
+            orbS.orbDnRun := 0
+            orbS.orbCurBox  := box.new(bar_index, orbS.orbHi, bar_index, orbS.orbLo, border_color = color.new(orbCol, 30), border_width = 1, bgcolor = color.new(orbCol, 90))
+            orbS.orbCurHiLn := line.new(bar_index, orbS.orbHi, bar_index, orbS.orbHi, color = orbCol, width = 1)
+            orbS.orbCurLoLn := line.new(bar_index, orbS.orbLo, bar_index, orbS.orbLo, color = orbCol, width = 1)
+            array.push(orbBoxes, orbS.orbCurBox)
+            array.push(orbHiLns, orbS.orbCurHiLn)
+            array.push(orbLoLns, orbS.orbCurLoLn)
+            if array.size(orbBoxes) > orbHist
+                box.delete(array.shift(orbBoxes))
+                line.delete(array.shift(orbHiLns))
+                line.delete(array.shift(orbLoLns))
+        else if orbInWin
+            orbS.orbHi := math.max(nz(orbS.orbHi, high), high)
+            orbS.orbLo := math.min(nz(orbS.orbLo, low), low)
+        else if orbInWin[1] and not orbInWin
+            orbS.orbReady := true
+        // draw / update only the current day's objects; past days stay frozen
+        if not na(orbS.orbHi) and not na(orbS.orbLo) and not na(orbS.orbCurBox)
+            int xr = orbExtend ? bar_index : (na(orbS.orbStartB) ? bar_index : orbS.orbStartB + 1)
+            box.set_lefttop(orbS.orbCurBox, nz(orbS.orbStartB, bar_index), orbS.orbHi)
+            box.set_rightbottom(orbS.orbCurBox, xr, orbS.orbLo)
+            line.set_xy1(orbS.orbCurHiLn, nz(orbS.orbStartB, bar_index), orbS.orbHi)
+            line.set_xy2(orbS.orbCurHiLn, xr, orbS.orbHi)
+            line.set_xy1(orbS.orbCurLoLn, nz(orbS.orbStartB, bar_index), orbS.orbLo)
+            line.set_xy2(orbS.orbCurLoLn, xr, orbS.orbLo)
+        // break state on CONFIRMED bars only: a close must clear the edge by orbBrkBuf ATRs for
+        // orbBrkBars consecutive closes; a later close back inside (past the buffer) = failed break.
+        if barstate.isconfirmed and orbS.orbReady and not na(orbS.orbHi) and not na(orbS.orbLo)
+            float orbBrkAbs = orbBrkBuf * math.max(nz(atr), syminfo.mintick)
+            if orbS.orbBreakDir == 0
+                orbS.orbUpRun := close > orbS.orbHi + orbBrkAbs ? orbS.orbUpRun + 1 : 0
+                orbS.orbDnRun := close < orbS.orbLo - orbBrkAbs ? orbS.orbDnRun + 1 : 0
+                if orbS.orbUpRun >= orbBrkBars
+                    orbS.orbBreakDir := 1
+                    orbE.orbBreakUpNow := true
+                else if orbS.orbDnRun >= orbBrkBars
+                    orbS.orbBreakDir := -1
+                    orbE.orbBreakDnNow := true
+            else if not orbS.orbFailed and ((orbS.orbBreakDir == 1 and close < orbS.orbHi - orbBrkAbs) or (orbS.orbBreakDir == -1 and close > orbS.orbLo + orbBrkAbs))
+                orbS.orbFailed := true
+                orbE.orbFailNow := true
+            if orbE.orbBreakUpNow
+                array.push(orbLbls, label.new(bar_index, high, "ORB ▲", style = label.style_label_down, color = color.new(themeUpSolid, 20), textcolor = color.white, size = size.tiny))
+            if orbE.orbBreakDnNow
+                array.push(orbLbls, label.new(bar_index, low, "ORB ▼", style = label.style_label_up, color = color.new(themeDnSolid, 20), textcolor = color.white, size = size.tiny))
+            if orbE.orbFailNow
+                array.push(orbLbls, label.new(bar_index, orbS.orbBreakDir == 1 ? high : low, "ORB fail", style = orbS.orbBreakDir == 1 ? label.style_label_down : label.style_label_up, color = color.new(color.orange, 20), textcolor = color.white, size = size.tiny))
+            while array.size(orbLbls) > 3 * orbHist
+                label.delete(array.shift(orbLbls))
+    true
+f_blkOrb()
 // wipe all ORB drawings when off
-if (not masterOn or not orbOn) and array.size(orbBoxes) + array.size(orbLbls) > 0
-    for lbx in orbLbls
-        label.delete(lbx)
-    array.clear(orbLbls)
-    for bx in orbBoxes
-        box.delete(bx)
-    for l in orbHiLns
-        line.delete(l)
-    for l in orbLoLns
-        line.delete(l)
-    array.clear(orbBoxes)
-    array.clear(orbHiLns)
-    array.clear(orbLoLns)
-    orbCurBox := na
-    orbCurHiLn := na
-    orbCurLoLn := na
+// (wrapped in a function to keep the main body under TradingView's size limit)
+f_blkOrbWipe() =>
+    if (not masterOn or not orbOn) and array.size(orbBoxes) + array.size(orbLbls) > 0
+        for lbx in orbLbls
+            label.delete(lbx)
+        array.clear(orbLbls)
+        for bx in orbBoxes
+            box.delete(bx)
+        for l in orbHiLns
+            line.delete(l)
+        for l in orbLoLns
+            line.delete(l)
+        array.clear(orbBoxes)
+        array.clear(orbHiLns)
+        array.clear(orbLoLns)
+        orbS.orbCurBox := na
+        orbS.orbCurHiLn := na
+        orbS.orbCurLoLn := na
+    true
+f_blkOrbWipe()
 
 // =============================================================================
 // ⑬ AL BROOKS MICROTRENDLINE PRICE ACTION MODULE  (toggle: "Enable module")
@@ -2734,53 +2882,8 @@ var array<float> mtCQ = array.new<float>()
 var array<float> mtCS = array.new<float>()
 var array<float> mtC3 = array.new<float>()
 
-var int   mtLastHBar = -1000
-var int   mtLastHDir = 0
-var int   mtLastHCnt = 0
 // H / L sequence state
-var float hbRef = na
-var bool  hbPb = false
-var int   hbCnt = 0
-var bool  hbLeg = false
-var float hbLow = na
-var int   hbBars = 0
-var float lbRef = na
-var bool  lbPb = false
-var int   lbCnt = 0
-var bool  lbLeg = false
-var float lbHigh = na
-var int   lbBars = 0
-// setup / trade state: stSt 0 idle · 1 pending · 2 open · 3 finished
-var int    stSt = 0
-var int    stDir = 0
-var int    stType = 0
-var float  stScore = 0.0
-var float  stEntry = na
-var float  stStop = na
-var float  stT1 = na
-var float  stT2 = na
-var float  stT3 = na
-var float  stRisk = na
-var float  stFill = na
-var float  stSq = 0.0
-var int    stSigBar = 0
-var int    stEntryBar = 0
-var bool   stT1Hit = false
-var bool   stT2Hit = false
-var bool   stResolved = false
-var int    stCond = 2
-var int    stTod = 4
-var string stRes = ""
-var line   stLnE = na
-var line   stLnS = na
-var line   stLnT1 = na
-var line   stLnT2 = na
-var line   stLnT3 = na
-var label  stLbE = na
-var label  stLbS = na
-var label  stLbT1 = na
-var label  stLbT2 = na
-var label  stLbT3 = na
+// setup / trade state: mtS.stSt 0 idle · 1 pending · 2 open · 3 finished
 var int    mtMcBull = 0
 var int    mtMcBear = 0
 
@@ -2859,28 +2962,7 @@ int mtHhmm = hour(time, "America/New_York") * 100 + minute(time, "America/New_Yo
 int mtTodIdx = (mtHhmm >= 930 and mtHhmm < 1030) ? 0 : (mtHhmm >= 1030 and mtHhmm < 1200) ? 1 : (mtHhmm >= 1200 and mtHhmm < 1400) ? 2 : (mtHhmm >= 1400 and mtHhmm < 1600) ? 3 : 4
 
 // ---- per-bar event flags (reset every execution; set only on confirmed bars) ----
-bool mtEvNewBull = false
-bool mtEvNewBear = false
-bool mtEvBrkBull = false
-bool mtEvBrkBear = false
-bool mtEvFboBull = false
-bool mtEvFboBear = false
-bool mtEvH1 = false
-bool mtEvH2 = false
-bool mtEvL1 = false
-bool mtEvL2 = false
-bool mtEvContL = false
-bool mtEvContS = false
-bool mtEvRevL = false
-bool mtEvRevS = false
-bool mtEvH2L = false
-bool mtEvL2S = false
-bool mtEvEntry = false
-bool mtEvStop = false
-bool mtEvT1 = false
-bool mtEvT2 = false
-bool mtEvSetupL = false
-bool mtEvSetupS = false
+MtEv mtE = MtEv.new()
 
 // =============================================================================
 // HELPERS
@@ -3194,13 +3276,13 @@ f_mtEval(int typ, int d, float fboF, float tlQ, float stopStruct, float tgt3Ovr)
     float f4 = d > 0 ? mtSqBull : mtSqBear
     float f5 = 0.5
     if typ == 0
-        f5 := mtCond == 1 ? 1.0 : (mtCond == 3 ? 0.75 : 0.3)
+        f5 := mtS.cond == 1 ? 1.0 : (mtS.cond == 3 ? 0.75 : 0.3)
     else if typ == 1
-        f5 := mtCond == 1 ? 1.0 : (mtCond == 3 ? 0.7 : 0.25)
+        f5 := mtS.cond == 1 ? 1.0 : (mtS.cond == 3 ? 0.7 : 0.25)
     else if typ == 2
-        f5 := mtCond == 3 ? 1.0 : (mtCond == 2 ? 0.6 : 0.35)
+        f5 := mtS.cond == 3 ? 1.0 : (mtS.cond == 2 ? 0.6 : 0.35)
     else
-        f5 := mtCond == 1 ? 1.0 : (mtCond == 3 ? 0.6 : 0.3)
+        f5 := mtS.cond == 1 ? 1.0 : (mtS.cond == 3 ? 0.6 : 0.3)
     float f6 = 0.5
     if mtVwapOn and not na(vwapVal) and atr > 0
         float vd = d * (close - vwapVal) / atr
@@ -3213,8 +3295,8 @@ f_mtEval(int typ, int d, float fboF, float tlQ, float stopStruct, float tgt3Ovr)
         else
             f6 := 0.3
     float f7 = 0.0
-    if bar_index - mtLastHBar <= 3 and mtLastHDir == d
-        f7 := mtLastHCnt == 2 ? 1.0 : 0.6
+    if bar_index - mtS.mtLastHBar <= 3 and mtS.mtLastHDir == d
+        f7 := mtS.mtLastHCnt == 2 ? 1.0 : 0.6
     if typ == 3
         f7 := 1.0
     float f8 = math.min(1.0, roomR / 2.0)
@@ -3291,600 +3373,613 @@ f_mtLvl(float px, string txt, color col, int bi, bool dashed) =>
 f_mtMsg(string ev, int ty, int d, float sc) =>
     ev + " | " + syminfo.ticker + " " + timeframe.period + (ty >= 0 ? " | " + f_mtTypeName(ty) + " " + (d > 0 ? "LONG" : "SHORT") + " | score " + str.tostring(sc, "#") : "")
 
-if mtOn and barstate.isconfirmed and not na(atr) and bar_index > 30
-    int bi = bar_index
-    float tick = syminfo.mintick
-    color colLong = color.new(#00c853, 0)
-    color colShort = color.new(#ff1744, 0)
+// (wrapped in a function to keep the main body under TradingView's size limit)
+f_blkMtEngine() =>
+    if mtOn and barstate.isconfirmed and not na(atr) and bar_index > 30
+        int bi = bar_index
+        float tick = syminfo.mintick
+        color colLong = color.new(#00c853, 0)
+        color colShort = color.new(#ff1744, 0)
 
-    // ---- 1) pivots ----
-    if mtNewPL
-        array.push(mtPLpx, mtPLv)
-        array.push(mtPLbr, bi - mtPivR)
-        if array.size(mtPLpx) > 6
-            array.shift(mtPLpx)
-            array.shift(mtPLbr)
-    if mtNewPH
-        array.push(mtPHpx, mtPHv)
-        array.push(mtPHbr, bi - mtPivR)
-        if array.size(mtPHpx) > 6
-            array.shift(mtPHpx)
-            array.shift(mtPHbr)
+        // ---- 1) pivots ----
+        if mtNewPL
+            array.push(mtPLpx, mtPLv)
+            array.push(mtPLbr, bi - mtPivR)
+            if array.size(mtPLpx) > 6
+                array.shift(mtPLpx)
+                array.shift(mtPLbr)
+        if mtNewPH
+            array.push(mtPHpx, mtPHv)
+            array.push(mtPHbr, bi - mtPivR)
+            if array.size(mtPHpx) > 6
+                array.shift(mtPHpx)
+                array.shift(mtPHbr)
 
-    // ---- 2) trendline engines ----
-    f_mtStep(mtBull, mtBullBrk, 1, mtPLpx, mtPLbr, mtNewPL, mtMcBull)
-    f_mtStep(mtBear, mtBearBrk, -1, mtPHpx, mtPHbr, mtNewPH, mtMcBear)
-    f_mtPost(mtBullBrk, 1)
-    f_mtPost(mtBearBrk, -1)
-    f_mtDraw(mtBull)
-    f_mtDraw(mtBear)
-    if mtBull.evNew
-        mtEvNewBull := true
-    if mtBear.evNew
-        mtEvNewBear := true
-    if mtBull.evBreak
-        mtEvBrkBull := true
-    if mtBear.evBreak
-        mtEvBrkBear := true
-    if mtBull.evFail
-        mtEvFboBull := true
-    if mtBear.evFail
-        mtEvFboBear := true
-    if mtBull.evGenuine or mtBear.evGenuine
-        mtLastGenBar := bi
-        mtCond := f_mtCondCalc(mtLastGenBar)   // same-bar TRANSITION after a genuine break
+        // ---- 2) trendline engines ----
+        f_mtStep(mtBull, mtBullBrk, 1, mtPLpx, mtPLbr, mtNewPL, mtMcBull)
+        f_mtStep(mtBear, mtBearBrk, -1, mtPHpx, mtPHbr, mtNewPH, mtMcBear)
+        f_mtPost(mtBullBrk, 1)
+        f_mtPost(mtBearBrk, -1)
+        f_mtDraw(mtBull)
+        f_mtDraw(mtBear)
+        if mtBull.evNew
+            mtE.mtEvNewBull := true
+        if mtBear.evNew
+            mtE.mtEvNewBear := true
+        if mtBull.evBreak
+            mtE.mtEvBrkBull := true
+        if mtBear.evBreak
+            mtE.mtEvBrkBear := true
+        if mtBull.evFail
+            mtE.mtEvFboBull := true
+        if mtBear.evFail
+            mtE.mtEvFboBear := true
+        if mtBull.evGenuine or mtBear.evGenuine
+            mtS.mtLastGenBar := bi
+            mtS.cond := f_mtCondCalc(mtS.mtLastGenBar)   // same-bar TRANSITION after a genuine break
 
-    // ---- 4) High 1/2 · Low 1/2 sequences (directional context required) ----
-    bool ctxBull = mtD1 >= 0 and (mtD1 == 1 or mtD5 == 1) and mtD15 != -1
-    bool ctxBear = mtD1 <= 0 and (mtD1 == -1 or mtD5 == -1) and mtD15 != 1
-    int hAtt = 0
-    int lAtt = 0
-    float hPbLow = na
-    float lPbHigh = na
-    if not ctxBull
-        hbPb := false
-        hbCnt := 0
-        hbRef := high
-    else
-        if not hbPb
-            hbRef := na(hbRef) ? high : math.max(hbRef, high)
-            if high < high[1]
-                hbPb := true
-                hbCnt := 0
-                hbLeg := true
-                hbLow := low
-                hbBars := 1
+        // ---- 4) High 1/2 · Low 1/2 sequences (directional context required) ----
+        bool ctxBull = mtD1 >= 0 and (mtD1 == 1 or mtD5 == 1) and mtD15 != -1
+        bool ctxBear = mtD1 <= 0 and (mtD1 == -1 or mtD5 == -1) and mtD15 != 1
+        int hAtt = 0
+        int lAtt = 0
+        float hPbLow = na
+        float lPbHigh = na
+        if not ctxBull
+            mtS.hbPb := false
+            mtS.hbCnt := 0
+            mtS.hbRef := high
         else
-            hbBars += 1
-            hbLow := math.min(hbLow, low)
-            if low < low[1]
-                hbLeg := true
-            if high > hbRef
-                hbPb := false
-                hbCnt := 0
-                hbRef := high
-            else if high > high[1] and hbLeg
-                hbCnt += 1
-                hbLeg := false
-                hPbLow := hbLow
-                if hbCnt <= 2
-                    hAtt := hbCnt
-            if hbPb and (hbBars > mtPbMax or (hbRef - hbLow) > mtPbDepth * atr)
-                hbPb := false
-                hbCnt := 0
-                hbRef := high
-    if not ctxBear
-        lbPb := false
-        lbCnt := 0
-        lbRef := low
-    else
-        if not lbPb
-            lbRef := na(lbRef) ? low : math.min(lbRef, low)
-            if low > low[1]
-                lbPb := true
-                lbCnt := 0
-                lbLeg := true
-                lbHigh := high
-                lbBars := 1
-        else
-            lbBars += 1
-            lbHigh := math.max(lbHigh, high)
-            if high > high[1]
-                lbLeg := true
-            if low < lbRef
-                lbPb := false
-                lbCnt := 0
-                lbRef := low
-            else if low < low[1] and lbLeg
-                lbCnt += 1
-                lbLeg := false
-                lPbHigh := lbHigh
-                if lbCnt <= 2
-                    lAtt := lbCnt
-            if lbPb and (lbBars > mtPbMax or (lbHigh - lbRef) > mtPbDepth * atr)
-                lbPb := false
-                lbCnt := 0
-                lbRef := low
-    if hAtt == 1
-        mtEvH1 := true
-    if hAtt == 2
-        mtEvH2 := true
-    if lAtt == 1
-        mtEvL1 := true
-    if lAtt == 2
-        mtEvL2 := true
-    if hAtt > 0
-        mtLastHBar := bi
-        mtLastHDir := 1
-        mtLastHCnt := hAtt
-    if lAtt > 0
-        mtLastHBar := bi
-        mtLastHDir := -1
-        mtLastHCnt := lAtt
-
-    // ---- 5) manage the pending / open setup ----
-    bool ended = false
-    string endTxt = ""
-    bool inRng = not mtStatsRng or (time >= mtStatsFrom and time <= mtStatsTo)
-    if stSt == 1 and bi > stSigBar
-        bool lg = stDir > 0
-        bool trig = lg ? high >= stEntry : low <= stEntry
-        bool stopT = lg ? low <= stStop : high >= stStop
-        if trig
-            stFill := lg ? math.max(open, stEntry) : math.min(open, stEntry)
-            stEntryBar := bi
-            stSt := 2
-            mtEvEntry := true
-            if mtShowSig
-                f_mtSigLabel("ENTRY", bi, stFill, color.new(color.gray, 20), "left")
-            if not na(stLnE)
-                line.set_style(stLnE, line.style_solid)
-            if stopT
-                float rr = stRisk > 0 ? stDir * (stStop - stFill) / stRisk : -1.0
-                if inRng
-                    f_mtRec(rr, stType, stCond, stTod, stScore)
-                stResolved := true
-                mtEvStop := true
-                ended := true
-                endTxt := "STOPPED (same bar as entry)"
-        else if stopT
-            ended := true
-            endTxt := "INVALIDATED before entry"
-        else if bi - stSigBar >= mtPendBars
-            ended := true
-            endTxt := "EXPIRED (not triggered)"
-    else if stSt == 2 and bi > stEntryBar
-        bool lg2 = stDir > 0
-        bool stopH = lg2 ? low <= stStop : high >= stStop
-        bool t1Reach = lg2 ? high >= stT1 : low <= stT1
-        bool t2Reach = lg2 ? high >= stT2 : low <= stT2
-        if stopH
-            float rl = stRisk > 0 ? stDir * (stStop - stFill) / stRisk : -1.0
-            if not stResolved and inRng
-                f_mtRec(rl, stType, stCond, stTod, stScore)
-            stResolved := true
-            mtEvStop := true
-            ended := true
-            endTxt := "STOP HIT"
-        else
-            if t1Reach and not stT1Hit
-                stT1Hit := true
-                mtEvT1 := true
-                if not stResolved and mtStatsTgt == "Target 1"
-                    if inRng
-                        f_mtRec(stRisk > 0 ? stDir * (stT1 - stFill) / stRisk : mtT1R, stType, stCond, stTod, stScore)
-                    stResolved := true
-                if mtShowSig
-                    f_mtSigLabel("T1", bi, stT1, color.new(#00897b, 10), "left")
-            if t2Reach
-                stT2Hit := true
-                mtEvT2 := true
-                if not stResolved
-                    if inRng
-                        f_mtRec(stRisk > 0 ? stDir * (stT2 - stFill) / stRisk : mtT2R, stType, stCond, stTod, stScore)
-                    stResolved := true
-                if mtShowSig
-                    f_mtSigLabel("T2", bi, stT2, color.new(#00695c, 0), "left")
-                ended := true
-                endTxt := "TARGET 2 REACHED"
-            else if bi - stEntryBar >= mtMaxHold
-                float rt = stRisk > 0 ? stDir * (close - stFill) / stRisk : 0.0
-                if not stResolved and inRng
-                    f_mtRec(rt, stType, stCond, stTod, stScore)
-                stResolved := true
-                ended := true
-                endTxt := "TIME-OUT"
-    if ended
-        if mtEvStop and mtShowSig
-            f_mtSigLabel("STOP", bi, stStop, color.new(#b71c1c, 10), "left")
-        stSt := 3
-        stRes := endTxt
-        if not na(stLnE)
-            line.set_x2(stLnE, bi)
-            line.set_x2(stLnS, bi)
-            line.set_x2(stLnT1, bi)
-            line.set_x2(stLnT2, bi)
-            label.set_x(stLbE, bi)
-            label.set_x(stLbS, bi)
-            label.set_x(stLbT1, bi)
-            label.set_x(stLbT2, bi)
-            f_mtKeepObj(stLnE, stLbE)
-            f_mtKeepObj(stLnS, stLbS)
-            f_mtKeepObj(stLnT1, stLbT1)
-            f_mtKeepObj(stLnT2, stLbT2)
-            if not na(stLnT3)
-                line.set_x2(stLnT3, bi)
-                label.set_x(stLbT3, bi)
-                f_mtKeepObj(stLnT3, stLbT3)
-            stLnE := na
-            stLnS := na
-            stLnT1 := na
-            stLnT2 := na
-            stLnT3 := na
-            stLbE := na
-            stLbS := na
-            stLbT1 := na
-            stLbT2 := na
-            stLbT3 := na
-    else if (stSt == 1 or stSt == 2) and not na(stLnE)
-        line.set_x2(stLnE, bi + 1)
-        line.set_x2(stLnS, bi + 1)
-        line.set_x2(stLnT1, bi + 1)
-        line.set_x2(stLnT2, bi + 1)
-        label.set_x(stLbE, bi + 1)
-        label.set_x(stLbS, bi + 1)
-        label.set_x(stLbT1, bi + 1)
-        label.set_x(stLbT2, bi + 1)
-        if not na(stLnT3)
-            line.set_x2(stLnT3, bi + 1)
-            label.set_x(stLbT3, bi + 1)
-
-    // ---- 6) look for a NEW setup (only when idle: one setup at a time, no duplicates) ----
-    if stSt == 0 or stSt == 3
-        array.clear(mtCT)
-        array.clear(mtCD)
-        array.clear(mtCF)
-        array.clear(mtCQ)
-        array.clear(mtCS)
-        array.clear(mtC3)
-        for si = 0 to 1
-            int s = si == 0 ? 1 : -1
-            MtTL tl = si == 0 ? mtBull : mtBear
-            MtTL bk = si == 0 ? mtBullBrk : mtBearBrk
-            bool sbOkS = s > 0 ? mtSbBullOk : mtSbBearOk
-            bool sbOkOpp = s > 0 ? mtSbBearOk : mtSbBullOk
-            // ---- A: failed microtrendline breakout ----
-            if mtSetA and tl.state == 4 and f_mtValid(tl) and sbOkS and s * (close - f_mtVal(tl, bi)) > 0 and (tl.isMC or mtD1 == s or mtD5 == s)
-                float speed = 1.0 - 0.5 * float(tl.failBar - tl.brkBar) / float(math.max(1, mtFailBars))
-                float depthF = 1.0 - math.min(1.0, tl.brkPen / 0.75)
-                f_mtAddCand(0, s, 0.6 * speed + 0.4 * depthF, tl.quality, tl.brkExt, na)
-            // ---- B: break + pullback continuation ----
-            if mtSetB and bk.state == 3 and bk.structOK and sbOkS and bi - bk.brkBar >= 2 and not (mtD15 == -s and mtD5 == -s)
-                float legH = math.max(math.abs(bk.peak - bk.y1), tick)
-                float retr = math.abs(bk.peak - bk.brkExt) / legH
-                if retr <= mtMaxRetr
-                    float extS = s > 0 ? low : high
-                    int nSup = 0
-                    if math.abs(extS - mtEma20) <= mtSupTol * atr
-                        nSup += 1
-                    if not na(vwapVal) and math.abs(extS - vwapVal) <= mtSupTol * atr
-                        nSup += 1
-                    array<float> sidePx = s > 0 ? mtPLpx : mtPHpx
-                    if array.size(sidePx) > 0 and math.abs(extS - array.get(sidePx, array.size(sidePx) - 1)) <= mtSupTol * atr
-                        nSup += 1
-                    if math.abs(extS - bk.structLvl) <= mtSupTol * atr
-                        nSup += 1
-                    if nSup >= 1
-                        f_mtAddCand(1, s, 0.4 + 0.3 * (1.0 - retr / mtMaxRetr) + 0.3 * math.min(1.0, nSup / 2.0), bk.quality, bk.brkExt, na)
-            // ---- C: failed-breakout reversal (broken line of trend s, signal in the opposite direction) ----
-            if mtSetC and bk.state == 3 and bk.retested and bi - bk.retestBar <= 3 and sbOkOpp
-                bool extended = math.abs(bk.peak - bk.y1) >= mtExtATR * atr or bk.touches >= 3
-                bool noOver = s * (bk.retestExt - bk.peak) <= mtRetestOver * atr
-                float sqOpp = s > 0 ? mtSqBear : mtSqBull
-                if extended and noOver and sqOpp >= mtRevSbMin
-                    int conf = 0
-                    if s * (bk.retestExt - bk.peak) <= 0.1 * atr
-                        conf += 1
-                    if sqOpp >= 0.75
-                        conf += 1
-                    int against = 0
-                    for j = 0 to 2
-                        if (s > 0 ? close[j] < open[j] : close[j] > open[j])
-                            against += 1
-                    if against >= 2
-                        conf += 1
-                    float wk = s > 0 ? math.max(mtUW, nz(mtUW[1]), nz(mtUW[2])) : math.max(mtLW, nz(mtLW[1]), nz(mtLW[2]))
-                    if wk >= 0.35
-                        conf += 1
-                    if not bk.closeOver and bi - bk.brkBar >= 3
-                        conf += 1
-                    if conf >= mtRevConf
-                        f_mtAddCand(2, -s, conf / 5.0, bk.quality, bk.retestExt, bk.y1)
-        // ---- D: High 2 / Low 2 second entry with trend context ----
-        if mtSetD and hAtt == 2 and mtSbBullOk
-            f_mtAddCand(3, 1, 0.5, mtBull.state == 1 or mtBull.state == 4 ? mtBull.quality : 0.4, hPbLow, na)
-        if mtSetD and lAtt == 2 and mtSbBearOk
-            f_mtAddCand(3, -1, 0.5, mtBear.state == 1 or mtBear.state == 4 ? mtBear.quality : 0.4, lPbHigh, na)
-        // ---- evaluate every candidate, keep the best ----
-        float bSc = -1.0
-        int bIdx = -1
-        float bEn = na
-        float bSp = na
-        float bRk = na
-        float bT1 = na
-        float bT2 = na
-        float bT3 = na
-        bool bOk = false
-        int nc = array.size(mtCT)
-        if nc > 0
-            for c = 0 to nc - 1
-                [sc, en, sp, rk, t1v, t2v, t3v, okv, rm] = f_mtEval(array.get(mtCT, c), array.get(mtCD, c), array.get(mtCF, c), array.get(mtCQ, c), array.get(mtCS, c), array.get(mtC3, c))
-                if okv and sc > bSc
-                    bSc := sc
-                    bIdx := c
-                    bEn := en
-                    bSp := sp
-                    bRk := rk
-                    bT1 := t1v
-                    bT2 := t2v
-                    bT3 := t3v
-                    bOk := true
-                    for q = 0 to 7
-                        array.set(mtFacBest, q, array.get(mtFacTmp, q))
-        if bOk and bSc >= mtMinScore
-            int bTy = array.get(mtCT, bIdx)
-            int bD = array.get(mtCD, bIdx)
-            stSt := 1
-            stDir := bD
-            stType := bTy
-            stScore := bSc
-            stEntry := bEn
-            stStop := bSp
-            stRisk := bRk
-            stT1 := bT1
-            stT2 := bT2
-            stT3 := bT3
-            stSigBar := bi
-            stT1Hit := false
-            stT2Hit := false
-            stResolved := false
-            stFill := na
-            stCond := mtCond
-            stTod := mtTodIdx
-            stSq := bD > 0 ? mtSqBull : mtSqBear
-            stRes := "PENDING ENTRY"
-            for q = 0 to 7
-                array.set(mtFac, q, array.get(mtFacBest, q))
-            // consume the source pattern so it cannot signal twice
-            if bTy == 0
-                if bD > 0
-                    mtBull.state := 1
-                else
-                    mtBear.state := 1
-            else if bTy == 1
-                if bD > 0
-                    mtBullBrk.state := 0
-                else
-                    mtBearBrk.state := 0
-            else if bTy == 2
-                if bD > 0
-                    mtBearBrk.state := 0
-                else
-                    mtBullBrk.state := 0
-            if bD > 0
-                mtEvSetupL := true
+            if not mtS.hbPb
+                mtS.hbRef := na(mtS.hbRef) ? high : math.max(mtS.hbRef, high)
+                if high < high[1]
+                    mtS.hbPb := true
+                    mtS.hbCnt := 0
+                    mtS.hbLeg := true
+                    mtS.hbLow := low
+                    mtS.hbBars := 1
             else
-                mtEvSetupS := true
-            if bTy <= 1
-                if bD > 0
-                    mtEvContL := true
-                else
-                    mtEvContS := true
-            else if bTy == 2
-                if bD > 0
-                    mtEvRevL := true
-                else
-                    mtEvRevS := true
+                mtS.hbBars += 1
+                mtS.hbLow := math.min(mtS.hbLow, low)
+                if low < low[1]
+                    mtS.hbLeg := true
+                if high > mtS.hbRef
+                    mtS.hbPb := false
+                    mtS.hbCnt := 0
+                    mtS.hbRef := high
+                else if high > high[1] and mtS.hbLeg
+                    mtS.hbCnt += 1
+                    mtS.hbLeg := false
+                    hPbLow := mtS.hbLow
+                    if mtS.hbCnt <= 2
+                        hAtt := mtS.hbCnt
+                if mtS.hbPb and (mtS.hbBars > mtPbMax or (mtS.hbRef - mtS.hbLow) > mtPbDepth * atr)
+                    mtS.hbPb := false
+                    mtS.hbCnt := 0
+                    mtS.hbRef := high
+        if not ctxBear
+            mtS.lbPb := false
+            mtS.lbCnt := 0
+            mtS.lbRef := low
+        else
+            if not mtS.lbPb
+                mtS.lbRef := na(mtS.lbRef) ? low : math.min(mtS.lbRef, low)
+                if low > low[1]
+                    mtS.lbPb := true
+                    mtS.lbCnt := 0
+                    mtS.lbLeg := true
+                    mtS.lbHigh := high
+                    mtS.lbBars := 1
             else
-                if bD > 0
-                    mtEvH2L := true
-                else
-                    mtEvL2S := true
-            if mtShowSig
-                f_mtSigLabel((bD > 0 ? "LONG " : "SHORT ") + f_mtCls(bSc) + " " + str.tostring(bSc, "#") + "\n" + f_mtTypeName(bTy) + " · pending", bi, bD > 0 ? low : high, bD > 0 ? colLong : colShort, bD > 0 ? "up" : "down")
-            if mtShowLvls
-                [l1, b1] = f_mtLvl(stEntry, "ENTRY", color.new(color.white, 0), bi, true)
-                [l2, b2] = f_mtLvl(stStop, "STOP", colShort, bi, false)
-                [l3, b3] = f_mtLvl(stT1, "T1 " + str.tostring(mtT1R, "#.##") + "R", colLong, bi, false)
-                [l4, b4] = f_mtLvl(stT2, "T2", colLong, bi, false)
-                stLnE := l1
-                stLbE := b1
-                stLnS := l2
-                stLbS := b2
-                stLnT1 := l3
-                stLbT1 := b3
-                stLnT2 := l4
-                stLbT2 := b4
-                if mtShowT3
-                    [l5, b5] = f_mtLvl(stT3, "T3", color.new(colLong, 40), bi, true)
-                    stLnT3 := l5
-                    stLbT3 := b5
+                mtS.lbBars += 1
+                mtS.lbHigh := math.max(mtS.lbHigh, high)
+                if high > high[1]
+                    mtS.lbLeg := true
+                if low < mtS.lbRef
+                    mtS.lbPb := false
+                    mtS.lbCnt := 0
+                    mtS.lbRef := low
+                else if low < low[1] and mtS.lbLeg
+                    mtS.lbCnt += 1
+                    mtS.lbLeg := false
+                    lPbHigh := mtS.lbHigh
+                    if mtS.lbCnt <= 2
+                        lAtt := mtS.lbCnt
+                if mtS.lbPb and (mtS.lbBars > mtPbMax or (mtS.lbHigh - mtS.lbRef) > mtPbDepth * atr)
+                    mtS.lbPb := false
+                    mtS.lbCnt := 0
+                    mtS.lbRef := low
+        if hAtt == 1
+            mtE.mtEvH1 := true
+        if hAtt == 2
+            mtE.mtEvH2 := true
+        if lAtt == 1
+            mtE.mtEvL1 := true
+        if lAtt == 2
+            mtE.mtEvL2 := true
+        if hAtt > 0
+            mtS.mtLastHBar := bi
+            mtS.mtLastHDir := 1
+            mtS.mtLastHCnt := hAtt
+        if lAtt > 0
+            mtS.mtLastHBar := bi
+            mtS.mtLastHDir := -1
+            mtS.mtLastHCnt := lAtt
 
-    // ---- 7) detailed alerts (once per confirmed bar) ----
-    if mtAlertFn
-        if mtEvNewBull
-            alert(f_mtMsg("Bullish microtrendline detected", -1, 0, 0), alert.freq_once_per_bar_close)
-        if mtEvNewBear
-            alert(f_mtMsg("Bearish microtrendline detected", -1, 0, 0), alert.freq_once_per_bar_close)
-        if mtEvBrkBull
-            alert(f_mtMsg("Bullish microtrendline BREAK (support line penetrated)", -1, 0, 0), alert.freq_once_per_bar_close)
-        if mtEvBrkBear
-            alert(f_mtMsg("Bearish microtrendline BREAK (resistance line penetrated)", -1, 0, 0), alert.freq_once_per_bar_close)
-        if mtEvFboBull
-            alert(f_mtMsg("Bullish FAILED breakout", -1, 0, 0), alert.freq_once_per_bar_close)
-        if mtEvFboBear
-            alert(f_mtMsg("Bearish FAILED breakout", -1, 0, 0), alert.freq_once_per_bar_close)
-        if mtEvSetupL or mtEvSetupS
-            alert(f_mtMsg("SETUP " + f_mtCls(stScore), stType, stDir, stScore), alert.freq_once_per_bar_close)
-        if mtEvEntry
-            alert(f_mtMsg("ENTRY TRIGGERED", stType, stDir, stScore), alert.freq_once_per_bar_close)
-        if mtEvStop
-            alert(f_mtMsg("STOP LOSS reached", stType, stDir, stScore), alert.freq_once_per_bar_close)
-        if mtEvT1
-            alert(f_mtMsg("TARGET 1 reached", stType, stDir, stScore), alert.freq_once_per_bar_close)
-        if mtEvT2
-            alert(f_mtMsg("TARGET 2 reached", stType, stDir, stScore), alert.freq_once_per_bar_close)
+        // ---- 5) manage the pending / open setup ----
+        bool ended = false
+        string endTxt = ""
+        bool inRng = not mtStatsRng or (time >= mtStatsFrom and time <= mtStatsTo)
+        if mtS.stSt == 1 and bi > mtS.stSigBar
+            bool lg = mtS.stDir > 0
+            bool trig = lg ? high >= mtS.stEntry : low <= mtS.stEntry
+            bool stopT = lg ? low <= mtS.stStop : high >= mtS.stStop
+            if trig
+                mtS.stFill := lg ? math.max(open, mtS.stEntry) : math.min(open, mtS.stEntry)
+                mtS.stEntryBar := bi
+                mtS.stSt := 2
+                mtE.mtEvEntry := true
+                if mtShowSig
+                    f_mtSigLabel("ENTRY", bi, mtS.stFill, color.new(color.gray, 20), "left")
+                if not na(mtS.stLnE)
+                    line.set_style(mtS.stLnE, line.style_solid)
+                if stopT
+                    float rr = mtS.stRisk > 0 ? mtS.stDir * (mtS.stStop - mtS.stFill) / mtS.stRisk : -1.0
+                    if inRng
+                        f_mtRec(rr, mtS.stType, mtS.stCond, mtS.stTod, mtS.stScore)
+                    mtS.stResolved := true
+                    mtE.mtEvStop := true
+                    ended := true
+                    endTxt := "STOPPED (same bar as entry)"
+            else if stopT
+                ended := true
+                endTxt := "INVALIDATED before entry"
+            else if bi - mtS.stSigBar >= mtPendBars
+                ended := true
+                endTxt := "EXPIRED (not triggered)"
+        else if mtS.stSt == 2 and bi > mtS.stEntryBar
+            bool lg2 = mtS.stDir > 0
+            bool stopH = lg2 ? low <= mtS.stStop : high >= mtS.stStop
+            bool t1Reach = lg2 ? high >= mtS.stT1 : low <= mtS.stT1
+            bool t2Reach = lg2 ? high >= mtS.stT2 : low <= mtS.stT2
+            if stopH
+                float rl = mtS.stRisk > 0 ? mtS.stDir * (mtS.stStop - mtS.stFill) / mtS.stRisk : -1.0
+                if not mtS.stResolved and inRng
+                    f_mtRec(rl, mtS.stType, mtS.stCond, mtS.stTod, mtS.stScore)
+                mtS.stResolved := true
+                mtE.mtEvStop := true
+                ended := true
+                endTxt := "STOP HIT"
+            else
+                if t1Reach and not mtS.stT1Hit
+                    mtS.stT1Hit := true
+                    mtE.mtEvT1 := true
+                    if not mtS.stResolved and mtStatsTgt == "Target 1"
+                        if inRng
+                            f_mtRec(mtS.stRisk > 0 ? mtS.stDir * (mtS.stT1 - mtS.stFill) / mtS.stRisk : mtT1R, mtS.stType, mtS.stCond, mtS.stTod, mtS.stScore)
+                        mtS.stResolved := true
+                    if mtShowSig
+                        f_mtSigLabel("T1", bi, mtS.stT1, color.new(#00897b, 10), "left")
+                if t2Reach
+                    mtS.stT2Hit := true
+                    mtE.mtEvT2 := true
+                    if not mtS.stResolved
+                        if inRng
+                            f_mtRec(mtS.stRisk > 0 ? mtS.stDir * (mtS.stT2 - mtS.stFill) / mtS.stRisk : mtT2R, mtS.stType, mtS.stCond, mtS.stTod, mtS.stScore)
+                        mtS.stResolved := true
+                    if mtShowSig
+                        f_mtSigLabel("T2", bi, mtS.stT2, color.new(#00695c, 0), "left")
+                    ended := true
+                    endTxt := "TARGET 2 REACHED"
+                else if bi - mtS.stEntryBar >= mtMaxHold
+                    float rt = mtS.stRisk > 0 ? mtS.stDir * (close - mtS.stFill) / mtS.stRisk : 0.0
+                    if not mtS.stResolved and inRng
+                        f_mtRec(rt, mtS.stType, mtS.stCond, mtS.stTod, mtS.stScore)
+                    mtS.stResolved := true
+                    ended := true
+                    endTxt := "TIME-OUT"
+        if ended
+            if mtE.mtEvStop and mtShowSig
+                f_mtSigLabel("STOP", bi, mtS.stStop, color.new(#b71c1c, 10), "left")
+            mtS.stSt := 3
+            mtS.stRes := endTxt
+            if not na(mtS.stLnE)
+                line.set_x2(mtS.stLnE, bi)
+                line.set_x2(mtS.stLnS, bi)
+                line.set_x2(mtS.stLnT1, bi)
+                line.set_x2(mtS.stLnT2, bi)
+                label.set_x(mtS.stLbE, bi)
+                label.set_x(mtS.stLbS, bi)
+                label.set_x(mtS.stLbT1, bi)
+                label.set_x(mtS.stLbT2, bi)
+                f_mtKeepObj(mtS.stLnE, mtS.stLbE)
+                f_mtKeepObj(mtS.stLnS, mtS.stLbS)
+                f_mtKeepObj(mtS.stLnT1, mtS.stLbT1)
+                f_mtKeepObj(mtS.stLnT2, mtS.stLbT2)
+                if not na(mtS.stLnT3)
+                    line.set_x2(mtS.stLnT3, bi)
+                    label.set_x(mtS.stLbT3, bi)
+                    f_mtKeepObj(mtS.stLnT3, mtS.stLbT3)
+                mtS.stLnE := na
+                mtS.stLnS := na
+                mtS.stLnT1 := na
+                mtS.stLnT2 := na
+                mtS.stLnT3 := na
+                mtS.stLbE := na
+                mtS.stLbS := na
+                mtS.stLbT1 := na
+                mtS.stLbT2 := na
+                mtS.stLbT3 := na
+        else if (mtS.stSt == 1 or mtS.stSt == 2) and not na(mtS.stLnE)
+            line.set_x2(mtS.stLnE, bi + 1)
+            line.set_x2(mtS.stLnS, bi + 1)
+            line.set_x2(mtS.stLnT1, bi + 1)
+            line.set_x2(mtS.stLnT2, bi + 1)
+            label.set_x(mtS.stLbE, bi + 1)
+            label.set_x(mtS.stLbS, bi + 1)
+            label.set_x(mtS.stLbT1, bi + 1)
+            label.set_x(mtS.stLbT2, bi + 1)
+            if not na(mtS.stLnT3)
+                line.set_x2(mtS.stLnT3, bi + 1)
+                label.set_x(mtS.stLbT3, bi + 1)
+
+        // ---- 6) look for a NEW setup (only when idle: one setup at a time, no duplicates) ----
+        if mtS.stSt == 0 or mtS.stSt == 3
+            array.clear(mtCT)
+            array.clear(mtCD)
+            array.clear(mtCF)
+            array.clear(mtCQ)
+            array.clear(mtCS)
+            array.clear(mtC3)
+            for si = 0 to 1
+                int s = si == 0 ? 1 : -1
+                MtTL tl = si == 0 ? mtBull : mtBear
+                MtTL bk = si == 0 ? mtBullBrk : mtBearBrk
+                bool sbOkS = s > 0 ? mtSbBullOk : mtSbBearOk
+                bool sbOkOpp = s > 0 ? mtSbBearOk : mtSbBullOk
+                // ---- A: failed microtrendline breakout ----
+                if mtSetA and tl.state == 4 and f_mtValid(tl) and sbOkS and s * (close - f_mtVal(tl, bi)) > 0 and (tl.isMC or mtD1 == s or mtD5 == s)
+                    float speed = 1.0 - 0.5 * float(tl.failBar - tl.brkBar) / float(math.max(1, mtFailBars))
+                    float depthF = 1.0 - math.min(1.0, tl.brkPen / 0.75)
+                    f_mtAddCand(0, s, 0.6 * speed + 0.4 * depthF, tl.quality, tl.brkExt, na)
+                // ---- B: break + pullback continuation ----
+                if mtSetB and bk.state == 3 and bk.structOK and sbOkS and bi - bk.brkBar >= 2 and not (mtD15 == -s and mtD5 == -s)
+                    float legH = math.max(math.abs(bk.peak - bk.y1), tick)
+                    float retr = math.abs(bk.peak - bk.brkExt) / legH
+                    if retr <= mtMaxRetr
+                        float extS = s > 0 ? low : high
+                        int nSup = 0
+                        if math.abs(extS - mtEma20) <= mtSupTol * atr
+                            nSup += 1
+                        if not na(vwapVal) and math.abs(extS - vwapVal) <= mtSupTol * atr
+                            nSup += 1
+                        array<float> sidePx = s > 0 ? mtPLpx : mtPHpx
+                        if array.size(sidePx) > 0 and math.abs(extS - array.get(sidePx, array.size(sidePx) - 1)) <= mtSupTol * atr
+                            nSup += 1
+                        if math.abs(extS - bk.structLvl) <= mtSupTol * atr
+                            nSup += 1
+                        if nSup >= 1
+                            f_mtAddCand(1, s, 0.4 + 0.3 * (1.0 - retr / mtMaxRetr) + 0.3 * math.min(1.0, nSup / 2.0), bk.quality, bk.brkExt, na)
+                // ---- C: failed-breakout reversal (broken line of trend s, signal in the opposite direction) ----
+                if mtSetC and bk.state == 3 and bk.retested and bi - bk.retestBar <= 3 and sbOkOpp
+                    bool extended = math.abs(bk.peak - bk.y1) >= mtExtATR * atr or bk.touches >= 3
+                    bool noOver = s * (bk.retestExt - bk.peak) <= mtRetestOver * atr
+                    float sqOpp = s > 0 ? mtSqBear : mtSqBull
+                    if extended and noOver and sqOpp >= mtRevSbMin
+                        int conf = 0
+                        if s * (bk.retestExt - bk.peak) <= 0.1 * atr
+                            conf += 1
+                        if sqOpp >= 0.75
+                            conf += 1
+                        int against = 0
+                        for j = 0 to 2
+                            if (s > 0 ? close[j] < open[j] : close[j] > open[j])
+                                against += 1
+                        if against >= 2
+                            conf += 1
+                        float wk = s > 0 ? math.max(mtUW, nz(mtUW[1]), nz(mtUW[2])) : math.max(mtLW, nz(mtLW[1]), nz(mtLW[2]))
+                        if wk >= 0.35
+                            conf += 1
+                        if not bk.closeOver and bi - bk.brkBar >= 3
+                            conf += 1
+                        if conf >= mtRevConf
+                            f_mtAddCand(2, -s, conf / 5.0, bk.quality, bk.retestExt, bk.y1)
+            // ---- D: High 2 / Low 2 second entry with trend context ----
+            if mtSetD and hAtt == 2 and mtSbBullOk
+                f_mtAddCand(3, 1, 0.5, mtBull.state == 1 or mtBull.state == 4 ? mtBull.quality : 0.4, hPbLow, na)
+            if mtSetD and lAtt == 2 and mtSbBearOk
+                f_mtAddCand(3, -1, 0.5, mtBear.state == 1 or mtBear.state == 4 ? mtBear.quality : 0.4, lPbHigh, na)
+            // ---- evaluate every candidate, keep the best ----
+            float bSc = -1.0
+            int bIdx = -1
+            float bEn = na
+            float bSp = na
+            float bRk = na
+            float bT1 = na
+            float bT2 = na
+            float bT3 = na
+            bool bOk = false
+            int nc = array.size(mtCT)
+            if nc > 0
+                for c = 0 to nc - 1
+                    [sc, en, sp, rk, t1v, t2v, t3v, okv, rm] = f_mtEval(array.get(mtCT, c), array.get(mtCD, c), array.get(mtCF, c), array.get(mtCQ, c), array.get(mtCS, c), array.get(mtC3, c))
+                    if okv and sc > bSc
+                        bSc := sc
+                        bIdx := c
+                        bEn := en
+                        bSp := sp
+                        bRk := rk
+                        bT1 := t1v
+                        bT2 := t2v
+                        bT3 := t3v
+                        bOk := true
+                        for q = 0 to 7
+                            array.set(mtFacBest, q, array.get(mtFacTmp, q))
+            if bOk and bSc >= mtMinScore
+                int bTy = array.get(mtCT, bIdx)
+                int bD = array.get(mtCD, bIdx)
+                mtS.stSt := 1
+                mtS.stDir := bD
+                mtS.stType := bTy
+                mtS.stScore := bSc
+                mtS.stEntry := bEn
+                mtS.stStop := bSp
+                mtS.stRisk := bRk
+                mtS.stT1 := bT1
+                mtS.stT2 := bT2
+                mtS.stT3 := bT3
+                mtS.stSigBar := bi
+                mtS.stT1Hit := false
+                mtS.stT2Hit := false
+                mtS.stResolved := false
+                mtS.stFill := na
+                mtS.stCond := mtS.cond
+                mtS.stTod := mtTodIdx
+                mtS.stSq := bD > 0 ? mtSqBull : mtSqBear
+                mtS.stRes := "PENDING ENTRY"
+                for q = 0 to 7
+                    array.set(mtFac, q, array.get(mtFacBest, q))
+                // consume the source pattern so it cannot signal twice
+                if bTy == 0
+                    if bD > 0
+                        mtBull.state := 1
+                    else
+                        mtBear.state := 1
+                else if bTy == 1
+                    if bD > 0
+                        mtBullBrk.state := 0
+                    else
+                        mtBearBrk.state := 0
+                else if bTy == 2
+                    if bD > 0
+                        mtBearBrk.state := 0
+                    else
+                        mtBullBrk.state := 0
+                if bD > 0
+                    mtE.mtEvSetupL := true
+                else
+                    mtE.mtEvSetupS := true
+                if bTy <= 1
+                    if bD > 0
+                        mtE.mtEvContL := true
+                    else
+                        mtE.mtEvContS := true
+                else if bTy == 2
+                    if bD > 0
+                        mtE.mtEvRevL := true
+                    else
+                        mtE.mtEvRevS := true
+                else
+                    if bD > 0
+                        mtE.mtEvH2L := true
+                    else
+                        mtE.mtEvL2S := true
+                if mtShowSig
+                    f_mtSigLabel((bD > 0 ? "LONG " : "SHORT ") + f_mtCls(bSc) + " " + str.tostring(bSc, "#") + "\n" + f_mtTypeName(bTy) + " · pending", bi, bD > 0 ? low : high, bD > 0 ? colLong : colShort, bD > 0 ? "up" : "down")
+                if mtShowLvls
+                    [l1, b1] = f_mtLvl(mtS.stEntry, "ENTRY", color.new(color.white, 0), bi, true)
+                    [l2, b2] = f_mtLvl(mtS.stStop, "STOP", colShort, bi, false)
+                    [l3, b3] = f_mtLvl(mtS.stT1, "T1 " + str.tostring(mtT1R, "#.##") + "R", colLong, bi, false)
+                    [l4, b4] = f_mtLvl(mtS.stT2, "T2", colLong, bi, false)
+                    mtS.stLnE := l1
+                    mtS.stLbE := b1
+                    mtS.stLnS := l2
+                    mtS.stLbS := b2
+                    mtS.stLnT1 := l3
+                    mtS.stLbT1 := b3
+                    mtS.stLnT2 := l4
+                    mtS.stLbT2 := b4
+                    if mtShowT3
+                        [l5, b5] = f_mtLvl(mtS.stT3, "T3", color.new(colLong, 40), bi, true)
+                        mtS.stLnT3 := l5
+                        mtS.stLbT3 := b5
+
+        // ---- 7) detailed alerts (once per confirmed bar) ----
+        if mtAlertFn
+            if mtE.mtEvNewBull
+                alert(f_mtMsg("Bullish microtrendline detected", -1, 0, 0), alert.freq_once_per_bar_close)
+            if mtE.mtEvNewBear
+                alert(f_mtMsg("Bearish microtrendline detected", -1, 0, 0), alert.freq_once_per_bar_close)
+            if mtE.mtEvBrkBull
+                alert(f_mtMsg("Bullish microtrendline BREAK (support line penetrated)", -1, 0, 0), alert.freq_once_per_bar_close)
+            if mtE.mtEvBrkBear
+                alert(f_mtMsg("Bearish microtrendline BREAK (resistance line penetrated)", -1, 0, 0), alert.freq_once_per_bar_close)
+            if mtE.mtEvFboBull
+                alert(f_mtMsg("Bullish FAILED breakout", -1, 0, 0), alert.freq_once_per_bar_close)
+            if mtE.mtEvFboBear
+                alert(f_mtMsg("Bearish FAILED breakout", -1, 0, 0), alert.freq_once_per_bar_close)
+            if mtE.mtEvSetupL or mtE.mtEvSetupS
+                alert(f_mtMsg("SETUP " + f_mtCls(mtS.stScore), mtS.stType, mtS.stDir, mtS.stScore), alert.freq_once_per_bar_close)
+            if mtE.mtEvEntry
+                alert(f_mtMsg("ENTRY TRIGGERED", mtS.stType, mtS.stDir, mtS.stScore), alert.freq_once_per_bar_close)
+            if mtE.mtEvStop
+                alert(f_mtMsg("STOP LOSS reached", mtS.stType, mtS.stDir, mtS.stScore), alert.freq_once_per_bar_close)
+            if mtE.mtEvT1
+                alert(f_mtMsg("TARGET 1 reached", mtS.stType, mtS.stDir, mtS.stScore), alert.freq_once_per_bar_close)
+            if mtE.mtEvT2
+                alert(f_mtMsg("TARGET 2 reached", mtS.stType, mtS.stDir, mtS.stScore), alert.freq_once_per_bar_close)
+    true
+f_blkMtEngine()
+mtCond := mtS.cond   // pick up a same-bar TRANSITION set by the engine
 
 // =============================================================================
 // MARKERS · SHADING · VWAP
 // =============================================================================
 plot(mtOn and mtShowVwap ? vwapVal : na, "MT VWAP", color = color.new(#ffd54f, 0), linewidth = 1)
 bgcolor(mtOn and mtShowBg ? (mtCond == 1 ? color.new(#00c853, 93) : mtCond == 3 ? color.new(#ff9800, 92) : color.new(#9e9e9e, 94)) : na, title = "MT market condition")
-plotshape(mtOn and mtShowBrk and mtEvBrkBull, "MT bull line penetrated", shape.xcross, location.belowbar, color.new(#ff9800, 0), size = size.tiny)
-plotshape(mtOn and mtShowBrk and mtEvBrkBear, "MT bear line penetrated", shape.xcross, location.abovebar, color.new(#ff9800, 0), size = size.tiny)
-plotshape(mtOn and mtShowBrk and mtEvFboBull, "MT bullish failed breakout", shape.diamond, location.belowbar, color.new(#00e5ff, 0), text = "FBO", textcolor = color.new(#00e5ff, 0), size = size.tiny)
-plotshape(mtOn and mtShowBrk and mtEvFboBear, "MT bearish failed breakout", shape.diamond, location.abovebar, color.new(#e040fb, 0), text = "FBO", textcolor = color.new(#e040fb, 0), size = size.tiny)
-plotshape(mtOn and mtShowHL and mtEvH1, "MT H1", shape.labelup, location.belowbar, color.new(#26a69a, 30), text = "H1", textcolor = color.white, size = size.tiny)
-plotshape(mtOn and mtShowHL and mtEvH2, "MT H2", shape.labelup, location.belowbar, color.new(#00897b, 0), text = "H2", textcolor = color.white, size = size.tiny)
-plotshape(mtOn and mtShowHL and mtEvL1, "MT L1", shape.labeldown, location.abovebar, color.new(#ef5350, 30), text = "L1", textcolor = color.white, size = size.tiny)
-plotshape(mtOn and mtShowHL and mtEvL2, "MT L2", shape.labeldown, location.abovebar, color.new(#c62828, 0), text = "L2", textcolor = color.white, size = size.tiny)
+plotshape(mtOn and mtShowBrk and mtE.mtEvBrkBull, "MT bull line penetrated", shape.xcross, location.belowbar, color.new(#ff9800, 0), size = size.tiny)
+plotshape(mtOn and mtShowBrk and mtE.mtEvBrkBear, "MT bear line penetrated", shape.xcross, location.abovebar, color.new(#ff9800, 0), size = size.tiny)
+plotshape(mtOn and mtShowBrk and mtE.mtEvFboBull, "MT bullish failed breakout", shape.diamond, location.belowbar, color.new(#00e5ff, 0), text = "FBO", textcolor = color.new(#00e5ff, 0), size = size.tiny)
+plotshape(mtOn and mtShowBrk and mtE.mtEvFboBear, "MT bearish failed breakout", shape.diamond, location.abovebar, color.new(#e040fb, 0), text = "FBO", textcolor = color.new(#e040fb, 0), size = size.tiny)
+plotshape(mtOn and mtShowHL and mtE.mtEvH1, "MT H1", shape.labelup, location.belowbar, color.new(#26a69a, 30), text = "H1", textcolor = color.white, size = size.tiny)
+plotshape(mtOn and mtShowHL and mtE.mtEvH2, "MT H2", shape.labelup, location.belowbar, color.new(#00897b, 0), text = "H2", textcolor = color.white, size = size.tiny)
+plotshape(mtOn and mtShowHL and mtE.mtEvL1, "MT L1", shape.labeldown, location.abovebar, color.new(#ef5350, 30), text = "L1", textcolor = color.white, size = size.tiny)
+plotshape(mtOn and mtShowHL and mtE.mtEvL2, "MT L2", shape.labeldown, location.abovebar, color.new(#c62828, 0), text = "L2", textcolor = color.white, size = size.tiny)
 
 // =============================================================================
 // DASHBOARD + STATISTICS TABLE (last bar only; reads state committed on closed bars)
 // =============================================================================
 f_mtBias(int d) => d > 0 ? "▲" : d < 0 ? "▼" : "—"
 
-if mtOn and mtShowDash and barstate.islast
-    var table mtTbl = table.new(position.top_right, 2, 20, border_width = 1)
-    table.set_position(mtTbl, f_mtPos(mtDashPos))
-    table.clear(mtTbl, 0, 0, 1, 19)
-    // choose the line to describe: live line first, else the post-break record
-    MtTL showTl = mtBull
-    if mtBear.state != 0 and (mtBull.state == 0 or mtBear.x2 > mtBull.x2)
-        showTl := mtBear
-    if showTl.state == 0
-        showTl := mtBullBrk.state == 3 ? mtBullBrk : (mtBearBrk.state == 3 ? mtBearBrk : showTl)
-    string condTxt = mtCond == 1 ? "TREND" : mtCond == 3 ? "TRANSITION" : "RANGE"
-    color condCol = mtCond == 1 ? themeUpSolid : mtCond == 3 ? color.orange : themeMuted
-    string tlDir = showTl.state == 0 ? "none" : (showTl.dir > 0 ? "BULLISH ▲ (support)" : "BEARISH ▼ (resistance)")
-    color tlCol = showTl.state == 0 ? themeMuted : (showTl.dir > 0 ? themeUpSolid : themeDnSolid)
-    string tlQ = showTl.state == 0 ? "—" : (str.tostring(100.0 * showTl.quality, "#") + "%" + (showTl.isMC ? " · microchannel" : ""))
-    string tlStat = showTl.state == 0 ? "—" : showTl.state == 1 ? "INTACT" : showTl.state == 2 ? ("PENETRATED " + str.tostring(bar_index - showTl.brkBar) + "b ago") : showTl.state == 4 ? "FAILED BREAKOUT ✔ (await signal bar)" : ("BROKEN " + str.tostring(bar_index - showTl.brkBar) + "b ago")
-    string clsTxt = stSt == 0 ? "NO TRADE" : f_mtCls(stScore)
-    string dirTxt = stSt == 0 ? "—" : (stDir > 0 ? "LONG" : "SHORT")
-    color dirCol = stSt == 0 ? themeMuted : (stDir > 0 ? themeUpSolid : themeDnSolid)
-    string hTxt = (bar_index - mtLastHBar <= 5) ? ((mtLastHDir > 0 ? "H" : "L") + str.tostring(mtLastHCnt) + " (" + str.tostring(bar_index - mtLastHBar) + "b ago)") : "—"
-    string facN = "HTF|TL|PAT|SB|MKT|VWAP|H|ROOM"
-    string whyTxt = ""
-    string weakTxt = ""
-    float wsumD = mtWHtf + mtWTl + mtWFbo + mtWSb + mtWMkt + (mtVwapOn ? mtWVwap : 0.0) + mtWH + mtWRoom
-    if stSt != 0 and wsumD > 0
-        array<string> names = str.split(facN, "|")
-        array<float> wts = array.from(mtWHtf, mtWTl, mtWFbo, mtWSb, mtWMkt, mtVwapOn ? mtWVwap : 0.0, mtWH, mtWRoom)
-        for q = 0 to 7
-            float w = array.get(wts, q)
-            if w > 0
-                float pts = array.get(mtFac, q)
-                float mx = 100.0 * w / wsumD
-                whyTxt += array.get(names, q) + " " + str.tostring(pts, "#") + "/" + str.tostring(mx, "#") + "  "
-                if pts < 0.5 * mx
-                    weakTxt += array.get(names, q) + " "
-    int r = 0
-    table.cell(mtTbl, 0, r, "BROOKS MICROTRENDLINE", text_color = themeTxt, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_left)
-    table.cell(mtTbl, 1, r, mtOn ? "ON" : "", text_color = themeMuted, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_right)
-    r += 1
-    table.cell(mtTbl, 0, r, "Market", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    table.cell(mtTbl, 1, r, condTxt, text_color = condCol, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    r += 1
-    table.cell(mtTbl, 0, r, "Bias 15m·5m·1m", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    table.cell(mtTbl, 1, r, f_mtBias(mtD15) + "  " + f_mtBias(mtD5) + "  " + f_mtBias(mtD1), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    r += 1
-    table.cell(mtTbl, 0, r, "Trendline", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    table.cell(mtTbl, 1, r, tlDir, text_color = tlCol, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    r += 1
-    table.cell(mtTbl, 0, r, "Quality", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    table.cell(mtTbl, 1, r, tlQ, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    r += 1
-    table.cell(mtTbl, 0, r, "Touches", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    table.cell(mtTbl, 1, r, showTl.state == 0 ? "—" : str.tostring(showTl.touches), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    r += 1
-    table.cell(mtTbl, 0, r, "Break status", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    table.cell(mtTbl, 1, r, tlStat, text_color = showTl.state == 2 or showTl.state == 3 ? color.orange : themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    r += 1
-    table.cell(mtTbl, 0, r, "Setup", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    table.cell(mtTbl, 1, r, stSt == 0 ? "NO TRADE" : (clsTxt + " · " + f_mtTypeName(stType)), text_color = dirCol, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    r += 1
-    table.cell(mtTbl, 0, r, "Direction · score", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    table.cell(mtTbl, 1, r, stSt == 0 ? "—" : (dirTxt + " · " + str.tostring(stScore, "#") + "/100"), text_color = dirCol, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    r += 1
-    table.cell(mtTbl, 0, r, "Signal bar · H/L", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    table.cell(mtTbl, 1, r, (stSt == 0 ? "—" : str.tostring(100.0 * stSq, "#") + "%") + " · " + hTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    r += 1
-    table.cell(mtTbl, 0, r, "Entry", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    table.cell(mtTbl, 1, r, stSt == 0 ? "—" : ((stSt == 1 ? "stop-entry " : "filled ") + str.tostring(stSt == 2 or (stSt == 3 and not na(stFill)) ? stFill : stEntry, format.mintick)), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    r += 1
-    table.cell(mtTbl, 0, r, "Stop", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    table.cell(mtTbl, 1, r, stSt == 0 ? "—" : str.tostring(stStop, format.mintick), text_color = themeDnSolid, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    r += 1
-    table.cell(mtTbl, 0, r, "Target 1 · 2", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    table.cell(mtTbl, 1, r, stSt == 0 ? "—" : (str.tostring(stT1, format.mintick) + " · " + str.tostring(stT2, format.mintick)), text_color = themeUpSolid, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    r += 1
-    table.cell(mtTbl, 0, r, "Risk : reward", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    table.cell(mtTbl, 1, r, stSt == 0 ? "—" : ("1 : " + str.tostring(mtT1R, "#.##") + " / 1 : " + str.tostring(math.abs(stT2 - stEntry) / math.max(stRisk, syminfo.mintick), "#.##")), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    r += 1
-    table.cell(mtTbl, 0, r, "Status", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    table.cell(mtTbl, 1, r, stSt == 0 ? "no active setup" : (stSt == 1 ? "PENDING ENTRY" : stSt == 2 ? ("TRIGGERED" + (stT1Hit ? " · T1 ✔" : "")) : stRes), text_color = stSt == 2 ? themeUpSolid : themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    r += 1
-    table.cell(mtTbl, 0, r, "Score drivers", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    table.cell(mtTbl, 1, r, whyTxt == "" ? "—" : whyTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
-    r += 1
-    table.cell(mtTbl, 0, r, "Weak factors", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    table.cell(mtTbl, 1, r, weakTxt == "" ? "—" : weakTxt, text_color = color.orange, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
-    table.set_frame_color(mtTbl, color.new(condCol, 35))
-    table.set_frame_width(mtTbl, themeBW)
+// (wrapped in a function to keep the main body under TradingView's size limit)
+f_blkMtDash() =>
+    if mtOn and mtShowDash and barstate.islast
+        var table mtTbl = table.new(position.top_right, 2, 20, border_width = 1)
+        table.set_position(mtTbl, f_mtPos(mtDashPos))
+        table.clear(mtTbl, 0, 0, 1, 19)
+        // choose the line to describe: live line first, else the post-break record
+        MtTL showTl = mtBull
+        if mtBear.state != 0 and (mtBull.state == 0 or mtBear.x2 > mtBull.x2)
+            showTl := mtBear
+        if showTl.state == 0
+            showTl := mtBullBrk.state == 3 ? mtBullBrk : (mtBearBrk.state == 3 ? mtBearBrk : showTl)
+        string condTxt = mtCond == 1 ? "TREND" : mtCond == 3 ? "TRANSITION" : "RANGE"
+        color condCol = mtCond == 1 ? themeUpSolid : mtCond == 3 ? color.orange : themeMuted
+        string tlDir = showTl.state == 0 ? "none" : (showTl.dir > 0 ? "BULLISH ▲ (support)" : "BEARISH ▼ (resistance)")
+        color tlCol = showTl.state == 0 ? themeMuted : (showTl.dir > 0 ? themeUpSolid : themeDnSolid)
+        string tlQ = showTl.state == 0 ? "—" : (str.tostring(100.0 * showTl.quality, "#") + "%" + (showTl.isMC ? " · microchannel" : ""))
+        string tlStat = showTl.state == 0 ? "—" : showTl.state == 1 ? "INTACT" : showTl.state == 2 ? ("PENETRATED " + str.tostring(bar_index - showTl.brkBar) + "b ago") : showTl.state == 4 ? "FAILED BREAKOUT ✔ (await signal bar)" : ("BROKEN " + str.tostring(bar_index - showTl.brkBar) + "b ago")
+        string clsTxt = mtS.stSt == 0 ? "NO TRADE" : f_mtCls(mtS.stScore)
+        string dirTxt = mtS.stSt == 0 ? "—" : (mtS.stDir > 0 ? "LONG" : "SHORT")
+        color dirCol = mtS.stSt == 0 ? themeMuted : (mtS.stDir > 0 ? themeUpSolid : themeDnSolid)
+        string hTxt = (bar_index - mtS.mtLastHBar <= 5) ? ((mtS.mtLastHDir > 0 ? "H" : "L") + str.tostring(mtS.mtLastHCnt) + " (" + str.tostring(bar_index - mtS.mtLastHBar) + "b ago)") : "—"
+        string facN = "HTF|TL|PAT|SB|MKT|VWAP|H|ROOM"
+        string whyTxt = ""
+        string weakTxt = ""
+        float wsumD = mtWHtf + mtWTl + mtWFbo + mtWSb + mtWMkt + (mtVwapOn ? mtWVwap : 0.0) + mtWH + mtWRoom
+        if mtS.stSt != 0 and wsumD > 0
+            array<string> names = str.split(facN, "|")
+            array<float> wts = array.from(mtWHtf, mtWTl, mtWFbo, mtWSb, mtWMkt, mtVwapOn ? mtWVwap : 0.0, mtWH, mtWRoom)
+            for q = 0 to 7
+                float w = array.get(wts, q)
+                if w > 0
+                    float pts = array.get(mtFac, q)
+                    float mx = 100.0 * w / wsumD
+                    whyTxt += array.get(names, q) + " " + str.tostring(pts, "#") + "/" + str.tostring(mx, "#") + "  "
+                    if pts < 0.5 * mx
+                        weakTxt += array.get(names, q) + " "
+        int r = 0
+        table.cell(mtTbl, 0, r, "BROOKS MICROTRENDLINE", text_color = themeTxt, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_left)
+        table.cell(mtTbl, 1, r, mtOn ? "ON" : "", text_color = themeMuted, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_right)
+        r += 1
+        table.cell(mtTbl, 0, r, "Market", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        table.cell(mtTbl, 1, r, condTxt, text_color = condCol, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        r += 1
+        table.cell(mtTbl, 0, r, "Bias 15m·5m·1m", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        table.cell(mtTbl, 1, r, f_mtBias(mtD15) + "  " + f_mtBias(mtD5) + "  " + f_mtBias(mtD1), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        r += 1
+        table.cell(mtTbl, 0, r, "Trendline", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        table.cell(mtTbl, 1, r, tlDir, text_color = tlCol, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        r += 1
+        table.cell(mtTbl, 0, r, "Quality", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        table.cell(mtTbl, 1, r, tlQ, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        r += 1
+        table.cell(mtTbl, 0, r, "Touches", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        table.cell(mtTbl, 1, r, showTl.state == 0 ? "—" : str.tostring(showTl.touches), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        r += 1
+        table.cell(mtTbl, 0, r, "Break status", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        table.cell(mtTbl, 1, r, tlStat, text_color = showTl.state == 2 or showTl.state == 3 ? color.orange : themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        r += 1
+        table.cell(mtTbl, 0, r, "Setup", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        table.cell(mtTbl, 1, r, mtS.stSt == 0 ? "NO TRADE" : (clsTxt + " · " + f_mtTypeName(mtS.stType)), text_color = dirCol, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        r += 1
+        table.cell(mtTbl, 0, r, "Direction · score", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        table.cell(mtTbl, 1, r, mtS.stSt == 0 ? "—" : (dirTxt + " · " + str.tostring(mtS.stScore, "#") + "/100"), text_color = dirCol, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        r += 1
+        table.cell(mtTbl, 0, r, "Signal bar · H/L", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        table.cell(mtTbl, 1, r, (mtS.stSt == 0 ? "—" : str.tostring(100.0 * mtS.stSq, "#") + "%") + " · " + hTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        r += 1
+        table.cell(mtTbl, 0, r, "Entry", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        table.cell(mtTbl, 1, r, mtS.stSt == 0 ? "—" : ((mtS.stSt == 1 ? "stop-entry " : "filled ") + str.tostring(mtS.stSt == 2 or (mtS.stSt == 3 and not na(mtS.stFill)) ? mtS.stFill : mtS.stEntry, format.mintick)), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        r += 1
+        table.cell(mtTbl, 0, r, "Stop", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        table.cell(mtTbl, 1, r, mtS.stSt == 0 ? "—" : str.tostring(mtS.stStop, format.mintick), text_color = themeDnSolid, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        r += 1
+        table.cell(mtTbl, 0, r, "Target 1 · 2", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        table.cell(mtTbl, 1, r, mtS.stSt == 0 ? "—" : (str.tostring(mtS.stT1, format.mintick) + " · " + str.tostring(mtS.stT2, format.mintick)), text_color = themeUpSolid, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        r += 1
+        table.cell(mtTbl, 0, r, "Risk : reward", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        table.cell(mtTbl, 1, r, mtS.stSt == 0 ? "—" : ("1 : " + str.tostring(mtT1R, "#.##") + " / 1 : " + str.tostring(math.abs(mtS.stT2 - mtS.stEntry) / math.max(mtS.stRisk, syminfo.mintick), "#.##")), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        r += 1
+        table.cell(mtTbl, 0, r, "Status", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        table.cell(mtTbl, 1, r, mtS.stSt == 0 ? "no active setup" : (mtS.stSt == 1 ? "PENDING ENTRY" : mtS.stSt == 2 ? ("TRIGGERED" + (mtS.stT1Hit ? " · T1 ✔" : "")) : mtS.stRes), text_color = mtS.stSt == 2 ? themeUpSolid : themeTxt, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        r += 1
+        table.cell(mtTbl, 0, r, "Score drivers", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        table.cell(mtTbl, 1, r, whyTxt == "" ? "—" : whyTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+        r += 1
+        table.cell(mtTbl, 0, r, "Weak factors", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        table.cell(mtTbl, 1, r, weakTxt == "" ? "—" : weakTxt, text_color = color.orange, bgcolor = themeRowBg, text_size = size.small, text_halign = text.align_left)
+        table.set_frame_color(mtTbl, color.new(condCol, 35))
+        table.set_frame_width(mtTbl, themeBW)
+    true
+f_blkMtDash()
 
-if mtOn and mtShowStats and barstate.islast
-    var table mtStTbl = table.new(position.bottom_right, 2, 20, border_width = 1)
-    table.set_position(mtStTbl, f_mtPos(mtStatsPos))
-    table.clear(mtStTbl, 0, 0, 1, 19)
-    array<string> labs = array.from("ALL SIGNALS", "Failed BO", "Pullback cont.", "Reversal", "H2/L2", "Trend", "Range", "Transition", "Open 9:30-10:30", "10:30-12:00", "12:00-14:00", "14:00-16:00", "Other hours", "Score A+ (85+)", "Score A (75-84)", "Score B (<75)")
-    int sr = 0
-    table.cell(mtStTbl, 0, sr, "SIGNAL STATS", text_color = themeTxt, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_left)
-    table.cell(mtStTbl, 1, sr, "n · win% · expectancy (R)", text_color = themeMuted, bgcolor = themePanelBg, text_size = size.tiny, text_halign = text.align_left)
-    sr += 1
-    float nAll = array.get(mtStat, 0)
-    string extra = nAll > 0 ? ("win " + str.tostring(array.get(mtStat, 1), "#") + " / loss " + str.tostring(nAll - array.get(mtStat, 1), "#") + " · avg win " + str.tostring(array.get(mtStat, 1) > 0 ? array.get(mtStat, 3) / array.get(mtStat, 1) : 0.0, "+0.00") + "R · avg loss " + str.tostring(nAll - array.get(mtStat, 1) > 0 ? array.get(mtStat, 4) / (nAll - array.get(mtStat, 1)) : 0.0, "0.00") + "R") : "no completed signals"
-    for g = 0 to 15
-        table.cell(mtStTbl, 0, sr, array.get(labs, g), text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
-        table.cell(mtStTbl, 1, sr, f_mtStatTxt(g), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+// (wrapped in a function to keep the main body under TradingView's size limit)
+f_blkMtStats() =>
+    if mtOn and mtShowStats and barstate.islast
+        var table mtStTbl = table.new(position.bottom_right, 2, 20, border_width = 1)
+        table.set_position(mtStTbl, f_mtPos(mtStatsPos))
+        table.clear(mtStTbl, 0, 0, 1, 19)
+        array<string> labs = array.from("ALL SIGNALS", "Failed BO", "Pullback cont.", "Reversal", "H2/L2", "Trend", "Range", "Transition", "Open 9:30-10:30", "10:30-12:00", "12:00-14:00", "14:00-16:00", "Other hours", "Score A+ (85+)", "Score A (75-84)", "Score B (<75)")
+        int sr = 0
+        table.cell(mtStTbl, 0, sr, "SIGNAL STATS", text_color = themeTxt, bgcolor = themePanelBg, text_size = size.small, text_halign = text.align_left)
+        table.cell(mtStTbl, 1, sr, "n · win% · expectancy (R)", text_color = themeMuted, bgcolor = themePanelBg, text_size = size.tiny, text_halign = text.align_left)
         sr += 1
-    table.cell(mtStTbl, 0, sr, "Totals", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
-    table.cell(mtStTbl, 1, sr, extra, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
-    sr += 1
-    table.cell(mtStTbl, 0, sr, "Not a backtest", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
-    table.cell(mtStTbl, 1, sr, "1 position at a time · stop wins same-bar ties · no costs", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
-    table.set_frame_color(mtStTbl, color.new(themeMuted, 40))
-    table.set_frame_width(mtStTbl, themeBW)
+        float nAll = array.get(mtStat, 0)
+        string extra = nAll > 0 ? ("win " + str.tostring(array.get(mtStat, 1), "#") + " / loss " + str.tostring(nAll - array.get(mtStat, 1), "#") + " · avg win " + str.tostring(array.get(mtStat, 1) > 0 ? array.get(mtStat, 3) / array.get(mtStat, 1) : 0.0, "+0.00") + "R · avg loss " + str.tostring(nAll - array.get(mtStat, 1) > 0 ? array.get(mtStat, 4) / (nAll - array.get(mtStat, 1)) : 0.0, "0.00") + "R") : "no completed signals"
+        for g = 0 to 15
+            table.cell(mtStTbl, 0, sr, array.get(labs, g), text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+            table.cell(mtStTbl, 1, sr, f_mtStatTxt(g), text_color = themeTxt, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+            sr += 1
+        table.cell(mtStTbl, 0, sr, "Totals", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+        table.cell(mtStTbl, 1, sr, extra, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+        sr += 1
+        table.cell(mtStTbl, 0, sr, "Not a backtest", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+        table.cell(mtStTbl, 1, sr, "1 position at a time · stop wins same-bar ties · no costs", text_color = themeMuted, bgcolor = themeRowBg, text_size = size.tiny, text_halign = text.align_left)
+        table.set_frame_color(mtStTbl, color.new(themeMuted, 40))
+        table.set_frame_width(mtStTbl, themeBW)
+    true
+f_blkMtStats()
 
 // =============================================================================
 // ALERT CONDITIONS (fire only on confirmed bars; message placeholders are filled by TradingView)
 // =============================================================================
-alertcondition(mtOn and mtEvNewBull, "MT 1 · Bullish microtrendline detected", "Bullish microtrendline detected {{ticker}} {{interval}}")
-alertcondition(mtOn and mtEvNewBear, "MT 2 · Bearish microtrendline detected", "Bearish microtrendline detected {{ticker}} {{interval}}")
-alertcondition(mtOn and mtEvBrkBull, "MT 3 · Bullish microtrendline break (support penetrated)", "Bullish microtrendline broken {{ticker}} {{interval}}")
-alertcondition(mtOn and mtEvBrkBear, "MT 4 · Bearish microtrendline break (resistance penetrated)", "Bearish microtrendline broken {{ticker}} {{interval}}")
-alertcondition(mtOn and mtEvFboBull, "MT 5 · Bullish failed breakout", "Bullish failed breakout {{ticker}} {{interval}}")
-alertcondition(mtOn and mtEvFboBear, "MT 6 · Bearish failed breakout", "Bearish failed breakout {{ticker}} {{interval}}")
-alertcondition(mtOn and mtEvContL, "MT 7 · Bullish continuation setup", "Bullish continuation setup {{ticker}} {{interval}}")
-alertcondition(mtOn and mtEvContS, "MT 8 · Bearish continuation setup", "Bearish continuation setup {{ticker}} {{interval}}")
-alertcondition(mtOn and mtEvRevL, "MT 9 · Bullish reversal setup", "Bullish reversal setup {{ticker}} {{interval}}")
-alertcondition(mtOn and mtEvRevS, "MT 10 · Bearish reversal setup", "Bearish reversal setup {{ticker}} {{interval}}")
-alertcondition(mtOn and mtEvH2L, "MT 11 · High 2 long setup", "High 2 long setup {{ticker}} {{interval}}")
-alertcondition(mtOn and mtEvL2S, "MT 12 · Low 2 short setup", "Low 2 short setup {{ticker}} {{interval}}")
-alertcondition(mtOn and mtEvEntry, "MT 13 · Entry triggered", "Entry triggered {{ticker}} {{interval}}")
-alertcondition(mtOn and mtEvStop, "MT 14 · Stop loss reached", "Stop loss reached {{ticker}} {{interval}}")
-alertcondition(mtOn and mtEvT1, "MT 15 · Target 1 reached", "Target 1 reached {{ticker}} {{interval}}")
-alertcondition(mtOn and mtEvT2, "MT 16 · Target 2 reached", "Target 2 reached {{ticker}} {{interval}}")
+alertcondition(mtOn and mtE.mtEvNewBull, "MT 1 · Bullish microtrendline detected", "Bullish microtrendline detected {{ticker}} {{interval}}")
+alertcondition(mtOn and mtE.mtEvNewBear, "MT 2 · Bearish microtrendline detected", "Bearish microtrendline detected {{ticker}} {{interval}}")
+alertcondition(mtOn and mtE.mtEvBrkBull, "MT 3 · Bullish microtrendline break (support penetrated)", "Bullish microtrendline broken {{ticker}} {{interval}}")
+alertcondition(mtOn and mtE.mtEvBrkBear, "MT 4 · Bearish microtrendline break (resistance penetrated)", "Bearish microtrendline broken {{ticker}} {{interval}}")
+alertcondition(mtOn and mtE.mtEvFboBull, "MT 5 · Bullish failed breakout", "Bullish failed breakout {{ticker}} {{interval}}")
+alertcondition(mtOn and mtE.mtEvFboBear, "MT 6 · Bearish failed breakout", "Bearish failed breakout {{ticker}} {{interval}}")
+alertcondition(mtOn and mtE.mtEvContL, "MT 7 · Bullish continuation setup", "Bullish continuation setup {{ticker}} {{interval}}")
+alertcondition(mtOn and mtE.mtEvContS, "MT 8 · Bearish continuation setup", "Bearish continuation setup {{ticker}} {{interval}}")
+alertcondition(mtOn and mtE.mtEvRevL, "MT 9 · Bullish reversal setup", "Bullish reversal setup {{ticker}} {{interval}}")
+alertcondition(mtOn and mtE.mtEvRevS, "MT 10 · Bearish reversal setup", "Bearish reversal setup {{ticker}} {{interval}}")
+alertcondition(mtOn and mtE.mtEvH2L, "MT 11 · High 2 long setup", "High 2 long setup {{ticker}} {{interval}}")
+alertcondition(mtOn and mtE.mtEvL2S, "MT 12 · Low 2 short setup", "Low 2 short setup {{ticker}} {{interval}}")
+alertcondition(mtOn and mtE.mtEvEntry, "MT 13 · Entry triggered", "Entry triggered {{ticker}} {{interval}}")
+alertcondition(mtOn and mtE.mtEvStop, "MT 14 · Stop loss reached", "Stop loss reached {{ticker}} {{interval}}")
+alertcondition(mtOn and mtE.mtEvT1, "MT 15 · Target 1 reached", "Target 1 reached {{ticker}} {{interval}}")
+alertcondition(mtOn and mtE.mtEvT2, "MT 16 · Target 2 reached", "Target 2 reached {{ticker}} {{interval}}")
 
 // -----------------------------------------------------------------------------
 // ALERTS
@@ -3897,10 +3992,10 @@ alertcondition(sfpLong or sfpShort, "SFP fired", "Sweep + reversal (liquidity gr
 alertcondition(sfpLong, "SFP long", "Bullish sweep + reversal")
 alertcondition(sfpShort, "SFP short", "Bearish sweep + reversal")
 // --- FVG execution engine ---
-alertcondition(execReturnNow,  "FVG setup approaching", "Price is returning into a qualifying fair value gap — setup may arm soon")
-alertcondition(execArmNow,     "FVG setup armed",       "Price tapped a qualifying FVG entry — setup ARMED (entry/stop/target active)")
-alertcondition(execConfirmNow, "FVG setup confirmed",   "FVG setup CONFIRMED — entry trigger met")
-alertcondition(execInvalidNow, "FVG setup invalidated", "FVG setup INVALIDATED — stop breached or expired")
+alertcondition(xE.execReturnNow,  "FVG setup approaching", "Price is returning into a qualifying fair value gap — setup may arm soon")
+alertcondition(xE.execArmNow,     "FVG setup armed",       "Price tapped a qualifying FVG entry — setup ARMED (entry/stop/target active)")
+alertcondition(xE.execConfirmNow, "FVG setup confirmed",   "FVG setup CONFIRMED — entry trigger met")
+alertcondition(xE.execInvalidNow, "FVG setup invalidated", "FVG setup INVALIDATED — stop breached or expired")
 alertcondition(biasFlipNow,    "Daily bias flipped",    "The Daily Bias direction changed")
-alertcondition(orbBreakUpNow or orbBreakDnNow, "ORB break", "Opening range: confirmed break")
-alertcondition(orbFailNow, "ORB failed break", "Opening range: break failed back inside")
+alertcondition(orbE.orbBreakUpNow or orbE.orbBreakDnNow, "ORB break", "Opening range: confirmed break")
+alertcondition(orbE.orbFailNow, "ORB failed break", "Opening range: break failed back inside")
