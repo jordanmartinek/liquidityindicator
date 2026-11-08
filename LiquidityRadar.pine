@@ -273,10 +273,10 @@ biasFadeLvls = input.bool(false, "Fade counter-bias-side levels", tooltip = "Als
 // -----------------------------------------------------------------------------
 // One shared TREND / RANGE / TRANSITION classifier (computed in MARKET CONDITION below). Feeds
 // the FVG execution gate and the Brooks setups' market-suitability factor.
-regimeOn   = input.bool(true,  "Show market condition (TREND / RANGE / TRANSITION)", tooltip = "One shared classifier used by the whole indicator (FVG execution gate + Brooks setups). Blends efficiency ratio, bar overlap, VWAP-cross frequency and EMA slope; TRANSITION = a trend losing efficiency, especially right after a genuine microtrendline break. Shown in the context panel (or in the Brooks dashboard when that is on).", group = G_REGIME)
+regimeOn   = input.bool(true,  "Show market condition (TREND / RANGE / TRANSITION)", tooltip = "One shared classifier used by the whole indicator (FVG execution gate + Brooks setups). Blends efficiency ratio, bar overlap, VWAP-cross frequency and EMA slope; TRANSITION = a trend losing efficiency, especially right after a genuine microtrendline break. Display only: shown in the context panel (or in the Brooks dashboard when that is on); the execution gate below works independently.", group = G_REGIME)
 mtTrendHi   = input.float(0.55, "  Trend score threshold", minval = 0.2, maxval = 0.9, step = 0.05, group = G_REGIME)
 mtTransBars = input.int(15, "  Transition window after a microtrendline break (bars)", minval = 3, maxval = 60, group = G_REGIME)
-regimeGateExec = input.bool(false, "  Gate execution: suppress continuation setups mid-range", tooltip = "When ON and the market condition is RANGE, the FVG execution engine will NOT arm CONTINUATION setups in the middle of the range — but still allows REVERSAL setups near the range extremes (premium/discount). This directly targets getting chopped up trading the middle of a range. OFF = the regime is informational only and never blocks a setup.", group = G_REGIME)
+regimeGateExec = input.bool(false, "  Gate execution: suppress continuation setups mid-range", tooltip = "When ON and the market condition is RANGE with VWAP chop or price in the middle of the dealing range, the FVG execution engine will NOT arm CONTINUATION setups in the middle of the range — but still allows REVERSAL setups near the range extremes (premium/discount). This directly targets getting chopped up trading the middle of a range. OFF = the regime is informational only and never blocks a setup.", group = G_REGIME)
 
 // -----------------------------------------------------------------------------
 // INPUTS — OPENING RANGE BREAKOUT (ORB)
@@ -669,12 +669,18 @@ float vwapCrosses = math.sum((not na(vwapVal) and ((close > vwapVal and close[1]
 bool  regimeChop  = vwapCrosses >= 4
 float mtSlopeAtr  = atr > 0 ? math.abs(mtEma20 - mtEma20[5]) / atr : 0.0
 float mtTrendScore = 0.4 * mtEr20 + 0.2 * (1.0 - mtOvlAvg) + 0.2 * (1.0 - math.min(1.0, vwapCrosses / 4.0)) + 0.2 * math.min(1.0, mtSlopeAtr)
-int mtCond = 2
-if mtErPrev >= 0.4 and mtErNow <= 0.6 * mtErPrev and (bar_index - mtLastGenBar <= mtTransBars or mtErNow <= 0.25)
-    mtCond := 3
-else if mtTrendScore >= mtTrendHi
-    mtCond := 1
+f_mtCondCalc(int lastGen) =>
+    int c = 2
+    if mtErPrev >= 0.4 and mtErNow <= 0.6 * mtErPrev and (bar_index - lastGen <= mtTransBars or mtErNow <= 0.25)
+        c := 3
+    else if mtTrendScore >= mtTrendHi
+        c := 1
+    c
+int mtCond = f_mtCondCalc(mtLastGenBar)
 int regimeState = mtCond == 1 ? 1 : mtCond == 2 ? -1 : 0
+// "chop" for the FVG execution gate: VWAP chop OR price rotating in the middle of the dealing range
+float regimePos = (not na(rngHi) and not na(rngLo) and rngHi > rngLo) ? math.min(1.0, math.max(0.0, (close - rngLo) / (rngHi - rngLo))) : 0.5
+bool  regimeMidRange = regimePos > 0.38 and regimePos < 0.62
 
 // historical swing storage
 var swHi   = array.new<float>()
@@ -2375,11 +2381,11 @@ if array.size(fvgBoxes) > 0
                 float feasRR = na(tgtLiq) ? na : (math.abs(tgtLiq - entryQ) / riskQ)
                 bool  lowRR  = execMinRR > 0 and not na(feasRR) and feasRR < execMinRR
                 bool  qRR    = (execMinRR <= 0) or (not execRRReject) or (not lowRR)
-                // regime gate: in BALANCED/chop, suppress CONTINUATION setups (gap in the middle
+                // regime gate: in RANGE + chop / mid-range, suppress CONTINUATION setups (gap in the middle
                 // of the range) but still allow REVERSAL setups at the extremes (bull gap in deep
                 // discount / bear gap in deep premium). Only active when regimeGateExec is on.
                 bool qRegime = true
-                if regimeGateExec and regimeState == -1
+                if regimeGateExec and regimeState == -1 and (regimeChop or regimeMidRange)
                     bool atExtreme = na(rngHi) or na(rngLo) or rngHi <= rngLo ? false : (isBull ? (ceP - rngLo) / (rngHi - rngLo) <= 0.38 : (ceP - rngLo) / (rngHi - rngLo) >= 0.62)
                     qRegime := atExtreme
                 bool qualifies = qStr and qPD and qDOL and qBias and qRR and qRegime
@@ -2569,6 +2575,7 @@ var bool  orbReady  = false       // window has closed -> range is frozen for th
 var array<box>  orbBoxes = array.new<box>()
 var array<line> orbHiLns = array.new<line>()
 var array<line> orbLoLns = array.new<line>()
+var array<label> orbLbls = array.new<label>()   // break / fail markers, capped at 3 per kept day
 var int   orbBreakDir = 0         // 0 none, +1 confirmed break up, -1 confirmed break down
 var bool  orbFailed   = false     // a confirmed break later closed back inside (trap)
 var int   orbUpRun    = 0
@@ -2632,13 +2639,18 @@ if masterOn and orbOn
             orbFailed := true
             orbFailNow := true
         if orbBreakUpNow
-            label.new(bar_index, high, "ORB ▲", style = label.style_label_down, color = color.new(themeUpSolid, 20), textcolor = color.white, size = size.tiny)
+            array.push(orbLbls, label.new(bar_index, high, "ORB ▲", style = label.style_label_down, color = color.new(themeUpSolid, 20), textcolor = color.white, size = size.tiny))
         if orbBreakDnNow
-            label.new(bar_index, low, "ORB ▼", style = label.style_label_up, color = color.new(themeDnSolid, 20), textcolor = color.white, size = size.tiny)
+            array.push(orbLbls, label.new(bar_index, low, "ORB ▼", style = label.style_label_up, color = color.new(themeDnSolid, 20), textcolor = color.white, size = size.tiny))
         if orbFailNow
-            label.new(bar_index, orbBreakDir == 1 ? high : low, "ORB fail", style = orbBreakDir == 1 ? label.style_label_down : label.style_label_up, color = color.new(color.orange, 20), textcolor = color.white, size = size.tiny)
+            array.push(orbLbls, label.new(bar_index, orbBreakDir == 1 ? high : low, "ORB fail", style = orbBreakDir == 1 ? label.style_label_down : label.style_label_up, color = color.new(color.orange, 20), textcolor = color.white, size = size.tiny))
+        while array.size(orbLbls) > 3 * orbHist
+            label.delete(array.shift(orbLbls))
 // wipe all ORB drawings when off
-if (not masterOn or not orbOn) and array.size(orbBoxes) > 0
+if (not masterOn or not orbOn) and array.size(orbBoxes) + array.size(orbLbls) > 0
+    for lbx in orbLbls
+        label.delete(lbx)
+    array.clear(orbLbls)
     for bx in orbBoxes
         box.delete(bx)
     for l in orbHiLns
@@ -2829,13 +2841,12 @@ mtMcBull := (low >= low[1] - mtMcTol * atr and high >= high[1] - mtMcTol * atr a
 mtMcBear := (high <= high[1] + mtMcTol * atr and low <= low[1] + mtMcTol * atr and close < close[1]) ? mtMcBear + 1 : 0
 
 // ---- signal bar anatomy ----
-float mtRngBar = high - low
-float mtAvgRng = ta.sma(mtRngBar, 20)
-float mtBody = mtRngBar > 0 ? math.abs(close - open) / mtRngBar : 0.0
-float mtCPos = mtRngBar > 0 ? (close - low) / mtRngBar : 0.5
-float mtUW   = mtRngBar > 0 ? (high - math.max(open, close)) / mtRngBar : 0.0
-float mtLW   = mtRngBar > 0 ? (math.min(open, close) - low) / mtRngBar : 0.0
-float mtRelSz = mtAvgRng > 0 ? mtRngBar / mtAvgRng : 1.0
+float mtAvgRng = ta.sma(mtBarRng, 20)
+float mtBody = mtBarRng > 0 ? math.abs(close - open) / mtBarRng : 0.0
+float mtCPos = mtBarRng > 0 ? (close - low) / mtBarRng : 0.5
+float mtUW   = mtBarRng > 0 ? (high - math.max(open, close)) / mtBarRng : 0.0
+float mtLW   = mtBarRng > 0 ? (math.min(open, close) - low) / mtBarRng : 0.0
+float mtRelSz = mtAvgRng > 0 ? mtBarRng / mtAvgRng : 1.0
 bool mtSbBullOk = close > open and mtBody >= mtSbBody and mtCPos >= mtSbClose and mtUW <= mtSbWick and mtRelSz >= mtSbSize
 bool mtSbBearOk = close < open and mtBody >= mtSbBody and (1.0 - mtCPos) >= mtSbClose and mtLW <= mtSbWick and mtRelSz >= mtSbSize
 float mtSqBull = close > open ? math.max(0.0, math.min(1.0, 0.30 * math.min(1.0, mtBody / 0.7) + 0.30 * mtCPos + 0.20 * (1.0 - math.min(1.0, mtUW / 0.4)) + 0.20 * math.min(1.0, mtRelSz / 1.2))) : 0.0
@@ -3321,6 +3332,7 @@ if mtOn and barstate.isconfirmed and not na(atr) and bar_index > 30
         mtEvFboBear := true
     if mtBull.evGenuine or mtBear.evGenuine
         mtLastGenBar := bi
+        mtCond := f_mtCondCalc(mtLastGenBar)   // same-bar TRANSITION after a genuine break
 
     // ---- 4) High 1/2 · Low 1/2 sequences (directional context required) ----
     bool ctxBull = mtD1 >= 0 and (mtD1 == 1 or mtD5 == 1) and mtD15 != -1
