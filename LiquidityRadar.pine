@@ -30,7 +30,6 @@ var string G_TESTED = "⑨ Tested Levels"
 var string G_EXEC   = "⑩ FVG Execution (setups)"
 var string G_BIAS   = "⑪ Daily Bias"
 var string G_REGIME = "⑭ Market Condition (shared)"
-var string G_CLARITY = "⑮ Level Clarity (importance declutter)"
 var string G_ORB    = "⑯ Opening Range Breakout (ORB)"
 
 // -----------------------------------------------------------------------------
@@ -152,7 +151,6 @@ dirAware  = input.bool(true,  "Only show for levels price is approaching", group
 // INPUTS — CLUSTERING & CONFLUENCE
 // -----------------------------------------------------------------------------
 // --- MODE: one dropdown that bundles sensible defaults for a trading style ---
-tradeMode  = input.string("Custom", "Mode (one-click preset)", options = ["Scalp","Intraday","Swing","Clean","Custom"], tooltip = "One-click trading-style preset. It bundles the safe, high-impact display settings — chart density and the confidence window — into a sensible starting point, so you don't have to tune dozens of toggles. SCALP: tight & minimal (nearest few levels). INTRADAY: balanced. SWING: balanced but a wider window for bigger structure. CLEAN: maximum focus, only the strongest levels bold. CUSTOM (default): leaves every setting exactly as you set it. Mode does NOT touch which level CATEGORIES are on or detection lengths — only the focus/density layer — so nothing changes meaning, it just changes what's emphasised.", group = G_CLUST)
 masterOn   = input.bool(true, "MASTER: draw everything", tooltip = "Global on/off for all drawings.", group = G_CLUST)
 // --- declutter: one-click density + top-N-per-side + confidence gate (faint, not removed) ---
 densityPreset = input.string("Balanced", "Chart density", options = ["Minimal","Balanced","Everything","Custom"], tooltip = "One-click declutter. MINIMAL: only the few strongest levels each side drawn boldly, everything else faint. BALANCED: a healthy handful. EVERYTHING: draw all at full strength (legacy). CUSTOM: use the Top-N / gate / fade values below. Levels below the cut are DIMMED (drawn faintly), never removed — so nothing is lost, it just recedes.", group = G_CLUST)
@@ -201,15 +199,12 @@ dolConfW   = input.bool(true, "Weight pull by each level's confluence score", to
 dolNearBias = input.float(1.5, "Nearest-pool emphasis", minval = 0.0, maxval = 4.0, step = 0.25, tooltip = "Extra sharpening of the distance decay. Higher = the nearest untapped pool dominates the pull (price hunts the closest liquidity first). 0 = flat.", group = G_DOL)
 dolFreshW  = input.bool(true, "Freshness premium (untested pulls harder)", tooltip = "Levels price has NOT yet reacted off pull harder; levels already wicked into are discounted.", group = G_DOL)
 showLvlConf = input.bool(true, "Show per-level confidence % (target likelihood)", tooltip = "Each level/zone gets a 0-100 score for how likely price heads THERE next. The single most-likely target is flagged 🎯.", group = G_DOL)
-lvlRejGauge = input.bool(true, "  Level reaction gauge (reject vs sweep, live)", tooltip = "A LIVE read shown next to a level's confidence % ONLY while price is AT/near the level: how likely price is to REJECT / reverse off it (⟲NN, 50-100) vs SWEEP through it (⇥NN, 0-50). Different from the confidence % (which is 'how likely price heads TO the level') — this is 'what happens WHEN it gets there'. It blends the level's IMPORTANCE/type, the APPROACH strength (fast momentum into it → more likely to sweep through; slow → reject), an ABSORPTION wick on the touch bar, whether the level is already TESTED (weaker → sweep), and its CONFLUENCE. Equal highs/lows (engineered stop liquidity) correctly lean SWEEP-THROUGH rather than reject. Heuristic, not a probability.", group = G_DOL)
 lvlConfMode = input.string("Magnet quality", "  Confidence % basis", options = ["Magnet quality","Raw pull"], tooltip = "Magnet quality (recommended): distance is removed so the % reflects how STRONG a magnet each level is for its distance — a far but heavy pool (equal highs + order block + old + fresh) can out-score a near lone swing. Raw pull (legacy): the % is each level's share of the proximity-weighted gravity, so the nearest level almost always dominates (obvious, less useful). The 🎯 still marks the nearest strongest pull in both modes.", group = G_DOL)
-lvlConfWin  = input.int(5, "  Confidence window (levels each side)", minval = 1, maxval = 50, tooltip = "Only the N nearest levels ABOVE and N nearest BELOW price get a confidence %, and the % is normalized over just those levels. Keeps intraday reads focused on the levels price can realistically reach instead of diluting the % across far higher-timeframe levels. Lower = tighter/more decisive; higher = wider context. 🎯 still uses all levels.", group = G_DOL)
 // --- projection pass (all reuse existing pull / velocity / OB-FVG / range machinery) ---
 projClear   = input.bool(true,  "Path-clearance on 🎯 target", tooltip = "Discounts the primary magnet by what stands between price and it: opposing order blocks / FVGs / strong levels in the path lower a 0-100 clearance score. A clear runway reads high; a blocked path reads low. Shown as 🛣️ on the target row.", group = G_DOL)
 projClearW  = input.float(1.0, "  Clearance sensitivity", minval = 0.0, maxval = 3.0, step = 0.25, tooltip = "How hard each obstacle in the path cuts the clearance score. 0 = ignore obstacles; higher = a single blocker matters more.", group = G_DOL)
 projETA     = input.bool(true,  "ETA to 🎯 target (time projection)", tooltip = "Uses recent price velocity to project HOW LONG until the primary magnet is reached (bars or clock time, per the Countdown setting). Adds a ⏱ estimate to the target row.", group = G_DOL)
 projEqui    = input.bool(true,  "Equilibrium / range-state (Prem·EQ·Disc)", tooltip = "Shows where price sits in the current dealing range: Premium (upper), Equilibrium (~50%), or Discount (lower). Crossing equilibrium toward a pool is a continuation tell. Adds a range-state row to the banner.", group = G_DOL)
-projConfMom = input.bool(true,  "Confidence momentum ▲▼", tooltip = "Marks whether each level's confidence % is RISING or FALLING versus the previous bar. A strengthening magnet (▲) is a firming draw; a fading one (▼) warns of rejection. Appended to the per-level %.", group = G_DOL)
 projStacked = input.bool(true,  "Stacked-agreement flag ⭐", tooltip = "Flags a level where multiple independent signals align — DOL bias side + primary magnet + an overlapping order block / FVG. 3+ agreeing signals is the highest-conviction projection. Adds ⭐ to that level.", group = G_DOL)
 // --- de-skew: stop a level price is CURRENTLY forming/sitting on from inflating confidence ---
 projLiveSess = input.bool(true, "Exclude forming session H/L from magnet", tooltip = "A still-forming session high/low tracks price in real time, so it sits ~0 distance away and unfairly dominates the confidence % (price 'chasing' a level it is itself creating). When on, the CURRENT session's extreme still draws as a line but takes no magnet / confidence role until the session closes or price pulls away — it becomes real resting liquidity, then re-enters the pull.", group = G_DOL)
@@ -238,9 +233,6 @@ extendR    = input.int(10, "Line extend-right (bars)", minval = 0, group = G_STY
 ageExtend  = input.bool(true, "Age-scaled extension (older = longer)", tooltip = "Each level's line grows with how long it has persisted, so mature levels are visibly longer.", group = G_STYLE)
 ageMaxBars = input.int(20, "  Max extra bars from age", minval = 0, maxval = 200, group = G_STYLE)
 ageScale   = input.float(0.35, "  Age scale (bars added per bar of age)", minval = 0.05, maxval = 1.0, step = 0.05, group = G_STYLE)
-compact    = input.bool(false, "Compact Mode (hide levels far from price)", group = G_STYLE)
-nearN      = input.int(3, "  Nearest N above & below", minval = 1, maxval = 10, group = G_STYLE)
-compactBand = input.float(4.0, "  Compact band (× ATR × N)", minval = 1.0, step = 0.5, group = G_STYLE)
 colBull  = input.color(color.new(#26a69a, 0),  "Bullish / High color", group = G_STYLE)
 colBear  = input.color(color.new(#ef5350, 0),  "Bearish / Low color",  group = G_STYLE)
 colSess  = input.color(color.new(#42a5f5, 0),  "Session color",        group = G_STYLE)
@@ -317,19 +309,6 @@ regimeOn   = input.bool(true,  "Show market condition (TREND / RANGE / TRANSITIO
 mtTrendHi   = input.float(0.55, "  Trend score threshold", minval = 0.2, maxval = 0.9, step = 0.05, group = G_REGIME)
 mtTransBars = input.int(15, "  Transition window after a microtrendline break (bars)", minval = 3, maxval = 60, group = G_REGIME)
 regimeGateExec = input.bool(false, "  Gate execution: suppress continuation setups mid-range", tooltip = "When ON and the market condition is RANGE, the FVG execution engine will NOT arm CONTINUATION setups in the middle of the range — but still allows REVERSAL setups near the range extremes (premium/discount). This directly targets getting chopped up trading the middle of a range. OFF = the regime is informational only and never blocks a setup.", group = G_REGIME)
-
-// -----------------------------------------------------------------------------
-// INPUTS — LEVEL CLARITY (importance declutter)
-// -----------------------------------------------------------------------------
-// An alternative to merged cluster zones: keep every level as its OWN identifiable line, but
-// only LABEL the few most important ones so the right edge doesn't flood. Importance tiers:
-//   Tier 1 (major): PDH/PDL · PWH/PWL · PMH/PML · daily/weekly/monthly/midnight opens
-//   Tier 2 (significant): equal highs/lows · HTF swings · VP POC/VAH/VAL · breakers
-//   Tier 3 (minor): local swings · session H/L · relative-equal H/L
-clarityOn   = input.bool(false, "Level-clarity mode (label only important levels)", tooltip = "Fixes the cluster-zone problem (can't tell which level price is reacting to) WITHOUT flooding the right edge. Keeps every level as its own distinct line, but only gives the most IMPORTANT ones (by tier) a full name/%% label — the rest draw as bare lines with just a small price, so you can still see exactly where each level is. Turning this on overrides cluster merging so you always see individual levels. Pair it with the importance floor + labels-per-side below.", group = G_CLARITY)
-clarityFloor = input.string("Tier 2+ (hide minor)", "  Importance floor", options = ["All tiers","Tier 2+ (hide minor)","Tier 1 only (major)"], tooltip = "Which levels to draw at all. 'All tiers': every level (as lines). 'Tier 2+': hide minor local swings / session / relative-EQ levels. 'Tier 1 only': just the major previous-period levels + key opens — the cleanest.", group = G_CLARITY)
-clarityLblN = input.int(3, "  Labels per side (top-N by importance)", minval = 1, maxval = 12, tooltip = "Only the N most important levels ABOVE and N BELOW price get a FULL label (name · price · %%). All other drawn levels are bare lines with a small price tag, so the right edge stays clean. Importance = tier first, then nearer-to-price as the tiebreak.", group = G_CLARITY)
-clarityBare = input.bool(true, "  Bare lines get a small price tag", tooltip = "Un-labeled (non-top-N) levels still show a tiny price so you can identify them. Off = pure lines with nothing at the right edge.", group = G_CLARITY)
 
 // -----------------------------------------------------------------------------
 // INPUTS — OPENING RANGE BREAKOUT (ORB)
@@ -448,12 +427,9 @@ mtStatsTo   = input.time(timestamp("2100-01-01T00:00:00"), "    To", group = G_M
 f_lineStyle() =>
     lineStyleI == "Dashed" ? line.style_dashed : lineStyleI == "Dotted" ? line.style_dotted : line.style_solid
 
-// --- MODE -> effective density preset + confidence window (Custom = leave raw inputs) ---
-// Mode is a convenience layer over the existing density/window controls; it only maps to a
-// density preset name + a confidence-window size, so behavior stays identical to setting
-// those by hand. It never changes level categories or detection lengths.
-string eDensity = tradeMode == "Scalp" ? "Minimal" : tradeMode == "Intraday" ? "Balanced" : tradeMode == "Swing" ? "Balanced" : tradeMode == "Clean" ? "Minimal" : densityPreset
-int   eConfWin  = tradeMode == "Scalp" ? 3 : tradeMode == "Intraday" ? 5 : tradeMode == "Swing" ? 8 : tradeMode == "Clean" ? 4 : lvlConfWin
+// effective density preset + confidence window
+string eDensity = densityPreset
+int   eConfWin  = 5          // confidence % shown on the 5 nearest levels each side
 
 // --- density preset -> effective declutter params (Custom uses the raw inputs) ---
 // eTopN: how many levels per side (by confidence) stay BOLD; eGate: faint below this
@@ -610,55 +586,6 @@ f_rejGauge(float gTop, float gBot, bool isBull, float creatQ) =>
         lean := lean - (bodyFrac - 0.5) * 2.0 * 14.0             // trend -> accept(-), wicky -> reject(+)
     [active, int(math.max(0.0, math.min(100.0, math.round(lean))))]
 
-// LIVE level-reaction gauge — only meaningful when price is AT / near the level. Returns
-// [active, rejLean] where 100 = strong REJECT/reverse off the level, 0 = strong SWEEP through,
-// 50 = neutral. A level is RESTING LIQUIDITY, so it blends:
-//   • importance/type: major levels (weekly/PDH) defend harder -> reject; minor swings less so
-//   • EQUAL highs/lows are ENGINEERED to be taken -> lean SWEEP (the key level-specific nuance)
-//   • approach strength: fast momentum into it -> sweep; slow/tentative -> reject
-//   • absorption wick on the touch bar (toward the level) -> reject
-//   • tested: an already-probed level is weaker on the next touch -> sweep
-//   • confluence (0..1): stacked / OB-FVG-backed levels react harder -> reject
-// name is the level label (e.g. "PWH","EQH","BSL"); conf01 is a 0..1 confluence strength.
-f_lvlGauge(float price, string name, bool tested, float conf01, float atrU) =>
-    float atrL = math.max(nz(atrU), syminfo.mintick)
-    bool active = math.abs(close - price) <= atrL * 0.15 or (high >= price and low <= price)
-    float lean = 50.0
-    if active
-        // 1) importance by type (mirrors the DOL hierarchy) -> reject strength 0..1
-        float imp = 0.4
-        if str.contains(name, "PWH") or str.contains(name, "PWL") or str.contains(name, "PMH") or str.contains(name, "PML")
-            imp := 1.0
-        else if str.contains(name, "PDH") or str.contains(name, "PDL")
-            imp := 0.8
-        else if str.contains(name, "Open") or str.contains(name, "Midnight")
-            imp := 0.75
-        else if str.contains(name, "POC") or str.contains(name, "VAH") or str.contains(name, "VAL")
-            imp := 0.7
-        else if str.contains(name, "Breaker")
-            imp := 0.7
-        else if str.contains(name, "NY") or str.contains(name, "London") or str.contains(name, "Asia")
-            imp := 0.5
-        lean := lean + (imp - 0.5) * 2.0 * 16.0
-        // 2) EQUAL highs/lows are engineered stop liquidity -> lean SWEEP (overrides importance)
-        if str.contains(name, "EQ")
-            lean := lean - 18.0
-        // 3) approach strength — fast into the level sweeps (-), slow rejects (+). ±16
-        float apSpeed = math.min(nz(velocity) / (atrL * 0.5), 2.0) / 2.0
-        lean := lean - (apSpeed - 0.5) * 2.0 * 16.0
-        // 4) absorption wick toward the level on the touch bar. ±20
-        float rng = math.max(high - low, syminfo.mintick)
-        float lowerWick = (math.min(open, close) - low) / rng
-        float upperWick = (high - math.max(open, close)) / rng
-        bool  above = price >= close                     // resistance above -> upper wick rejects
-        float absorb = above ? upperWick : lowerWick
-        lean := lean + (absorb - 0.2) * 20.0 / 0.8
-        // 5) tested state — a probed level is weaker next touch -> sweep. -12
-        if tested
-            lean := lean - 12.0
-        // 6) confluence — stacked / backed levels react harder -> reject. ±12
-        lean := lean + (math.min(math.max(nz(conf01), 0.0), 1.0) - 0.5) * 2.0 * 12.0
-    [active, int(math.max(0.0, math.min(100.0, math.round(lean))))]
 
 f_tablePos(string p) =>
     p == "Top Right" ? position.top_right : p == "Top Left" ? position.top_left : p == "Bottom Right" ? position.bottom_right : p == "Bottom Left" ? position.bottom_left : p == "Middle Left" ? position.middle_left : position.middle_right
@@ -714,20 +641,10 @@ f_sideEmojiI(int side, float lvl) =>
 f_sideTagI(int side, float lvl) =>
     lvl >= close ? "BSL" : "SSL"
 
-// level importance tier for the clarity declutter: 1 = major, 2 = significant, 3 = minor
-f_lvlTier(string nm) =>
-    int t = 3
-    if str.contains(nm, "PDH") or str.contains(nm, "PDL") or str.contains(nm, "PWH") or str.contains(nm, "PWL") or str.contains(nm, "PMH") or str.contains(nm, "PML") or str.contains(nm, "Open") or str.contains(nm, "Midnight")
-        t := 1
-    else if str.contains(nm, "EQH") or str.contains(nm, "EQL") or str.contains(nm, "POC") or str.contains(nm, "VAH") or str.contains(nm, "VAL") or str.contains(nm, "Breaker")
-        t := 2
-    t
 
 f_sessName(string base, bool carried) =>
     (sessReclassify and carried) ? (base + " (swing)") : base
 
-f_inCompactRange(float lvl) =>
-    not compact or (na(lvl) ? false : math.abs(lvl - close) <= nz(atr) * (nearN * compactBand))
 
 f_extLen(int birthBar) =>
     if not ageExtend or na(birthBar)
@@ -1529,7 +1446,7 @@ var lv_primary = array.new<bool>() // declutter: true = among the Top-N by confi
 
 // variant that can flag a level as "no magnet" (still drawn, but excluded from the DOL pull)
 f_addLevelM(bool active, float price, string name, color col, string emo, int birthBar, int side, bool noMagnet) =>
-    if masterOn and active and not na(price) and f_inCompactRange(price)
+    if masterOn and active and not na(price)
         array.push(lv_price, price)
         array.push(lv_name, name)
         array.push(lv_col, col)
@@ -2122,26 +2039,6 @@ f_eta(float target) =>
             outTxt := secs < 3600 ? (" ⏱≈" + str.tostring(math.round(secs / 60)) + "m") : (secs < 86400 ? (" ⏱≈" + str.tostring(math.round(secs / 3600)) + "h") : (" ⏱≈" + str.tostring(math.round(secs / 86400)) + "d"))
     outTxt
 
-// Confidence momentum: remember each level's confidence % keyed by rounded price so we
-// can show ▲/▼ vs the previous bar. Two maps: *_prev is last bar's snapshot (read from),
-// *_now is this bar's fresh values (written to); they swap at the end of the last-bar block.
-var cm_keysPrev = array.new<float>()
-var cm_valsPrev = array.new<float>()
-var cm_keysNow  = array.new<float>()
-var cm_valsNow  = array.new<float>()
-f_cmKey(float p, float atrU) =>
-    math.round(p / math.max(atrU * 0.1, syminfo.mintick))
-f_cmPrev(float p, float atrU) =>
-    float k = f_cmKey(p, atrU)
-    float found = na
-    if array.size(cm_keysPrev) > 0
-        for ci = 0 to array.size(cm_keysPrev) - 1
-            if array.get(cm_keysPrev, ci) == k
-                found := array.get(cm_valsPrev, ci)
-    found
-f_cmStore(float p, float atrU, float confPct) =>
-    array.push(cm_keysNow, f_cmKey(p, atrU))
-    array.push(cm_valsNow, confPct)
     0
 
 // Stacked agreement: does a price band overlap an order block OR an FVG?
@@ -2190,8 +2087,6 @@ if barstate.islast
     array.clear(lv_inwin)
     array.clear(lv_nomag)
     array.clear(lv_primary)
-    array.clear(cm_keysNow)          // fresh confidence-momentum snapshot this bar
-    array.clear(cm_valsNow)
 
     f_addLevel(showPDHL, pdhM,   "PDH",     colBull, emoPrev, b_pdh,  1)
     f_addLevel(showPDHL, pdlM,   "PDL",     colBear, emoPrev, b_pdl, -1)
@@ -2425,7 +2320,7 @@ if barstate.islast
             bool  zPrimary = array.get(lv_primary, array.get(idx, gi))   // declutter: any Top-N member?
             float sumPull = zInWin ? array.get(lv_pull, array.get(idx, gi)) : 0.0
             float sumQual = zInWin ? array.get(lv_qual, array.get(idx, gi)) : 0.0
-            while clusterOn and not clarityOn and gi + 1 < idxN and (array.get(lv_price, array.get(idx, gi + 1)) - array.get(lv_price, array.get(idx, gi))) <= mergeDist
+            while clusterOn and gi + 1 < idxN and (array.get(lv_price, array.get(idx, gi + 1)) - array.get(lv_price, array.get(idx, gi))) <= mergeDist
                 gi := gi + 1
                 float p = array.get(lv_price, array.get(idx, gi))
                 sumP := sumP + p
@@ -2447,27 +2342,6 @@ if barstate.islast
             bool drawGroup = members >= minStrength
             if drawGroup and members == 1
                 float p = array.get(lv_price, array.get(idx, startI))
-                string pName = array.get(lv_name, array.get(idx, startI))
-                // ---- level-clarity mode: importance floor + top-N-by-importance labeling ----
-                int   clTier = f_lvlTier(pName)
-                int   floorTier = clarityFloor == "Tier 1 only (major)" ? 1 : clarityFloor == "Tier 2+ (hide minor)" ? 2 : 3
-                bool  claritySkip = clarityOn and clTier > floorTier     // below the importance floor -> don't draw
-                bool  clarityLabeled = true
-                if clarityOn and not claritySkip
-                    // labeled if fewer than clarityLblN same-side levels outrank it (better tier,
-                    // or equal tier but nearer to price) — so only the top-N important per side get text.
-                    bool  above0 = p >= close
-                    float dist0  = math.abs(p - close)
-                    int   outrank = 0
-                    for jj = 0 to nl - 1
-                        if not array.get(lv_nomag, jj)
-                            float pj = array.get(lv_price, jj)
-                            if (pj >= close) == above0 and not (pj == p)
-                                int tj = f_lvlTier(array.get(lv_name, jj))
-                                bool better = tj < clTier or (tj == clTier and math.abs(pj - close) < dist0)
-                                if better
-                                    outrank := outrank + 1
-                    clarityLabeled := outrank < clarityLblN
                 int  sd = array.get(lv_side, array.get(idx, startI))
                 color c = f_sideColI(sd, p, array.get(lv_col, array.get(idx, startI)))
                 string emo = sideColorOn ? f_sideEmojiI(sd, p) : array.get(lv_emo, array.get(idx, startI))
@@ -2481,24 +2355,12 @@ if barstate.islast
                 float lp = lpDen > 0 ? lpNum / lpDen * 100.0 : 0.0
                 bool isTop = not na(topPullPrice) and math.abs(p - topPullPrice) <= syminfo.mintick
                 float atrUt = math.max(nz(atr), syminfo.mintick)
-                // confidence momentum ▲/▼ vs previous bar (feature 4)
-                string momTag = ""
-                if projConfMom and showLvlConf and lInWin
-                    float prevC = f_cmPrev(p, atrUt)
-                    momTag := na(prevC) ? "" : (lp > prevC + 0.5 ? " ▲" : (lp < prevC - 0.5 ? " ▼" : " ="))
-                    f_cmStore(p, atrUt, lp)
                 // stacked-agreement ⭐: DOL-side agrees + it's the magnet + overlaps OB/FVG (feature 8)
                 bool sideAgree = (dolDrawUp and p >= close) or (not dolDrawUp and p < close)
                 string stackTag = (projStacked and lInWin and isTop and sideAgree and f_hasOBFVG(p - atrUt * 0.05, p + atrUt * 0.05)) ? " ⭐" : ""
                 // tested/virgin: probed levels get a ✓ + dotted, dimmed line (still standing, just 'used')
                 bool lTested = f_isTested(p, atrUt)
-                // live level-reaction gauge (reject vs sweep) — only while price is at/near the level
-                string lvlGaugeTag = ""
-                if lvlRejGauge and lInWin
-                    [lgActive, lgLean] = f_lvlGauge(p, array.get(lv_name, array.get(idx, startI)), lTested, 0.4, atrUt)
-                    if lgActive
-                        lvlGaugeTag := lgLean >= 50 ? (" ⟲" + str.tostring(lgLean)) : (" ⇥" + str.tostring(lgLean))
-                string confLvlTag = (showLvlConf and lInWin) ? ((isTop ? " 🎯" : " ") + str.tostring(math.round(lp)) + "%" + momTag + stackTag + lvlGaugeTag) : ""
+                string confLvlTag = (showLvlConf and lInWin) ? ((isTop ? " 🎯" : " ") + str.tostring(math.round(lp)) + "%" + stackTag) : ""
                 string testTag = (showTested and lTested) ? " ✓" : ""
                 // declutter: faint if de-prioritised (beyond Top-N) or below the confidence gate
                 bool lPrimary = array.get(lv_primary, array.get(idx, startI))
@@ -2507,17 +2369,13 @@ if barstate.islast
                 bool lFaint = (densOn and (not lPrimary or (lInWin and lp < eGate))) or lCounterBias
                 color cLine = lFaint ? color.new(c, densFadeOp) : ((showTested and lTested) ? color.new(c, 55) : c)
                 string lStyle = (lFaint or (showTested and lTested)) ? line.style_dotted : f_lineStyle()
-                // clarity mode: a non-top-N level draws as a BARE line (tiny price or nothing);
-                // a below-floor level is skipped entirely. Faint levels shed tags as before.
-                bool clarityBareLine = clarityOn and not clarityLabeled
-                string full = clarityBareLine ? (clarityBare ? str.tostring(p, format.mintick) : "") : (lFaint ? (array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick)) : (tier + (emo == "None" ? "" : emo + " ") + array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick) + confLvlTag + testTag + f_countdown(p)))
-                if not claritySkip
-                    line ln = line.new(bar_index, p, bar_index + ext, p, color = cLine, width = lineWidth, style = lStyle)
-                    color soloBg  = (lFaint or clarityBareLine) ? color.new(c, densFadeOp) : (outlineTags ? c : color.new(c, 85))
-                    color soloTxt = (lFaint or clarityBareLine) ? color.new(c, math.max(densFadeOp - 30, 0)) : (outlineTags ? clustLblTxt : c)
-                    label lb = label.new(bar_index + ext, p, full, style = label.style_label_left, color = soloBg, textcolor = soloTxt, size = clarityBareLine ? size.tiny : f_labelSize())
-                    array.push(pool_lines, ln)
-                    array.push(pool_labels, lb)
+                string full = lFaint ? (array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick)) : (tier + (emo == "None" ? "" : emo + " ") + array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick) + confLvlTag + testTag + f_countdown(p))
+                line ln = line.new(bar_index, p, bar_index + ext, p, color = cLine, width = lineWidth, style = lStyle)
+                color soloBg  = lFaint ? color.new(c, densFadeOp) : (outlineTags ? c : color.new(c, 85))
+                color soloTxt = lFaint ? color.new(c, math.max(densFadeOp - 30, 0)) : (outlineTags ? clustLblTxt : c)
+                label lb = label.new(bar_index + ext, p, full, style = label.style_label_left, color = soloBg, textcolor = soloTxt, size = f_labelSize())
+                array.push(pool_lines, ln)
+                array.push(pool_labels, lb)
             else if drawGroup
                 float mid = sumP / members
                 float t = math.min((members - 1) / 4.0, 1.0)
@@ -2545,24 +2403,12 @@ if barstate.islast
                     float zPull = zDen > 0 ? zNum / zDen * 100.0 : 0.0
                     bool zTop = not na(topPullPrice) and topPullPrice >= minP - pad and topPullPrice <= maxP + pad
                     float atrUz = math.max(nz(atr), syminfo.mintick)
-                    // confidence momentum ▲/▼ vs previous bar (feature 4)
-                    string zMomTag = ""
-                    if projConfMom and showLvlConf and zInWin
-                        float zPrevC = f_cmPrev(mid, atrUz)
-                        zMomTag := na(zPrevC) ? "" : (zPull > zPrevC + 0.5 ? " ▲" : (zPull < zPrevC - 0.5 ? " ▼" : " ="))
-                        f_cmStore(mid, atrUz, zPull)
                     // stacked-agreement ⭐: DOL-side agrees + it's the magnet + zone overlaps OB/FVG (feature 8)
                     bool zSideAgree = (dolDrawUp and mid >= close) or (not dolDrawUp and mid < close)
                     string zStackTag = (projStacked and zInWin and zTop and zSideAgree and f_hasOBFVG(minP - pad, maxP + pad)) ? " ⭐" : ""
                     // tested/virgin zone: dashed hollow border + ✓ when price has probed the zone
                     bool zTested = showTested and (f_isTested(mid, atrUz) or f_isTested(minP, atrUz) or f_isTested(maxP, atrUz))
-                    // live level-reaction gauge (reject vs sweep) for the zone, using its confluence score
-                    string zGaugeTag = ""
-                    if lvlRejGauge and zInWin
-                        [zgActive, zgLean] = f_lvlGauge(mid, names, zTested, math.min(confS / 100.0, 1.0), atrUz)
-                        if zgActive
-                            zGaugeTag := zgLean >= 50 ? (" ⟲" + str.tostring(zgLean)) : (" ⇥" + str.tostring(zgLean))
-                    string lvlConfTag = (showLvlConf and zInWin) ? ((zTop ? "  🎯" : "  →") + str.tostring(math.round(zPull)) + "%" + zMomTag + zStackTag + zGaugeTag) : ""
+                    string lvlConfTag = (showLvlConf and zInWin) ? ((zTop ? "  🎯" : "  →") + str.tostring(math.round(zPull)) + "%" + zStackTag) : ""
                     if zTested
                         box.set_border_style(bx, line.style_dashed)
                         box.set_bgcolor(bx, color.new(zbase, 92))
@@ -2603,13 +2449,6 @@ if barstate.islast
                     label olb = label.new(obCx, (obT + obB) / 2.0, str.tostring(obSc) + "%", style = label.style_text_outline, textcolor = color.white, color = color.new(bull ? obColBull : obColBear, 100), size = size.small)
                     array.push(xtra_labels, olb)
 
-    // confidence-momentum: snapshot this bar's values into *_prev for next bar's ▲/▼
-    array.clear(cm_keysPrev)
-    array.clear(cm_valsPrev)
-    if array.size(cm_keysNow) > 0
-        for ci = 0 to array.size(cm_keysNow) - 1
-            array.push(cm_keysPrev, array.get(cm_keysNow, ci))
-            array.push(cm_valsPrev, array.get(cm_valsNow, ci))
 
     // (DOL banner removed — it conflicted with the Daily Bias banner. The DOL COMPUTATION
     //  above — dm_dirState / dm_bias / bslEff / sslEff / dolTgt — is retained because the
