@@ -13,8 +13,10 @@
 // =============================================================================
 indicator("Liquidity Radar", overlay = true, scale = scale.right, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 5000)
 
-// Anchor plot so the compiler always sees a top-level drawing output.
-plot(na, "anchor", display = display.none)
+// Hidden anchor plot of the close: gives TradingView a real price series so the script (and
+// every line / label / box it draws) shares the chart's price scale and stays attached to the
+// candles when zooming or scrolling. display.none = never drawn, no scale label, no data window.
+plot(close, "price anchor", display = display.none)
 
 // -----------------------------------------------------------------------------
 // GROUP NAMES
