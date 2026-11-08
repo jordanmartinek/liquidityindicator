@@ -6,9 +6,10 @@
 //     equal highs/lows — all removed once swept.
 //   • Stacked liquidity: nearby levels merge into strength-rated zones.
 //   • Confluence score (0-100) per zone.
-//   • Draw-on-Liquidity (DOL) bias gauge + conviction.
-//   • Order Blocks and Fair Value Gaps.
-//   • Sweep + reversal (SFP) markers, per-level countdown, age-scaled extension.
+//   • Per-level confidence % + 🎯 most-likely target (draw-on-liquidity model).
+//   • Order Blocks / Breakers and Fair Value Gaps (strength-ranked) + FVG execution setups.
+//   • Sweep + reversal (SFP) markers, per-level countdown, Daily Bias, ORB.
+//   • ⑬ Brooks microtrendline module for execution + entries (toggle).
 // =============================================================================
 indicator("Liquidity Radar", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 5000)
 
@@ -23,17 +24,13 @@ var string G_SESS   = "② Sessions"
 var string G_STRUCT = "③ Structure (swings · EQ · FVG · OB · SFP)"
 var string G_CD     = "④ Countdown"
 var string G_CLUST  = "⑤ Clustering & Confluence"
-var string G_DOL    = "⑥ Draw-on-Liquidity Gauge"
+var string G_DOL    = "⑥ Level Confidence"
 var string G_STYLE  = "⑦ Style"
-var string G_EMO    = "⑧ Emoji Tags"
-var string G_TESTED = "⑨ Tested Levels"
-var string G_EXEC   = "⑩ FVG Execution (setups)"
-var string G_BIAS   = "⑪ Daily Bias"
-var string G_EMA    = "⑫ Moving Averages (EMA)"
-var string G_ATRP   = "⑬ ATR Range Projection"
-var string G_REGIME = "⑭ Market Conditions (regime)"
-var string G_CLARITY = "⑮ Level Clarity (importance declutter)"
-var string G_ORB    = "⑯ Opening Range Breakout (ORB)"
+var string G_TESTED = "⑧ Tested Levels"
+var string G_EXEC   = "⑨ FVG Execution (setups)"
+var string G_BIAS   = "⑩ Daily Bias"
+var string G_REGIME = "⑪ Market Condition (shared)"
+var string G_ORB    = "⑫ Opening Range Breakout (ORB)"
 
 // -----------------------------------------------------------------------------
 // INPUTS — PREVIOUS-PERIOD LEVELS
@@ -59,15 +56,6 @@ nySess    = input.session("1300-2100", "  New York time", group = G_SESS)
 sessResetDaily = input.bool(true, "Reset session H/L each new day", tooltip = "At the start of a new trading day, clear the previous day's session highs/lows so stale levels don't linger.", group = G_SESS)
 sessRemoveSwept = input.bool(true, "Remove session level once swept", tooltip = "If price trades through a session high/low, drop it (the liquidity has been taken).", group = G_SESS)
 sessReclassify = input.bool(true, "Reclassify unswept session H/L as swings", tooltip = "A session high/low that survives into the next day (never swept) gets relabeled e.g. 'Asia H (swing)'.", group = G_SESS)
-// --- overnight (Asia/London) session H/L as plain labelled horizontal lines ---
-// Additive visual overlay only: reuses the session highs/lows the indicator already tracks
-// (asiaH/asiaL/londH/londL) and draws each as one simple labelled line. Does not change how
-// sessions are computed or how the levels/clusters/DOL consume them.
-showOvernightLines = input.bool(false, "Draw Asia/London session H/L lines", tooltip = "Overlay the ASIAN and LONDON session highs and lows as simple labelled horizontal lines drawn directly on the chart — a plain visual of the overnight ranges (these levels are already used by the clusters/DOL; this just shows them as lines). Lines use the session high/low the indicator already tracks and disappear when that level is swept/cleared.", group = G_SESS)
-ovAsiaCol = input.color(color.new(#ffa726, 0), "  Asian session line color", group = G_SESS)
-ovLondCol = input.color(color.new(#29b6f6, 0), "  London session line color", group = G_SESS)
-ovLineExtend = input.bool(true, "  Extend lines to the right", tooltip = "Extend each session high/low line to the right edge so it's easy to see where price sits relative to the overnight range. Off = the line spans only from where the level formed to the current bar.", group = G_SESS)
-ovShowLabels = input.bool(true, "  Label the lines (Asia H/L · London H/L)", group = G_SESS)
 
 // -----------------------------------------------------------------------------
 // INPUTS — STRUCTURE
@@ -93,36 +81,27 @@ fvgFillMode = input.string("Body close through", "  FVG invalidation", options =
 fvgFilterOn   = input.bool(true,  "  Filter FVGs by strength", tooltip = "RANK every fair value gap 0-100 (a relative QUALITY ranking, not a probability) and only draw the ones that clear the threshold below. The rank = a CORE BASE (the quality every gap has: size vs ATR · creation volume · displacement · premium/discount — a clean ordinary gap lands ~40-55) PLUS BONUS points added on top only when the occasional factors fire (inside an order/breaker block, inversion/IFVG, higher-timeframe-gap alignment, round-number/VWAP/OTE confluence, liquidity-pool confluence, sweep precedence), minus a discount if the gap is already tested or poorly located. Absent bonuses never penalise — so a valid gap keeps a usable score and confluent gaps rise above ordinary ones. Typical: trivial gap <30, ordinary 40-55, confluent 65-90+.", group = G_STRUCT)
 fvgMinStr     = input.int(35, "    Min FVG strength % to draw", minval = 0, maxval = 100, tooltip = "Fair value gaps ranking below this are hidden (or dimmed, if 'Dim weak FVGs' is on). On the core-base+bonus scale a TYPICAL valid gap ranks ~45-60 and confluent gaps 65-90+, so ~35 keeps genuine gaps while dimming only the trivial ones. TUNE THIS to the % values you actually see on your chart: if too many gaps dim, lower it; if too many show, raise it.", group = G_STRUCT)
 fvgDimWeak    = input.bool(true, "    Dim weak FVGs instead of hiding", tooltip = "Rather than removing sub-threshold gaps entirely, draw them very faintly so context is kept while the strong gaps stand out. Off = weak gaps are not drawn at all.", group = G_STRUCT)
-fvgShowStr    = input.bool(true, "    Label FVG strength %", tooltip = "Print each drawn gap's strength % (plus tags: 'htf' = aligns with a higher-timeframe gap, 'liq' = sits on/just beyond a liquidity pool (EQ / prev-period / open / session / swing / VP), 'swp' = formed right after a same-direction sweep (SFP), 'inv' = followed an inversion, 'blk' = inside an order/breaker block) so you can see WHY it scored the way it did.", group = G_STRUCT)
-fvgLblStyle   = input.string("Inside box (centered)", "    FVG label style", options = ["Inside box (centered)","Pointer (distinct)","Plain text (no box)","Callout (like levels)"], tooltip = "How the FVG strength % label is drawn, so it doesn't blend into the level/cluster callouts when zoomed out. 'Inside box (centered)': the % sits CENTERED inside the gap box itself — tied directly to its box, clearly separate from the level labels at the right edge (recommended). 'Pointer (distinct)': a tinted pointer tag at the LEFT edge of the gap. 'Plain text (no box)': borderless text in the gap color — the most minimal. 'Callout (like levels)': the original left-callout box at the right edge.", group = G_STRUCT)
+fvgShowStr    = input.bool(true, "    Label FVG strength %", tooltip = "Print each drawn gap's strength % (plus tags: 'htf' = aligns with a higher-timeframe gap, 'liq' = sits on/just beyond a liquidity pool (EQ / prev-period / open / session / swing), 'swp' = formed right after a same-direction sweep (SFP), 'inv' = followed an inversion, 'blk' = inside an order/breaker block) so you can see WHY it scored the way it did.", group = G_STRUCT)
 fvgKeep       = input.int(50, "    Max FVGs kept", minval = 5, maxval = 100, tooltip = "How many unfilled fair value gaps to retain before the OLDEST is dropped. Raise this to keep more / older gaps far back in history (e.g. gaps sitting above the current swing high); lower it to keep the chart light. Note: gaps older than the chart's loaded history still can't be drawn, and each gap uses a drawing-object slot shared with order blocks and cluster zones (budget is 500).", group = G_STRUCT)
-fvgRejGauge  = input.bool(true, "    Rejection gauge (live, when price is in the gap)", tooltip = "A LIVE read shown next to the % ONLY while price is at/returning into the gap: how likely price is to REJECT (bounce off) vs ACCEPT (fill through) the gap right now. Shown as ⟲NN (reject-leaning, 50-100) or ⇥NN (accept-leaning, 0-50). It blends: the STRENGTH of the move that created the gap, the STRENGTH of the pullback returning into it (fast momentum return → more likely to blow through; slow drift → more likely to reject), ABSORPTION (a wick pushing back out of the gap on the touch bar), and the CHARACTER of the candles approaching the gap (pure trend bodies → accept-leaning; wicky/indecisive → reject-leaning). This is a heuristic read, NOT a measured probability, and it is separate from the formation strength %.", group = G_STRUCT)
-fvgRetGauge  = input.bool(true, "    Return-likelihood % (will price come back?)", tooltip = "A live, directional read shown as ↩NN next to a fair value gap's label: how likely price is to RETURN to the gap from here (distinct from the formation strength % and the live rejection gauge). It blends: PROXIMITY (closer gaps are revisited far more than distant ones, normalized by ATR), the RESISTANCE in the path between price and the gap (reuses the path-clearance engine — a clear runway back is higher, a walled one lower), DAILY-BIAS alignment (a gap on the side the daily bias points toward is more likely to be reached), and VOLUME (a high-participation gap is revisited to rebalance). Heuristic, not a probability.", group = G_STRUCT)
-fvgSizeW      = input.float(1.0, "    Weight: gap size vs ATR", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "How much the gap's own size (displacement) counts toward its strength. Bigger gaps = stronger imbalance.", group = G_STRUCT)
-fvgVolW       = input.float(1.0, "    Weight: creation volume", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "How much the relative volume of the candle that CREATED the gap counts. High-volume displacement gaps are respected more often. Uses the Rel-volume lookback from the SFP section.", group = G_STRUCT)
-fvgBlockW     = input.float(1.0, "    Weight: inside OB / breaker", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap overlaps an order block or breaker block — a gap defended by a resting institutional zone is far more likely to hold.", group = G_STRUCT)
-fvgInvW       = input.float(1.0, "    Weight: inversion (IFVG)", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap forms right after an opposite gap in the same zone was invalidated (an inverted FVG / IFVG). Inversions mark a decisive flip and tend to be respected hard on the retest.", group = G_STRUCT)
-fvgInvBars    = input.int(30, "    Inversion memory (bars)", minval = 1, maxval = 200, tooltip = "How many bars back a recently-invalidated opposite gap still counts as the parent of an inversion.", group = G_STRUCT)
-fvgHtfW       = input.float(1.0, "    Weight: HTF-gap alignment", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap overlaps a higher-timeframe fair value gap. HTF alignment is the single biggest accuracy signal — a chart-TF gap sitting inside an HTF imbalance is defended by far heavier flow. The bonus scales with the HTF gap's own strength.", group = G_STRUCT)
-fvgPdW        = input.float(1.0, "    Weight: premium/discount location", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap sits on the 'correct' side of the live dealing range: a BULLISH gap in DISCOUNT (lower half) or a BEARISH gap in PREMIUM (upper half) aligns with where institutions fill, so it is respected more often. A bullish gap in premium (or bearish in discount) earns little here.", group = G_STRUCT)
-fvgDispW      = input.float(1.0, "    Weight: displacement quality", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus for a decisive creating candle: a large real body (vs its range) and/or a move that broke recent structure (took out a swing). A gap left by conviction holds better than one from an indecisive wick.", group = G_STRUCT)
-fvgConflW     = input.float(1.0, "    Weight: confluence (round / VWAP / OTE)", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap's midpoint sits near a round number, the session VWAP, or an OTE retracement level of the dealing range — defended fair-value references that reinforce the gap.", group = G_STRUCT)
-fvgLiqW       = input.float(1.0, "    Weight: liquidity-pool confluence", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap sits on or just beyond a tracked liquidity pool — equal highs/lows (engineered stops), previous-period levels (PDH/PDL · PWH/PWL · PMH/PML), daily/weekly/monthly/midnight opens, session highs/lows, swing BSL/SSL, or volume-profile POC/VAH/VAL. Graded by the MOST IMPORTANT nearby pool (a weekly high counts far more than a session low), so a gap positioned exactly where resting liquidity lives — the fuel price is drawn to — scores much higher.", group = G_STRUCT)
-fvgLiqATR     = input.float(0.5, "      Liquidity proximity (× ATR)", minval = 0.1, maxval = 2.0, step = 0.1, tooltip = "How close (in ATRs) a liquidity pool must be to the gap to count toward the liquidity-pool confluence factor. Covers both overlap and 'the gap guards a pool just beyond its edge'.", group = G_STRUCT)
-fvgSweepW     = input.float(1.0, "    Weight: sweep precedence (SFP→FVG)", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "Bonus when the gap forms right after a liquidity sweep + reversal (SFP) in the SAME direction — the textbook ICT sweep → displacement → fair value gap sequence. A gap born out of a stop-run is a far higher-probability reaction zone.", group = G_STRUCT)
-fvgSweepBars  = input.int(3, "      Sweep look-back (bars)", minval = 1, maxval = 20, tooltip = "How many bars before the gap formed to look for a same-direction SFP/sweep that qualifies the gap for the sweep-precedence bonus.", group = G_STRUCT)
-fvgFreshDisc  = input.float(0.35, "    Tested-gap discount", minval = 0.0, maxval = 0.9, step = 0.05, tooltip = "How much to cut a gap's score once price has already probed into it (partially mitigated / 'used' liquidity). 0.35 = a tested gap scores 35% lower. A virgin, untouched gap keeps its full score. 0 = disable (freshness ignored).", group = G_STRUCT)
-fvgTrapDisc  = input.float(0.40, "    Poor-location (trapped) discount", minval = 0.0, maxval = 0.9, step = 0.05, tooltip = "Cut a gap's rank when it is TRAPPED against opposing structure in its intended direction — a BULLISH gap with major resistance (weekly/daily high, equal highs, order-block top, swing high) sitting just ABOVE it, or a BEARISH gap with support just below. Such a gap has little room to run and is a poor long/short despite otherwise scoring well. 0.40 = up to -40% when fully walled. 0 = disable (no location penalty).", group = G_STRUCT)
-fvgTrapATR   = input.float(0.75, "      Trap look-ahead (× ATR)", minval = 0.1, maxval = 3.0, step = 0.1, tooltip = "How far beyond the gap (in ATRs) to look for opposing structure that would 'trap' it. Larger = a wall farther away still counts as limiting the runway.", group = G_STRUCT)
-// --- momentum exhaustion: a DYNAMIC, live score adjustment driven by RSI divergence ---
-exhOn        = input.bool(true,  "  Momentum-exhaustion dynamic weighting", tooltip = "A LIVE layer that nudges each gap's effective score as momentum exhausts. Primary signal is RSI DIVERGENCE: if price pushes to a new low but RSI makes a HIGHER low (the down-push is running out of steam), gaps BELOW price — the likely reversal/support zones — get a rising bonus, while bearish continuation gaps below get discounted. Mirror for an exhausting up-push. Overbought/oversold adds a secondary nudge. Unlike the static factors (fixed at gap creation), this one RE-EVALUATES every bar, so scores visibly rise/fall as exhaustion builds. Affects the on-chart strength %% and the execution-engine arming score; it does not alter the DOL gauge.", group = G_STRUCT)
-exhRsiLen    = input.int(14, "    RSI length", minval = 2, maxval = 50, group = G_STRUCT)
-exhDivLook   = input.int(5, "    Divergence pivot look-back (bars)", minval = 2, maxval = 30, tooltip = "Pivot distance used to detect RSI vs price divergence. Larger = only bigger, slower divergences register.", group = G_STRUCT)
-exhW         = input.float(1.0, "    Weight: exhaustion adjustment", minval = 0.0, maxval = 3.0, step = 0.1, tooltip = "How strongly live exhaustion moves a gap's effective score. The raw adjustment is up to ±18 points at full exhaustion; this scales it. 0 = disable the dynamic layer (scores stay static).", group = G_STRUCT)
-exhShow      = input.bool(true,  "    Show RSI gauge", tooltip = "Show a dedicated RSI gauge banner (its own corner) with the live RSI value, its overbought/oversold/neutral state, and whether an RSI vs price divergence is currently active. This is a pure RSI readout — it does not display or imply directional bias (that lives in the Daily Bias banner).", group = G_STRUCT)
-exhGaugePos  = input.string("Middle Right", "    RSI gauge position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], tooltip = "Where to anchor the RSI gauge banner. Defaults away from the DOL banner (top-right) and the Daily Bias banner (top-left).", group = G_STRUCT)
-exhOB        = input.int(70, "    Overbought level", minval = 50, maxval = 95, group = G_STRUCT)
-exhOS        = input.int(30, "    Oversold level", minval = 5, maxval = 50, group = G_STRUCT)
+// FVG strength model — fixed internal weights (1.0 = default influence) and look-backs
+fvgSizeW     = 1.0
+fvgVolW      = 1.0
+fvgBlockW    = 1.0
+fvgInvW      = 1.0
+fvgInvBars   = 30
+fvgHtfW      = 1.0
+fvgPdW       = 1.0
+fvgDispW     = 1.0
+fvgConflW    = 1.0
+fvgLiqW      = 1.0
+fvgLiqATR    = 0.5
+fvgSweepW    = 1.0
+fvgSweepBars = 3
+fvgFreshDisc = 0.35
+fvgTrapDisc  = 0.40
+fvgTrapATR   = 0.75
+htfFvgKeep   = 6
+htfFvgMaxTF  = 5
 // --- min-gap floor: kill micro-gaps at the source before they are ever scored/drawn ---
 fvgMinGapATR  = input.float(0.0, "  Min gap size (× ATR)", minval = 0.0, maxval = 3.0, step = 0.05, tooltip = "A gap smaller than this many ATRs is ignored entirely — never scored, drawn, or tracked. A hard noise floor that kills micro-imbalances at the source on low timeframes (e.g. the 5-minute chart), complementing the strength filter. 0 = disable (keep every gap, however small).", group = G_STRUCT)
 // --- consequent encroachment (CE) line: the 50% midpoint price reacts to most ---
@@ -130,23 +109,21 @@ fvgShowCE     = input.bool(false, "  Show CE (50%) line on FVGs", tooltip = "Dra
 fvgCECol      = input.color(color.new(#ab47bc, 20), "    CE line color", group = G_STRUCT)
 // --- higher-timeframe (HTF) FVGs: detected and folded into scoring (no separate chart drawing) ---
 htfFvgOn      = input.bool(true, "  Use higher-timeframe FVGs in scoring", tooltip = "Detect fair value gaps on the HTF timeframe set above (the same '  HTF timeframe' input used for HTF swings — edit it to pick which timeframe to watch, e.g. 60 / 240 / D). HTF gaps are NOT drawn on the chart; instead they BOOST the score of any chart-TF gap that aligns with them (see 'Weight: HTF-gap alignment') and they also feed the DOL model (confluence, path-clearance / resistance, and the ⭐ stacked-agreement flag) as strong magnet zones.", group = G_STRUCT)
-htfFvgKeep    = input.int(6, "    Max HTF FVGs tracked", minval = 1, maxval = 20, tooltip = "How many recent unfilled HTF gaps to keep in memory for the alignment boost and the DOL scoring.", group = G_STRUCT)
-htfFvgMaxTF   = input.int(5, "    HTF scoring only at/below (minutes)", minval = 1, maxval = 240, tooltip = "The HTF-alignment factor and its rebalanced weighting apply ONLY when the chart timeframe is at or below this many minutes (default 5 — i.e. the 1-to-5-minute charts the HTF overlay is designed for). On HIGHER chart timeframes the gap score reverts to the original full-weight model (gap size / volume / order-block / inversion) PLUS the premium-discount, displacement, confluence and freshness factors — so HTF charts keep scoring gaps the way they did before HTF alignment was added, and nothing disappears.", group = G_STRUCT)
 // --- SFP (sweep + reversal) ---
 showSFP    = input.bool(true, "Sweep + reversal markers (SFP)", tooltip = "The core validity trigger: a wick pierces a tracked level then the candle CLOSES back on the origin side (a stop-run). Marks 🎯 SFP long/short.", group = G_STRUCT)
 sfpUseVol  = input.bool(true, "  Require volume confirmation", tooltip = "Only flag a sweep as a real grab on elevated relative volume.", group = G_STRUCT)
 sfpConfirm = input.bool(true, "  Confirm on bar close (no repaint)", tooltip = "An SFP is 'a wick pierces a level then the candle CLOSES back on the origin side' — a CLOSE-based event. With this on, the SFP marker/alert only fires once the bar has CLOSED, so it can't flash on the forming bar and then disappear (no repaint). Turn OFF to see a provisional intrabar preview (which may vanish before the bar closes).", group = G_STRUCT)
-sfpCooldown = input.int(10, "  Same-level SFP cooldown (bars)", minval = 0, maxval = 100, tooltip = "After an SFP fires on a level, suppress further SFPs on that SAME level for this many bars — so a wick repeatedly poking one high/low doesn't re-fire the signal every bar. 0 = no cooldown (every qualifying bar fires, legacy behavior).", group = G_STRUCT)
+sfpCooldown = 10
 rvolLen    = input.int(20, "  Rel-volume lookback", minval = 5, maxval = 200, group = G_STRUCT)
 rvolMult   = input.float(1.5, "  Min rel-volume for grab", minval = 1.0, maxval = 5.0, step = 0.1, group = G_STRUCT)
 sfpColLong  = input.color(color.new(#26a69a, 0), "  Bullish SFP color", group = G_STRUCT)
 sfpColShort = input.color(color.new(#ef5350, 0), "  Bearish SFP color", group = G_STRUCT)
 // --- Order Blocks ---
 showOB     = input.bool(true, "Order blocks after displacement", tooltip = "After a sweep+displacement, mark the last opposing candle as a demand/supply zone until mitigated.", group = G_STRUCT)
-obDisp     = input.float(1.2, "  Displacement size (× ATR)", minval = 0.3, step = 0.1, tooltip = "How large the breakout candle body must be (in ATRs) to leave a valid order block.", group = G_STRUCT)
+obDisp = 1.2
 obColBull  = input.color(color.new(#26a69a, 80), "  Bullish OB color", group = G_STRUCT)
 obColBear  = input.color(color.new(#ef5350, 80), "  Bearish OB color", group = G_STRUCT)
-obKeep     = input.int(8, "  Max order blocks kept", minval = 1, maxval = 40, group = G_STRUCT)
+obKeep = 8
 obFilterOn = input.bool(true, "  Filter order blocks by strength", tooltip = "Score every order block 0-100 at formation (decisive displacement body + the block's zone size + whether it formed from a SWEEP + relative volume) and only draw the ones that clear the threshold below — so only high-quality blocks show. The score is printed INSIDE the block.", group = G_STRUCT)
 obMinStr   = input.int(45, "    Min OB strength % to draw", minval = 0, maxval = 100, tooltip = "Order blocks scoring below this are not drawn. A decisive, swept, high-volume block scores high; a marginal displacement scores low. Raise to show only the strongest blocks.", group = G_STRUCT)
 obShowStr  = input.bool(true, "    Show OB strength % inside the block", tooltip = "Print the 0-100 strength centered inside the order block box (like the FVG inside-box label) so there's no right-edge label clutter.", group = G_STRUCT)
@@ -163,7 +140,6 @@ dirAware  = input.bool(true,  "Only show for levels price is approaching", group
 // INPUTS — CLUSTERING & CONFLUENCE
 // -----------------------------------------------------------------------------
 // --- MODE: one dropdown that bundles sensible defaults for a trading style ---
-tradeMode  = input.string("Custom", "Mode (one-click preset)", options = ["Scalp","Intraday","Swing","Clean","Custom"], tooltip = "One-click trading-style preset. It bundles the safe, high-impact display settings — chart density and the confidence window — into a sensible starting point, so you don't have to tune dozens of toggles. SCALP: tight & minimal (nearest few levels). INTRADAY: balanced. SWING: balanced but a wider window for bigger structure. CLEAN: maximum focus, only the strongest levels bold. CUSTOM (default): leaves every setting exactly as you set it. Mode does NOT touch which level CATEGORIES are on or detection lengths — only the focus/density layer — so nothing changes meaning, it just changes what's emphasised.", group = G_CLUST)
 masterOn   = input.bool(true, "MASTER: draw everything", tooltip = "Global on/off for all drawings.", group = G_CLUST)
 // --- declutter: one-click density + top-N-per-side + confidence gate (faint, not removed) ---
 densityPreset = input.string("Balanced", "Chart density", options = ["Minimal","Balanced","Everything","Custom"], tooltip = "One-click declutter. MINIMAL: only the few strongest levels each side drawn boldly, everything else faint. BALANCED: a healthy handful. EVERYTHING: draw all at full strength (legacy). CUSTOM: use the Top-N / gate / fade values below. Levels below the cut are DIMMED (drawn faintly), never removed — so nothing is lost, it just recedes.", group = G_CLUST)
@@ -193,89 +169,62 @@ showConf    = input.bool(true, "Confluence score on zones (0-100)", tooltip = "R
 confMin     = input.int(0, "  Hide zones below score", minval = 0, maxval = 100, tooltip = "Only show cluster zones scoring at least this. 0 = show all.", group = G_CLUST)
 confRound   = input.float(0.0, "  Round-number step (price)", minval = 0.0, tooltip = "Adds confluence when a zone sits near a round-number multiple of this step (e.g. 50/100 indices, 1000 BTC). 0 = disable.", group = G_CLUST)
 confVWAP    = input.bool(true, "  VWAP proximity in confluence", tooltip = "Adds confluence when a level sits near the session VWAP — a heavily-defended fair-value reference. VWAP is used as a SCORING factor only (not drawn as its own magnet).", group = G_CLUST)
-showVP      = input.bool(false, "Volume Profile levels (POC / VAH / VAL)", tooltip = "Builds a rough volume profile over a lookback and adds the Point of Control (highest-volume price) and Value Area High/Low as levels. Acceptance-based levels (where volume traded), a different KIND of level from swing liquidity — they feed the clusters + DOL pull.", group = G_CLUST)
-vpLen       = input.int(240, "  VP lookback (bars)", minval = 20, maxval = 1000, tooltip = "How many recent bars to build the volume profile from.", group = G_CLUST)
-vpBins      = input.int(24, "  VP resolution (bins)", minval = 8, maxval = 60, tooltip = "Number of price buckets in the profile. More = finer POC/VA, slightly heavier.", group = G_CLUST)
 
 // -----------------------------------------------------------------------------
-// INPUTS — DRAW-ON-LIQUIDITY GAUGE
+// INPUTS — LEVEL CONFIDENCE (draw-on-liquidity model)
 // -----------------------------------------------------------------------------
-// NOTE: the DOL *banner* was removed (it conflicted with the Daily Bias banner). The DOL
-// gravity MODEL below still runs — it powers the execution engine, the stacked-agreement ⭐,
-// path-clearance, and the per-level confidence % — it just no longer draws its own banner.
-dolSens   = input.string("Medium", "DOL gravity sensitivity", options = ["Low","Medium","High"], tooltip = "How sharply nearby / important / aged / clustered liquidity dominates the pull (feeds the per-level confidence %, execution engine, and ⭐).", group = G_DOL)
-dolUseType = input.bool(true, "Weight by level importance (type)", tooltip = "Major levels (PDH/PDL, weekly/monthly, HTF) pull harder than minor session/local levels.", group = G_DOL)
-dolUseAge  = input.bool(true, "Weight by level age (resting time)", group = G_DOL)
-dolMomWt   = input.float(30, "Momentum tilt %", minval = 0, maxval = 100, step = 5, tooltip = "How much live directional momentum biases the liquidity pull on top of the static score.", group = G_DOL)
-// --- accuracy pass ---
-dolConfW   = input.bool(true, "Weight pull by each level's confluence score", tooltip = "A level sitting in an order block + OTE + round number pulls far harder than a lone level. Multiplies each level's DOL pull by its own confluence score - the single biggest accuracy boost.", group = G_DOL)
-dolNearBias = input.float(1.5, "Nearest-pool emphasis", minval = 0.0, maxval = 4.0, step = 0.25, tooltip = "Extra sharpening of the distance decay. Higher = the nearest untapped pool dominates the pull (price hunts the closest liquidity first). 0 = flat.", group = G_DOL)
-dolFreshW  = input.bool(true, "Freshness premium (untested pulls harder)", tooltip = "Levels price has NOT yet reacted off pull harder; levels already wicked into are discounted.", group = G_DOL)
 showLvlConf = input.bool(true, "Show per-level confidence % (target likelihood)", tooltip = "Each level/zone gets a 0-100 score for how likely price heads THERE next. The single most-likely target is flagged 🎯.", group = G_DOL)
-lvlRejGauge = input.bool(true, "  Level reaction gauge (reject vs sweep, live)", tooltip = "A LIVE read shown next to a level's confidence % ONLY while price is AT/near the level: how likely price is to REJECT / reverse off it (⟲NN, 50-100) vs SWEEP through it (⇥NN, 0-50). Different from the confidence % (which is 'how likely price heads TO the level') — this is 'what happens WHEN it gets there'. It blends the level's IMPORTANCE/type, the APPROACH strength (fast momentum into it → more likely to sweep through; slow → reject), an ABSORPTION wick on the touch bar, whether the level is already TESTED (weaker → sweep), and its CONFLUENCE. Equal highs/lows (engineered stop liquidity) correctly lean SWEEP-THROUGH rather than reject. Heuristic, not a probability.", group = G_DOL)
-lvlConfMode = input.string("Magnet quality", "  Confidence % basis", options = ["Magnet quality","Raw pull"], tooltip = "Magnet quality (recommended): distance is removed so the % reflects how STRONG a magnet each level is for its distance — a far but heavy pool (equal highs + order block + old + fresh) can out-score a near lone swing. Raw pull (legacy): the % is each level's share of the proximity-weighted gravity, so the nearest level almost always dominates (obvious, less useful). The 🎯 still marks the nearest strongest pull in both modes.", group = G_DOL)
-lvlConfWin  = input.int(5, "  Confidence window (levels each side)", minval = 1, maxval = 50, tooltip = "Only the N nearest levels ABOVE and N nearest BELOW price get a confidence %, and the % is normalized over just those levels. Keeps intraday reads focused on the levels price can realistically reach instead of diluting the % across far higher-timeframe levels. Lower = tighter/more decisive; higher = wider context. 🎯 still uses all levels.", group = G_DOL)
-// --- projection pass (all reuse existing pull / velocity / OB-FVG / range machinery) ---
-projClear   = input.bool(true,  "Path-clearance on 🎯 target", tooltip = "Discounts the primary magnet by what stands between price and it: opposing order blocks / FVGs / strong levels in the path lower a 0-100 clearance score. A clear runway reads high; a blocked path reads low. Shown as 🛣️ on the target row.", group = G_DOL)
-projClearW  = input.float(1.0, "  Clearance sensitivity", minval = 0.0, maxval = 3.0, step = 0.25, tooltip = "How hard each obstacle in the path cuts the clearance score. 0 = ignore obstacles; higher = a single blocker matters more.", group = G_DOL)
-projETA     = input.bool(true,  "ETA to 🎯 target (time projection)", tooltip = "Uses recent price velocity to project HOW LONG until the primary magnet is reached (bars or clock time, per the Countdown setting). Adds a ⏱ estimate to the target row.", group = G_DOL)
-projEqui    = input.bool(true,  "Equilibrium / range-state (Prem·EQ·Disc)", tooltip = "Shows where price sits in the current dealing range: Premium (upper), Equilibrium (~50%), or Discount (lower). Crossing equilibrium toward a pool is a continuation tell. Adds a range-state row to the banner.", group = G_DOL)
-projConfMom = input.bool(true,  "Confidence momentum ▲▼", tooltip = "Marks whether each level's confidence % is RISING or FALLING versus the previous bar. A strengthening magnet (▲) is a firming draw; a fading one (▼) warns of rejection. Appended to the per-level %.", group = G_DOL)
 projStacked = input.bool(true,  "Stacked-agreement flag ⭐", tooltip = "Flags a level where multiple independent signals align — DOL bias side + primary magnet + an overlapping order block / FVG. 3+ agreeing signals is the highest-conviction projection. Adds ⭐ to that level.", group = G_DOL)
-// --- de-skew: stop a level price is CURRENTLY forming/sitting on from inflating confidence ---
-projLiveSess = input.bool(true, "Exclude forming session H/L from magnet", tooltip = "A still-forming session high/low tracks price in real time, so it sits ~0 distance away and unfairly dominates the confidence % (price 'chasing' a level it is itself creating). When on, the CURRENT session's extreme still draws as a line but takes no magnet / confidence role until the session closes or price pulls away — it becomes real resting liquidity, then re-enters the pull.", group = G_DOL)
-projDistFloor = input.bool(true, "Distance floor (ignore levels hugging price)", tooltip = "General safety net: any level within the floor distance of price contributes ~no pull and no confidence %, since you can't be 'drawn' to where price already is. Catches the session case and any other level price is sitting on.", group = G_DOL)
-projDistFloorATR = input.float(0.12, "  Distance floor (× ATR)", minval = 0.0, maxval = 1.0, step = 0.02, tooltip = "How close (in ATRs) a level must be to price before it's treated as 'already here' and excluded from the magnet pool. 0 = disable.", group = G_DOL)
-// --- resistance-adjusted bias: a pool only pulls as hard as the PATH to it is open ---
-projResist = input.bool(true, "Resistance-adjusted DOL bias", tooltip = "Weights each side's draw by how CLEAR the path to it is. Structure standing in the way (order blocks, FVGs) between price and a pool discounts that side's effective pull, so a heavily-walled pool pulls less than an open one. Price hunts the REACHABLE liquidity, not the blocked pool. Conservative: resistance only DISCOUNTS a side's pull, it never adds to the opposite side. Obstacle severity uses the Path-clearance sensitivity. A 🧱 clearance readout is added to the banner.", group = G_DOL)
-// --- landscape bias: don't let ONE level price is hugging dominate the whole side ---
-biasCap = input.float(0.5, "Bias dominance cap (max share per level)", minval = 0.2, maxval = 1.0, step = 0.05, tooltip = "Caps how much a SINGLE level can contribute to its side's pull when computing the DOL bias. Without this, one level price is sitting right next to can out-pull a whole cluster of levels on the other side (distance decay makes the nearest level huge), flipping the bias toward wherever price momentarily is. Capping each level's share (e.g. 0.5 = no level exceeds 50% of its side) makes the bias reflect the LIQUIDITY LANDSCAPE — where the mass/cluster of levels sits — instead of one proximity outlier. The 🎯 magnet still tracks the single nearest-strongest level, so you keep both readings. 1.0 = disable (legacy).", group = G_DOL)
-// --- flip stability: deadband + hysteresis so the arrow doesn't whipsaw near a key level ---
-dolStable   = input.bool(true, "Stabilize DOL flips (deadband + hysteresis)", tooltip = "Stops the DOL arrow flipping randomly when price is approaching a key level. Instead of flipping the instant one side edges out the other (bias crosses exactly 0), the arrow only CHANGES direction once the opposing side is decisively ahead — the bias must clear the deadband on the new side. Inside the band the arrow HOLDS its prior direction. Highly recommended for lower timeframes (e.g. the 5-minute chart) where the raw bias is noisy.", group = G_DOL)
-dolDeadband = input.float(0.10, "  Flip deadband (bias units, 0-1)", minval = 0.0, maxval = 0.9, step = 0.01, tooltip = "How decisively the opposing side must win before the arrow flips. The DOL bias runs from -1 (all SSL / down) to +1 (all BSL / up). With a 0.10 deadband, an UP arrow only flips to DOWN once bias falls below -0.10, and a DOWN arrow only flips UP once bias rises above +0.10. Between -0.10 and +0.10 the arrow holds its last direction. Higher = stickier (fewer flips, slower to turn); 0 = legacy instant flip at 0.", group = G_DOL)
-dolFlipConfirm = input.bool(true, "  Only flip on bar close (confirm)", tooltip = "Require the deadband to be cleared on a CLOSED bar before committing a flip, so a single intrabar spike through a level can't turn the arrow. The banner still shows a faint 'turning…' hint intrabar, but the committed direction only changes when the bar closes beyond the deadband. Turn off to allow intrabar flips (still gated by the deadband).", group = G_DOL)
+// DOL gravity model — fixed internal settings (powers level confidence %, 🎯 target, ⭐ flag,
+// path-clearance and the FVG execution DOL gate).
+dolSens          = "Medium"   // distance-decay sharpness
+dolUseType       = true       // major levels pull harder
+dolUseAge        = true       // older resting liquidity pulls harder
+dolMomWt         = 30.0       // % momentum tilt in the bias
+dolConfW         = true       // weight pull by each level's confluence score
+dolNearBias      = 1.5        // nearest-pool emphasis
+dolFreshW        = true       // untested levels pull harder
+lvlConfMode      = "Magnet quality"
+projClearW       = 1.0        // path-clearance sensitivity
+projLiveSess     = true       // a still-forming session H/L is not a magnet
+projDistFloor    = true       // ignore levels hugging price
+projDistFloorATR = 0.12
+projResist       = true       // resistance-adjusted side strength
+biasCap          = 0.5        // max share of a side's pull from one level
+dolDeadband      = 0.10       // direction flips only when the bias clears this band
+dolFlipConfirm   = true       // ...and only on a closed bar
 
 // -----------------------------------------------------------------------------
 // INPUTS — STYLE
 // -----------------------------------------------------------------------------
-uiTheme    = input.string("Refined Dark", "Panel theme", options = ["Refined Dark","Refined Light","Midnight","Slate","Classic (legacy)"], group = G_STYLE)
+uiTheme    = input.string("Refined Dark", "Panel theme", options = ["Refined Dark","Refined Light"], group = G_STYLE)
 uiPanelOpacity = input.int(16, "Panel background opacity boost", minval = 0, maxval = 60, group = G_STYLE)
-uiAccentTint = input.int(70, "Accent softness", minval = 0, maxval = 90, group = G_STYLE)
 uiSlimBorders = input.bool(true, "Slim panel borders", group = G_STYLE)
 lineWidth  = input.int(1, "Line width", minval = 1, maxval = 3, group = G_STYLE)
 lineStyleI = input.string("Solid", "Line style", options = ["Solid","Dashed","Dotted"], group = G_STYLE)
 labelSize  = input.string("Small", "Label size", options = ["Tiny","Small","Normal"], group = G_STYLE)
 extendR    = input.int(10, "Line extend-right (bars)", minval = 0, group = G_STYLE)
-ageExtend  = input.bool(true, "Age-scaled extension (older = longer)", tooltip = "Each level's line grows with how long it has persisted, so mature levels are visibly longer.", group = G_STYLE)
-ageMaxBars = input.int(20, "  Max extra bars from age", minval = 0, maxval = 200, group = G_STYLE)
-ageScale   = input.float(0.35, "  Age scale (bars added per bar of age)", minval = 0.05, maxval = 1.0, step = 0.05, group = G_STYLE)
-compact    = input.bool(false, "Compact Mode (hide levels far from price)", group = G_STYLE)
-nearN      = input.int(3, "  Nearest N above & below", minval = 1, maxval = 10, group = G_STYLE)
-compactBand = input.float(4.0, "  Compact band (× ATR × N)", minval = 1.0, step = 0.5, group = G_STYLE)
 colBull  = input.color(color.new(#26a69a, 0),  "Bullish / High color", group = G_STYLE)
 colBear  = input.color(color.new(#ef5350, 0),  "Bearish / Low color",  group = G_STYLE)
 colSess  = input.color(color.new(#42a5f5, 0),  "Session color",        group = G_STYLE)
 colZone  = input.color(color.new(#ffb300, 0),  "Cluster zone color",   group = G_STYLE)
 colFVGBase = input.color(color.new(#ab47bc, 0), "FVG fill color",       group = G_STYLE)
 opacityFVG = input.int(80, "FVG zone opacity", minval = 0, maxval = 100, group = G_STYLE)
-colFVG  = color.new(colFVGBase, opacityFVG)
 
-// -----------------------------------------------------------------------------
-// INPUTS — EMOJI TAGS
-// -----------------------------------------------------------------------------
-emoPrev = input.string("⭐", "Previous-period tag", options = ["None","🔥","⭐","🟡","🔹","💧","🎯","🧲"], group = G_EMO)
-emoSess = input.string("🟡", "Session tag",         options = ["None","🔥","⭐","🟡","🔹","💧","🎯","🧲"], group = G_EMO)
-emoLiq  = input.string("💧", "Liquidity tag",       options = ["None","🔥","⭐","🟡","🔹","💧","🎯","🧲"], group = G_EMO)
+// level emoji tags (fixed)
+emoPrev = "⭐"
+emoSess = "🟡"
+emoLiq  = "💧"
 
 // -----------------------------------------------------------------------------
 // INPUTS — TESTED LEVELS
 // -----------------------------------------------------------------------------
 // --- tested / virgin state: has price already PROBED a level (wicked in, not swept through)? ---
 showTested   = input.bool(true, "Flag tested levels (probed, not swept)", tooltip = "Marks levels a wick has already PROBED into (reacted off) but not fully swept — 'used' liquidity vs a virgin untouched level. Tested levels get a ✓ and a dotted/dimmed outline; untouched ones stay solid. (Fully swept levels are removed already.)", group = G_TESTED)
-testDepthATR = input.float(0.10, "  Tested probe depth (× ATR)", minval = 0.02, maxval = 1.0, step = 0.02, tooltip = "How far a wick must poke INTO a level (in ATRs) to count as tested. Small = only genuine probes register; larger = grazes count too.", group = G_TESTED)
-testDiscount = input.bool(true, "  Discount tested levels in scoring", tooltip = "A tested level is a slightly weaker magnet (some of its liquidity was already taken / defended), so reduce its DOL pull. Visual-only if this is off.", group = G_TESTED)
-testDiscAmt  = input.float(0.25, "    Tested pull discount", minval = 0.0, maxval = 0.9, step = 0.05, tooltip = "How much to cut a tested level's pull (0.25 = -25%). 0 = no discount.", group = G_TESTED)
-testKeep     = input.int(120, "  Max tested levels tracked", minval = 10, maxval = 500, group = G_TESTED)
+testDepthATR = 0.10
+testDiscount = true
+testDiscAmt = 0.25
+testKeep = 120
 
 // -----------------------------------------------------------------------------
 // INPUTS — FVG EXECUTION (setups)
@@ -320,111 +269,135 @@ biasHideFVG  = input.bool(false, "  Hide counter-bias FVGs entirely", tooltip = 
 biasFadeLvls = input.bool(false, "Fade counter-bias-side levels", tooltip = "Also fade the levels on the counter-bias side of price (e.g. levels above price while bias is SHORT), so the magnets you're drawn toward stand out. Off = levels are left to the normal density declutter.", group = G_BIAS)
 
 // -----------------------------------------------------------------------------
-// INPUTS — MOVING AVERAGES (EMA)
-// -----------------------------------------------------------------------------
-// Up to four exponential moving averages. EMA #1 is on by default at length 20; #2-#4 are off
-// by default (common 50 / 100 / 200) — toggle them on as needed.
-emaSrc   = input.source(close, "EMA source", group = G_EMA)
-emaMTF   = input.timeframe("", "EMA timeframe (blank = chart)", tooltip = "Optionally compute the EMAs on a HIGHER timeframe and overlay them on this chart (e.g. 60 / 240 / D). Blank = use the chart timeframe. Uses non-repainting historical values.", group = G_EMA)
-ema1On   = input.bool(true,  "EMA 1", inline = "e1", group = G_EMA)
-ema1Len  = input.int(20, "", minval = 1, inline = "e1", group = G_EMA)
-ema1Col  = input.color(color.new(#2962ff, 0), "", inline = "e1", group = G_EMA)
-ema2On   = input.bool(false, "EMA 2", inline = "e2", group = G_EMA)
-ema2Len  = input.int(50, "", minval = 1, inline = "e2", group = G_EMA)
-ema2Col  = input.color(color.new(#ff6d00, 0), "", inline = "e2", group = G_EMA)
-ema3On   = input.bool(false, "EMA 3", inline = "e3", group = G_EMA)
-ema3Len  = input.int(100, "", minval = 1, inline = "e3", group = G_EMA)
-ema3Col  = input.color(color.new(#26a69a, 0), "", inline = "e3", group = G_EMA)
-ema4On   = input.bool(false, "EMA 4", inline = "e4", group = G_EMA)
-ema4Len  = input.int(200, "", minval = 1, inline = "e4", group = G_EMA)
-ema4Col  = input.color(color.new(#d500f9, 0), "", inline = "e4", group = G_EMA)
-emaWidth = input.int(1, "EMA line width", minval = 1, maxval = 4, group = G_EMA)
-
-// -----------------------------------------------------------------------------
-// INPUTS — ATR RANGE PROJECTION
-// -----------------------------------------------------------------------------
-// At each candle's OPEN, draw an unfilled box showing where this candle's high/low would reach
-// if it moved exactly (mult × ATR) from the open — the statistically-expected range. Fixed at
-// the open (ATR is from the prior bar), so it does not repaint.
-atrpOn    = input.bool(true, "Show ATR range projection (current bar)", tooltip = "Projects the CURRENTLY FORMING bar's expected HIGH and LOW: two horizontal lines at the bar's open ± (mult × ATR) — where the candle would reach on a typical one-ATR move — extending to the right of price so they're clearly visible. The lines track the live candle and are anchored to its open (using the prior bar's ATR), so they don't repaint. If price pushes past a line, the move is stretched vs its average true range.", group = G_ATRP)
-atrpLen   = input.int(14, "  ATR length (base)", minval = 1, maxval = 100, tooltip = "The base/slow ATR length. Used alone when 'Session-adaptive' is off; blended with the fast ATR when it's on.", group = G_ATRP)
-atrpAdapt = input.bool(true, "  Session-adaptive (contracts in slow periods)", tooltip = "Blend a FAST, short-length ATR into the projection so it tightens during quiet parts of the session and widens when pace picks up, instead of lagging on the slow 14-bar average. The band breathes with current volatility.", group = G_ATRP)
-atrpFastLen = input.int(5, "    Fast ATR length", minval = 1, maxval = 50, tooltip = "The short lookback that makes the band react to the CURRENT pace. Smaller = faster contraction/expansion (more responsive, a bit jumpier).", group = G_ATRP)
-atrpFastWt  = input.float(0.7, "    Fast weight (0 = base only · 1 = fast only)", minval = 0.0, maxval = 1.0, step = 0.05, tooltip = "How much the fast ATR dominates the blend. 0.7 = 70% fast / 30% base: responsive but not whippy. 1.0 = purely the fast ATR.", group = G_ATRP)
-atrpMult  = input.float(1.0, "  ATR multiple", minval = 0.1, maxval = 5.0, step = 0.1, tooltip = "How many ATRs each side of the open the projected high/low sits. 1.0 = one average true range.", group = G_ATRP)
-atrpCol   = input.color(color.new(#ffb300, 0), "  Projection color", group = G_ATRP)
-atrpMid   = input.bool(true, "  Show open midline", tooltip = "Draw a faint dotted line at the candle's open (the center of the projected range).", group = G_ATRP)
-
-// -----------------------------------------------------------------------------
 // INPUTS — MARKET CONDITIONS (REGIME)
 // -----------------------------------------------------------------------------
-// Classifies the tape as DIRECTIONAL / BALANCED / UNCLEAR from transparent signals (EMA-trend
-// strength, position in the dealing range, VWAP-cross frequency) — so you stop treating the
-// middle of a chop as a clean trend. Can gate the FVG execution engine.
-regimeOn   = input.bool(true,  "Show market-conditions regime", tooltip = "Classify the current tape as DIRECTIONAL (trend + structure aligned), BALANCED (rotating in a range), or UNCLEAR, from transparent signals: EMA-trend strength, where price sits in the dealing range, and how often price is crossing VWAP. Shown as a small banner; can also gate the execution engine (below).", group = G_REGIME)
-regimeBanner = input.bool(true, "  Show regime banner", group = G_REGIME)
-regimeBanPos = input.string("Bottom Left", "  Regime banner position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_REGIME)
-regimeTrendMin = input.float(0.6, "  Trend-strength threshold (EMA sep × ATR)", minval = 0.1, maxval = 3.0, step = 0.1, tooltip = "How far the fast/slow EMAs must separate (in ATRs) for the tape to read DIRECTIONAL. Higher = stricter (only strong trends qualify).", group = G_REGIME)
-regimeChopBars = input.int(20, "  VWAP-cross window (bars)", minval = 5, maxval = 100, tooltip = "Look-back used to count how often price crosses VWAP. Many crosses in this window = chop.", group = G_REGIME)
-regimeChopN  = input.int(4, "  VWAP crosses = chop", minval = 2, maxval = 20, tooltip = "This many VWAP crosses within the window flags potential CHOP (and pulls the regime toward BALANCED/UNCLEAR).", group = G_REGIME)
-regimeGateExec = input.bool(false, "  Gate execution: suppress continuation setups mid-range", tooltip = "When ON and the regime is BALANCED/chop, the FVG execution engine will NOT arm CONTINUATION setups in the middle of the range — but still allows REVERSAL setups near the range extremes (premium/discount). This directly targets getting chopped up trading the middle of a range. OFF = the regime is informational only and never blocks a setup.", group = G_REGIME)
-
-// -----------------------------------------------------------------------------
-// INPUTS — LEVEL CLARITY (importance declutter)
-// -----------------------------------------------------------------------------
-// An alternative to merged cluster zones: keep every level as its OWN identifiable line, but
-// only LABEL the few most important ones so the right edge doesn't flood. Importance tiers:
-//   Tier 1 (major): PDH/PDL · PWH/PWL · PMH/PML · daily/weekly/monthly/midnight opens
-//   Tier 2 (significant): equal highs/lows · HTF swings · VP POC/VAH/VAL · breakers
-//   Tier 3 (minor): local swings · session H/L · relative-equal H/L
-clarityOn   = input.bool(false, "Level-clarity mode (label only important levels)", tooltip = "Fixes the cluster-zone problem (can't tell which level price is reacting to) WITHOUT flooding the right edge. Keeps every level as its own distinct line, but only gives the most IMPORTANT ones (by tier) a full name/%% label — the rest draw as bare lines with just a small price, so you can still see exactly where each level is. Turning this on overrides cluster merging so you always see individual levels. Pair it with the importance floor + labels-per-side below.", group = G_CLARITY)
-clarityFloor = input.string("Tier 2+ (hide minor)", "  Importance floor", options = ["All tiers","Tier 2+ (hide minor)","Tier 1 only (major)"], tooltip = "Which levels to draw at all. 'All tiers': every level (as lines). 'Tier 2+': hide minor local swings / session / relative-EQ levels. 'Tier 1 only': just the major previous-period levels + key opens — the cleanest.", group = G_CLARITY)
-clarityLblN = input.int(3, "  Labels per side (top-N by importance)", minval = 1, maxval = 12, tooltip = "Only the N most important levels ABOVE and N BELOW price get a FULL label (name · price · %%). All other drawn levels are bare lines with a small price tag, so the right edge stays clean. Importance = tier first, then nearer-to-price as the tiebreak.", group = G_CLARITY)
-clarityBare = input.bool(true, "  Bare lines get a small price tag", tooltip = "Un-labeled (non-top-N) levels still show a tiny price so you can identify them. Off = pure lines with nothing at the right edge.", group = G_CLARITY)
+// One shared TREND / RANGE / TRANSITION classifier (computed in MARKET CONDITION below). Feeds
+// the FVG execution gate and the Brooks setups' market-suitability factor.
+regimeOn   = input.bool(true,  "Show market condition (TREND / RANGE / TRANSITION)", tooltip = "One shared classifier used by the whole indicator (FVG execution gate + Brooks setups). Blends efficiency ratio, bar overlap, VWAP-cross frequency and EMA slope; TRANSITION = a trend losing efficiency, especially right after a genuine microtrendline break. Display only: shown in the context panel (or in the Brooks dashboard when that is on); the execution gate below works independently.", group = G_REGIME)
+mtTrendHi   = input.float(0.55, "  Trend score threshold", minval = 0.2, maxval = 0.9, step = 0.05, group = G_REGIME)
+mtTransBars = input.int(15, "  Transition window after a microtrendline break (bars)", minval = 3, maxval = 60, group = G_REGIME)
+regimeGateExec = input.bool(false, "  Gate execution: suppress continuation setups mid-range", tooltip = "When ON and the market condition is RANGE with VWAP chop or price in the middle of the dealing range, the FVG execution engine will NOT arm CONTINUATION setups in the middle of the range — but still allows REVERSAL setups near the range extremes (premium/discount). This directly targets getting chopped up trading the middle of a range. OFF = the regime is informational only and never blocks a setup.", group = G_REGIME)
 
 // -----------------------------------------------------------------------------
 // INPUTS — OPENING RANGE BREAKOUT (ORB)
 // -----------------------------------------------------------------------------
 // The high/low of the opening window (default the first 5 minutes of the NY session) drawn as a
-// box, with a directional breakout-likelihood blending price action + liquidity + bias + regime.
-orbOn      = input.bool(true, "Show Opening Range (ORB)", tooltip = "Draws the HIGH and LOW of the opening window (default the first 5 minutes of the NY session) as a box, frozen once the window closes and extended across the session. A breakout is marked when price CLOSES beyond the box. A directional breakout-likelihood read blends price action, liquidity beyond the edges, the daily bias, and the market regime.", group = G_ORB)
+// box, with a confirmed break (buffer + consecutive closes) and failed-break marker.
+orbOn      = input.bool(true, "Show Opening Range (ORB)", tooltip = "Draws the HIGH and LOW of the opening window (default the first 5 minutes of the NY session) as a box, frozen once the window closes. A break is marked (ORB ▲ / ORB ▼) when price closes beyond an edge by the buffer for the required consecutive closes; a later close back inside marks ORB fail.", group = G_ORB)
 orbSession = input.session("0930-0935", "  Opening window (session time)", tooltip = "The opening range window. Default 0930-0935 = the first 5 minutes of the NY equities open. Works on any chart timeframe (on a 5-minute chart this is the first 5m bar; on a 1m chart, the first five 1m bars).", group = G_ORB)
 orbTZ      = input.string("America/New_York", "  Opening window timezone", options = ["America/New_York","UTC","Europe/London","Asia/Tokyo"], group = G_ORB)
 orbCol     = input.color(color.new(#42a5f5, 0), "  ORB color", group = G_ORB)
 orbExtend  = input.bool(true, "  Extend ORB across the session", group = G_ORB)
 orbHist    = input.int(10, "  Max historical ORBs kept", minval = 1, maxval = 60, tooltip = "How many past days' opening-range boxes stay drawn on the chart for look-back analysis. Oldest is dropped when the limit is reached.", group = G_ORB)
-orbCalN = input.int(40, "  Calibration sample (days)", minval = 2, maxval = 120, tooltip = "How many past days of ORB gauge predictions to keep for the accuracy read-out (separate from the drawn boxes). Larger = a more meaningful hit-rate, but still a small-sample recent tally, not a probability.", group = G_ORB)
-orbScore   = input.bool(true, "  Show breakout-likelihood read", tooltip = "Show a directional 'breakout ↑NN% / ↓NN%' read on the ORB once the opening window has closed, blending: where price sits in the range + how tight the range is (price action), resting liquidity just beyond each edge and how clear the path to it is (liquidity), daily-bias alignment, and the market regime (DIRECTIONAL boosts breakout odds, BALANCED/chop lowers them — ORB breaks fake out in chop). Heuristic, not a probability.", group = G_ORB)
-orbScorePos = input.string("Middle Left", "  Breakout read position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_ORB)
-// (I) BREAK-QUALITY GATES: filter noise pokes out of the ORB break detection so the realized
-// "breaks held" rate reflects conviction breaks, not one-tick fakeouts. Defaults are a mild
-// filter (0.10 ATR buffer, single qualifying close, volume ignored) so behaviour is close to
-// legacy but slightly stricter; the user tunes them up to cut more fakeouts.
 orbBrkBuf  = input.float(0.10, "  Break buffer (× ATR beyond edge)", minval = 0.0, maxval = 2.0, step = 0.05, tooltip = "A close must clear the opening-range edge by this many ATRs before it counts as a break — so a one-tick poke beyond the high/low no longer registers as a breakout. Raising this filters noise and lifts the realized 'breaks held' rate (at the cost of registering real breaks a touch later). 0 = legacy behaviour (any close beyond the edge). On the 5-minute chart ~0.10-0.25 cuts most fakeouts.", group = G_ORB)
 orbBrkBars = input.int(1, "  Break confirmation (consecutive closes)", minval = 1, maxval = 5, tooltip = "How many CONSECUTIVE confirmed closes beyond the buffered edge are required before a break is registered. 1 = a single qualifying close (legacy). 2+ filters flash-breaks that immediately reverse, raising the hold rate.", group = G_ORB)
-orbBrkVol  = input.bool(false, "  Require volume on the break", tooltip = "Only register a break when the breakout bar's relative volume is elevated (at/above the SFP 'Min rel-volume for grab' threshold). A break on conviction holds; a low-volume drift-through tends to fail. Off = volume is ignored for break detection.", group = G_ORB)
-// (J)/(K)/(L)/(M) toggle: fold nearby FVGs + opening-window sweeps into the breakout read as ONE
-// de-correlated beyond-edge term per side (launchpad fuel + sweep bias, discounted by an interior
-// containing gap). When off the beyond-edge term is zeroed symmetrically on BOTH sides (no
-// directional distortion). The weight set is NEVER made conditional — only the term's value is.
-orbUseFvg = input.bool(true, "  Use FVGs + sweeps in the breakout read", tooltip = "Fold nearby fair value gaps and opening-window sweeps into the breakout-likelihood: a strong same-direction gap just beyond an edge adds continuation fuel, an unfilled gap INSIDE the range dampens breakout odds (reversion magnet), and a sweep+reversal during the opening window leans the read the other way (stop-run). Heuristic, not a probability.", group = G_ORB)
-orbWallW = input.float(0.5, "  Opposing-wall dampening (0-1)", minval = 0.0, maxval = 1.0, step = 0.05, tooltip = "How much a strong OPPOSING structure sitting just beyond an edge — a bearish order block/breaker or bearish FVG above the high, or a bullish one below the low — cuts that side's breakout score. This is the reversal 'wall' that traps high-conviction ORB breaks. 0.5 = a full-strength wall right at the edge halves that side's conviction; 0 = ignore walls (legacy). Gated by the 'Use FVGs + sweeps' toggle. Heuristic, not a probability.", group = G_ORB)
-// (N) ADAPTIVE TRUST THRESHOLD: the empirical predicted-% at which the gauge's recent directional
-// hit-rate crosses this target, surfaced as its own panel row (learned from the user's own log).
-orbTrustHit = input.int(60, "  Adaptive trust: target hit-rate %", minval = 50, maxval = 90, tooltip = "The directional hit-rate the gauge must have achieved (over recent decided days at or above a predicted-% level) for that level to be called 'trustworthy'. The panel surfaces the LOWEST predicted-% that recently met this bar — your empirical trust threshold, learned from your own results. Small-sample heuristic, not a probability.", group = G_ORB)
-// (#3) NO-CALL / ABSTAIN BAND: days whose frozen net spread (|up% - dn%|) at the open fell below this
-// floor were low-conviction coin-flips and are EXCLUDED from the hit-rate (default 10 = mild band).
-orbMinNet = input.int(10, "  No-call band: min net spread to count", minval = 0, maxval = 60, tooltip = "Days where the gauge's frozen net spread (|up% − dn%|) at the open was below this are treated as a NO-CALL (low conviction) and EXCLUDED from the 'gauge right' accuracy — so the hit-rate reflects only days the gauge actually leaned, not coin-flips it was forced to pick a side on. 0 = count every day (legacy).", group = G_ORB)
+
+// -----------------------------------------------------------------------------
+// INPUTS — ⑬ BROOKS MICROTRENDLINES (execution + entries)
+// -----------------------------------------------------------------------------
+var string G_MT  = "⑬ Brooks Microtrendlines · Core & Display"
+var string G_MTD = "⑬ Brooks Microtrendlines · Detection"
+var string G_MTS = "⑬ Brooks Microtrendlines · Setups & Signal Bar"
+var string G_MTC = "⑬ Brooks Microtrendlines · Confidence Weights"
+var string G_MTT = "⑬ Brooks Microtrendlines · Trade Plan"
+var string G_MTA = "⑬ Brooks Microtrendlines · Alerts & Stats"
+
+// ---- core & display ----
+mtOn        = input.bool(true, "Enable Brooks microtrendline module", tooltip = "Master on/off for the whole microtrendline price-action module (trendlines, setups, dashboard, alerts, stats). Off = nothing from this module is calculated or drawn.", group = G_MT)
+mtTF5       = input.timeframe("5", "  Secondary context timeframe", group = G_MT)
+mtTF15      = input.timeframe("15", "  Higher-timeframe directional context", group = G_MT)
+mtCtxPiv    = input.int(3, "  Context swing pivot length", minval = 2, maxval = 10, group = G_MT)
+mtShowDash  = input.bool(true, "Show dashboard", group = G_MT)
+mtDashPos   = input.string("Top Right", "  Dashboard position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_MT)
+mtShowTL    = input.bool(true, "Show active trendlines", group = G_MT)
+mtShowHist  = input.bool(true, "Show historical trendlines", group = G_MT)
+mtHistKeep  = input.int(12, "  Historical trendlines kept", minval = 1, maxval = 60, group = G_MT)
+mtShowBrk   = input.bool(true, "Show break / failed-breakout markers", group = G_MT)
+mtShowSig   = input.bool(true, "Show LONG / SHORT signal markers", group = G_MT)
+mtShowHL    = input.bool(true, "Show H1/H2/L1/L2 markers", group = G_MT)
+mtShowLvls  = input.bool(true, "Show entry / stop / target levels", group = G_MT)
+mtKeepLvls  = input.bool(true, "  Keep finished setups' levels (last few)", group = G_MT)
+mtShowVwap  = input.bool(false, "Show VWAP", group = G_MT)
+mtShowBg    = input.bool(false, "Market-condition background shading", group = G_MT)
+mtColBull   = input.color(#00c853, "  Bullish trendline", group = G_MT)
+mtColBear   = input.color(#ff1744, "  Bearish trendline", group = G_MT)
+mtColBrk    = input.color(#ff9800, "  Break marker / broken line", group = G_MT)
+
+// ---- detection ----
+mtPivL      = input.int(2, "Pivot sensitivity · bars left", minval = 1, maxval = 6, group = G_MTD)
+mtPivR      = input.int(1, "Pivot sensitivity · bars right", minval = 1, maxval = 4, tooltip = "Pivots are confirmed this many bars late (no repaint). Smaller = faster, noisier.", group = G_MTD)
+mtMinTouch  = input.int(2, "Minimum trendline touches", minval = 2, maxval = 5, group = G_MTD)
+mtMaxAge    = input.int(30, "Maximum trendline age (bars since last touch)", minval = 5, maxval = 200, group = G_MTD)
+mtMinBetween = input.int(2, "Min bars between pivots", minval = 1, maxval = 10, group = G_MTD)
+mtMaxBetween = input.int(10, "Max bars between pivots", minval = 3, maxval = 30, tooltip = "Keeps lines MICRO (about 2-10 bars) rather than structural trendlines.", group = G_MTD)
+mtMinSlope  = input.float(0.02, "Minimum slope (ATR per bar)", minval = 0.0, step = 0.01, group = G_MTD)
+mtMaxPen    = input.float(0.15, "Max penetration before 'broken' (× ATR)", minval = 0.0, step = 0.05, group = G_MTD)
+mtTouchTol  = input.float(0.12, "Touch tolerance (× ATR)", minval = 0.0, step = 0.02, group = G_MTD)
+mtMcOn      = input.bool(true, "Microchannel detection (few-bar channels)", tooltip = "Strong microchannels can develop over very few bars. Consecutive bars with rising lows/highs (falling for bears) get a supporting line without needing separated pivots.", group = G_MTD)
+mtMcMin     = input.int(4, "  Microchannel min bars", minval = 3, maxval = 10, group = G_MTD)
+mtMcTol     = input.float(0.05, "  Microchannel tolerance (× ATR)", minval = 0.0, step = 0.01, group = G_MTD)
+mtMcMinMove = input.float(1.0, "  Microchannel min net move (× ATR)", minval = 0.0, step = 0.1, group = G_MTD)
+mtFailBars  = input.int(4, "Failed-breakout window (bars to reclaim)", minval = 1, maxval = 12, tooltip = "After a penetration, price must close back on the trend side of the line within this many bars to count as a FAILED breakout; otherwise it is a genuine break.", group = G_MTD)
+mtSigWait   = input.int(2, "Signal-bar wait after reclaim (bars)", minval = 0, maxval = 6, group = G_MTD)
+
+// ---- setups & signal bar ----
+mtSetA      = input.bool(true, "Setup A · Failed microtrendline breakout", group = G_MTS)
+mtSetB      = input.bool(true, "Setup B · Break + pullback continuation", group = G_MTS)
+mtSetC      = input.bool(true, "Setup C · Failed-breakout reversal", group = G_MTS)
+mtSetD      = input.bool(true, "Setup D · High 2 / Low 2", group = G_MTS)
+mtPostBreak = input.int(20, "Post-break window for B / C (bars)", minval = 5, maxval = 100, group = G_MTS)
+mtMaxRetr   = input.float(0.75, "B · max pullback retracement of the leg", minval = 0.2, maxval = 1.0, step = 0.05, group = G_MTS)
+mtSupTol    = input.float(0.8, "B · support/resistance proximity (× ATR)", minval = 0.1, step = 0.1, group = G_MTS)
+mtExtATR    = input.float(3.0, "C · min extension of prior move (× ATR)", minval = 0.5, step = 0.5, group = G_MTS)
+mtRetestTol = input.float(0.25, "C · retest zone around old extreme (× ATR)", minval = 0.0, step = 0.05, group = G_MTS)
+mtRetestOver = input.float(0.25, "C · max overshoot of old extreme (× ATR)", minval = 0.0, step = 0.05, group = G_MTS)
+mtRevConf   = input.int(3, "C · confirmations required (of 5)", minval = 1, maxval = 5, group = G_MTS)
+mtRevSbMin  = input.float(0.65, "C · min signal-bar quality (0-1)", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
+mtPbMax     = input.int(15, "H/L · max pullback length (bars)", minval = 3, maxval = 50, group = G_MTS)
+mtPbDepth   = input.float(5.0, "H/L · max pullback depth (× ATR)", minval = 1.0, step = 0.5, group = G_MTS)
+mtSbBody    = input.float(0.45, "Signal bar · min body / range", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
+mtSbClose   = input.float(0.65, "Signal bar · min close position (0=far, 1=at extreme)", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
+mtSbWick    = input.float(0.30, "Signal bar · max opposing wick / range", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
+mtSbSize    = input.float(0.6, "Signal bar · min size vs 20-bar average range", minval = 0.0, step = 0.1, group = G_MTS)
+
+// ---- confidence weights (normalised, so they need not sum to 100) ----
+mtWHtf      = input.float(15, "Weight · higher-timeframe alignment", minval = 0, group = G_MTC)
+mtWTl       = input.float(15, "Weight · microtrendline quality", minval = 0, group = G_MTC)
+mtWFbo      = input.float(20, "Weight · pattern / failed-breakout confirmation", minval = 0, group = G_MTC)
+mtWSb       = input.float(15, "Weight · signal bar quality", minval = 0, group = G_MTC)
+mtWMkt      = input.float(10, "Weight · market-condition suitability", minval = 0, group = G_MTC)
+mtWVwap     = input.float(10, "Weight · VWAP alignment", minval = 0, group = G_MTC)
+mtWH        = input.float(10, "Weight · H1/H2 · L1/L2 confluence", minval = 0, group = G_MTC)
+mtWRoom     = input.float(5, "Weight · room to target", minval = 0, group = G_MTC)
+mtVwapOn    = input.bool(true, "VWAP filter (scoring only; off = VWAP weight ignored)", group = G_MTC)
+mtMinScore  = input.int(65, "Minimum score to display an actionable signal", minval = 30, maxval = 95, group = G_MTC)
+
+// ---- trade plan ----
+mtStopMode  = input.string("Wider of both", "Stop placement", options = ["Signal bar","Structural","Wider of both"], group = G_MTT)
+mtMinStopATR = input.float(0.4, "Minimum stop distance (× ATR)", minval = 0.05, step = 0.05, group = G_MTT)
+mtMaxStopATR = input.float(3.0, "Maximum stop distance (× ATR) · wider = no setup", minval = 0.5, step = 0.25, group = G_MTT)
+mtTgtMode   = input.string("R multiples", "Targets based on", options = ["R multiples","Market structure"], group = G_MTT)
+mtT1R       = input.float(1.0, "Target 1 (R)", minval = 0.25, step = 0.25, group = G_MTT)
+mtT2R       = input.float(2.0, "Target 2 (R)", minval = 0.5, step = 0.25, group = G_MTT)
+mtShowT3    = input.bool(true, "Show Target 3 (swing / measured move)", group = G_MTT)
+mtPendBars  = input.int(3, "Pending entry expires after (bars)", minval = 1, maxval = 20, group = G_MTT)
+mtMaxHold   = input.int(60, "Max bars in trade before time-out", minval = 5, maxval = 500, group = G_MTT)
+
+// ---- alerts & stats ----
+mtAlertFn   = input.bool(true, "Send detailed alert() messages (instrument · TF · setup · direction · score)", tooltip = "Create the alert with condition 'Any alert() function call'. The alertcondition() entries below are always available too.", group = G_MTA)
+mtShowStats = input.bool(true, "Show historical signal statistics table", group = G_MTA)
+mtStatsPos  = input.string("Bottom Right", "  Stats table position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_MTA)
+mtStatsTgt  = input.string("Target 1", "  A signal 'wins' when it reaches", options = ["Target 1","Target 2"], group = G_MTA)
+mtStatsRng  = input.bool(false, "  Restrict statistics to date range", group = G_MTA)
+mtStatsFrom = input.time(timestamp("2024-01-01T00:00:00"), "    From", group = G_MTA)
+mtStatsTo   = input.time(timestamp("2100-01-01T00:00:00"), "    To", group = G_MTA)
 
 f_lineStyle() =>
     lineStyleI == "Dashed" ? line.style_dashed : lineStyleI == "Dotted" ? line.style_dotted : line.style_solid
 
-// --- MODE -> effective density preset + confidence window (Custom = leave raw inputs) ---
-// Mode is a convenience layer over the existing density/window controls; it only maps to a
-// density preset name + a confidence-window size, so behavior stays identical to setting
-// those by hand. It never changes level categories or detection lengths.
-string eDensity = tradeMode == "Scalp" ? "Minimal" : tradeMode == "Intraday" ? "Balanced" : tradeMode == "Swing" ? "Balanced" : tradeMode == "Clean" ? "Minimal" : densityPreset
-int   eConfWin  = tradeMode == "Scalp" ? 3 : tradeMode == "Intraday" ? 5 : tradeMode == "Swing" ? 8 : tradeMode == "Clean" ? 4 : lvlConfWin
+// effective density preset + confidence window
+string eDensity = densityPreset
+int   eConfWin  = 5          // confidence % shown on the 5 nearest levels each side
 
 // --- density preset -> effective declutter params (Custom uses the raw inputs) ---
 // eTopN: how many levels per side (by confidence) stay BOLD; eGate: faint below this
@@ -450,16 +423,13 @@ f_labelSize() =>
     labelSize == "Tiny" ? size.tiny : labelSize == "Normal" ? size.normal : size.small
 
 // --- theme palette ---
-themeBgBase  = uiTheme == "Refined Light" ? color.new(#f5f6fa, 0) : uiTheme == "Midnight" ? color.new(#0d1117, 0) : uiTheme == "Slate" ? color.new(#262b36, 0) : uiTheme == "Classic (legacy)" ? color.new(#1e222d, 0) : color.new(#171a21, 0)
+themeBgBase  = uiTheme == "Refined Light" ? color.new(#f5f6fa, 0) : color.new(#171a21, 0)
 themeTxt     = uiTheme == "Refined Light" ? color.new(#2b2f3a, 0) : color.new(#e6e9ef, 0)
 themeMuted   = uiTheme == "Refined Light" ? color.new(#6b7280, 0) : color.new(#9aa4b2, 0)
-themeHdrRaw  = uiTheme == "Refined Light" ? #b45309 : #d4b483
-themeHdr     = color.new(themeHdrRaw, uiAccentTint > 40 ? uiAccentTint - 40 : 0)
 themeUpSolid = color.new(#4db6ac, 0)
 themeDnSolid = color.new(#e08d8d, 0)
 themePanelBg = color.new(themeBgBase, math.min(100, uiPanelOpacity))
 themeRowBg   = color.new(themeBgBase, math.min(100, uiPanelOpacity + 8))
-themeBorder  = color.new(uiTheme == "Refined Light" ? #d0d4dc : #3a4150, uiSlimBorders ? 20 : 0)
 themeBW      = uiSlimBorders ? 1 : 2
 
 // core series
@@ -472,249 +442,25 @@ atr       = ta.atr(14)
 fvgHtfActive = (secPerBar / 60.0) <= htfFvgMaxTF
 
 // -----------------------------------------------------------------------------
-// MOVING AVERAGES (EMA) — up to four, optional higher-timeframe, drawn via plot()
+// SHARED MOMENTUM + RELATIVE VOLUME
 // -----------------------------------------------------------------------------
-string emaTF = emaMTF == "" ? timeframe.period : emaMTF
-// compute each EMA on the chosen timeframe (lookahead_off = non-repainting). Lengths are simple
-// ints so ta.ema is valid; the security call returns a single series (no tuple-in-ternary).
-emaV1 = request.security(syminfo.tickerid, emaTF, ta.ema(emaSrc, ema1Len), lookahead = barmerge.lookahead_off)
-emaV2 = request.security(syminfo.tickerid, emaTF, ta.ema(emaSrc, ema2Len), lookahead = barmerge.lookahead_off)
-emaV3 = request.security(syminfo.tickerid, emaTF, ta.ema(emaSrc, ema3Len), lookahead = barmerge.lookahead_off)
-emaV4 = request.security(syminfo.tickerid, emaTF, ta.ema(emaSrc, ema4Len), lookahead = barmerge.lookahead_off)
-plot(masterOn and ema1On ? emaV1 : na, "EMA 1", color = ema1Col, linewidth = emaWidth)
-plot(masterOn and ema2On ? emaV2 : na, "EMA 2", color = ema2Col, linewidth = emaWidth)
-plot(masterOn and ema3On ? emaV3 : na, "EMA 3", color = ema3Col, linewidth = emaWidth)
-plot(masterOn and ema4On ? emaV4 : na, "EMA 4", color = ema4Col, linewidth = emaWidth)
-
-// -----------------------------------------------------------------------------
-// ATR RANGE PROJECTION — expected-range outline drawn at each candle open
-// -----------------------------------------------------------------------------
-// base (slow) ATR + a fast, short-length ATR; session-adaptive blends toward the fast one so the
-// band tightens in quiet periods and widens when pace picks up instead of lagging on the average.
-atrpBase = ta.atr(atrpLen)
-atrpFast = ta.atr(atrpFastLen)
-atrpVal  = atrpAdapt ? (atrpFastWt * atrpFast + (1.0 - atrpFastWt) * atrpBase) : atrpBase
-// Projected HIGH / LOW of the CURRENTLY FORMING bar = this bar's open ± (mult × ATR). Drawn as
-// two persistent horizontal lines (+ optional open midline) that live on the forming bar and
-// extend a few bars to the right, updated every bar so they always track the live candle. The
-// projection is anchored to the bar's OPEN (fixed when the bar opened) using the prior ATR.
-var line atrpHiLn = na
-var line atrpLoLn = na
-var line atrpMidLn = na
-var label atrpHiLb = na
-var label atrpLoLb = na
-if masterOn and atrpOn
-    float band = nz(atrpVal[1], atrpVal) * atrpMult
-    float opn  = open                       // this bar's open (fixed at the open, stable intrabar)
-    float projHi = opn + band
-    float projLo = opn - band
-    int   xL = bar_index                    // start at the forming bar
-    int   xR = bar_index + 8                // extend to the right so it's clearly visible
-    if na(atrpHiLn)
-        atrpHiLn := line.new(xL, projHi, xR, projHi, color = atrpCol, width = 2, style = line.style_solid)
-        atrpLoLn := line.new(xL, projLo, xR, projLo, color = atrpCol, width = 2, style = line.style_solid)
-        atrpMidLn := line.new(xL, opn, xR, opn, color = color.new(atrpCol, 45), width = 1, style = line.style_dotted)
-        atrpHiLb := label.new(xR, projHi, "ATR proj H", style = label.style_label_left, color = color.new(atrpCol, 20), textcolor = color.white, size = size.tiny)
-        atrpLoLb := label.new(xR, projLo, "ATR proj L", style = label.style_label_left, color = color.new(atrpCol, 20), textcolor = color.white, size = size.tiny)
-    // move/update every bar so the projection follows the forming candle
-    line.set_xy1(atrpHiLn, xL, projHi)
-    line.set_xy2(atrpHiLn, xR, projHi)
-    line.set_xy1(atrpLoLn, xL, projLo)
-    line.set_xy2(atrpLoLn, xR, projLo)
-    line.set_xy1(atrpMidLn, xL, opn)
-    line.set_xy2(atrpMidLn, xR, opn)
-    line.set_color(atrpMidLn, atrpMid ? color.new(atrpCol, 45) : color.new(atrpCol, 100))
-    label.set_xy(atrpHiLb, xR, projHi)
-    label.set_xy(atrpLoLb, xR, projLo)
-    label.set_text(atrpHiLb, "ATR H " + str.tostring(projHi, format.mintick))
-    label.set_text(atrpLoLb, "ATR L " + str.tostring(projLo, format.mintick))
-// hide the projection when toggled off (delete the persistent objects)
-if (not masterOn or not atrpOn) and not na(atrpHiLn)
-    line.delete(atrpHiLn)
-    atrpHiLn := na
-    line.delete(atrpLoLn)
-    atrpLoLn := na
-    line.delete(atrpMidLn)
-    atrpMidLn := na
-    label.delete(atrpHiLb)
-    atrpHiLb := na
-    label.delete(atrpLoLb)
-    atrpLoLb := na
-
-// DOL momentum (per-bar, real history)
 dolEmaF   = ta.ema(close, 21)
 dolEmaS   = ta.ema(close, 55)
 dolTrendV = (dolEmaF - dolEmaS) / math.max(nz(atr), syminfo.mintick)
 dolRoc    = ta.roc(close, 9) / 100.0
 dolMomRaw = 0.6 * dolTrendV + 0.4 * (dolRoc * 20.0)
 dolMom    = math.max(-1.0, math.min(1.0, dolMomRaw))
-
-// relative volume
 avgVol = ta.sma(volume, rvolLen)
 rvol   = nz(avgVol) > 0 ? volume / avgVol : 0.0
 volOK  = (not sfpUseVol) or (rvol >= rvolMult)
 
 // -----------------------------------------------------------------------------
-// MOMENTUM EXHAUSTION GAUGE — RSI level + divergence -> signed score (-1..+1)
+// HELPERS
 // -----------------------------------------------------------------------------
-// +1 = the DOWN push is exhausting (bullish lean: favor gaps below as reversal support)
-// -1 = the UP push is exhausting (bearish lean). ~0 = trend still has momentum.
-exhRsi = ta.rsi(close, exhRsiLen)
-// RSI pivots (confirmed, lagged by exhDivLook bars) + the matching price extreme at the pivot
-exhPH = ta.pivothigh(exhRsi, exhDivLook, exhDivLook)
-exhPL = ta.pivotlow(exhRsi, exhDivLook, exhDivLook)
-var float exhPrevPLrsi = na, var float exhPrevPLprice = na
-var float exhCurrPLrsi = na, var float exhCurrPLprice = na
-var float exhPrevPHrsi = na, var float exhPrevPHprice = na
-var float exhCurrPHrsi = na, var float exhCurrPHprice = na
-if not na(exhPL)
-    exhPrevPLrsi := exhCurrPLrsi
-    exhPrevPLprice := exhCurrPLprice
-    exhCurrPLrsi := exhPL
-    exhCurrPLprice := low[exhDivLook]
-if not na(exhPH)
-    exhPrevPHrsi := exhCurrPHrsi
-    exhPrevPHprice := exhCurrPHprice
-    exhCurrPHrsi := exhPH
-    exhCurrPHprice := high[exhDivLook]
-// bullish divergence: price lower low, RSI higher low -> down-push exhausting
-bool exhBullDiv = not na(exhPrevPLprice) and not na(exhCurrPLprice) and exhCurrPLprice < exhPrevPLprice and exhCurrPLrsi > exhPrevPLrsi
-// bearish divergence: price higher high, RSI lower high -> up-push exhausting
-bool exhBearDiv = not na(exhPrevPHprice) and not na(exhCurrPHprice) and exhCurrPHprice > exhPrevPHprice and exhCurrPHrsi < exhPrevPHrsi
-// signed exhaustion: divergence is primary (±0.7), overbought/oversold is a secondary nudge (±0.3)
-float exhScore = 0.0
-if exhBullDiv
-    exhScore := exhScore + 0.7
-if exhBearDiv
-    exhScore := exhScore - 0.7
-if not na(exhRsi)
-    if exhRsi <= exhOS
-        exhScore := exhScore + 0.3 * math.min((exhOS - exhRsi) / 20.0, 1.0)   // oversold -> down push tiring
-    else if exhRsi >= exhOB
-        exhScore := exhScore - 0.3 * math.min((exhRsi - exhOB) / 20.0, 1.0)   // overbought -> up push tiring
-exhScore := math.max(-1.0, math.min(1.0, exhScore))
-
-// Live exhaustion adjustment for a gap (points, roughly -18..+18 before the weight). A gap on
-// the side price is being drawn toward as the opposing push exhausts gets a bonus; a gap that
-// needs the exhausting push to CONTINUE gets discounted. Scaled by |exhScore| and the weight.
-f_exhAdj(float gTop, float gBot, bool isBull) =>
-    float adj = 0.0
-    if exhOn and exhW > 0 and exhScore != 0.0
-        float gMid = (gTop + gBot) / 2.0
-        bool below = gMid < close
-        // exhScore > 0 (down push tiring, bullish): reward bullish gaps below (reversal support)
-        // exhScore < 0 (up push tiring, bearish):   reward bearish gaps above (reversal supply)
-        float dirMatch = 0.0
-        if exhScore > 0 and isBull and below
-            dirMatch := 1.0
-        else if exhScore < 0 and (not isBull) and (not below)
-            dirMatch := 1.0
-        else if exhScore > 0 and (not isBull) and below
-            dirMatch := -0.6   // bearish continuation gap below, into exhausting selling -> discount
-        else if exhScore < 0 and isBull and (not below)
-            dirMatch := -0.6
-        adj := dirMatch * math.abs(exhScore) * 18.0 * exhW
-    adj
-
-// LIVE rejection gauge — only meaningful when price is AT / returning INTO the gap. Returns
-// [active, rejLean] where rejLean is 0..100: 100 = strong REJECT (bounce off), 0 = strong
-// ACCEPT (fill through), 50 = neutral. Blends four factors (each nudges the lean ±):
-//   • creation strength (creatQ): a gap left by a decisive move is defended harder -> reject
-//   • pullback strength: a FAST, large-bodied return blows through -> accept; a slow drift -> reject
-//   • absorption wick: on the touching bar, a wick pushing back OUT of the gap -> reject
-//   • approach character: pure trend-body approach -> momentum -> accept; wicky approach -> reject
-// Heuristic, not a probability. Reads current + recent bars (atr/velocity already defined above).
-f_rejGauge(float gTop, float gBot, bool isBull, float creatQ) =>
-    float atrR = math.max(nz(atr), syminfo.mintick)
-    // active only while THIS bar's range overlaps the gap zone
-    bool active = high >= gBot and low <= gTop
-    float lean = 50.0
-    if active
-        // 1) creation strength — strong creation defends the gap (reject). ±15
-        lean := lean + (math.min(math.max(nz(creatQ), 0.0), 1.0) - 0.5) * 2.0 * 15.0
-        // 2) pullback strength — recent return momentum vs ATR. Fast return -> accept (-), slow -> reject (+). ±18
-        float retSpeed = math.min(nz(velocity) / (atrR * 0.5), 2.0) / 2.0   // 0..1 (1 = fast)
-        lean := lean - (retSpeed - 0.5) * 2.0 * 18.0
-        // 3) absorption wick on the touch bar — a wick pushing back OUT of the gap. ±22
-        float rng = math.max(high - low, syminfo.mintick)
-        float lowerWick = (math.min(open, close) - low) / rng    // 0..1
-        float upperWick = (high - math.max(open, close)) / rng   // 0..1
-        float absorb = isBull ? lowerWick : upperWick            // the rejecting wick for this side
-        lean := lean + (absorb - 0.2) * 22.0 / 0.8               // ~0 at a 20% wick, +22 at a full wick
-        // 4) approach character over the last 3 bars — trend bodies vs wicks (approaching, pre-touch)
-        float bodySum = 0.0
-        float rngSum  = 0.0
-        for ab = 1 to 3
-            bodySum := bodySum + math.abs(close[ab] - open[ab])
-            rngSum  := rngSum + math.max(high[ab] - low[ab], syminfo.mintick)
-        float bodyFrac = rngSum > 0 ? bodySum / rngSum : 0.5     // 1 = pure trend, 0 = pure wick
-        lean := lean - (bodyFrac - 0.5) * 2.0 * 14.0             // trend -> accept(-), wicky -> reject(+)
-    [active, int(math.max(0.0, math.min(100.0, math.round(lean))))]
-
-// LIVE level-reaction gauge — only meaningful when price is AT / near the level. Returns
-// [active, rejLean] where 100 = strong REJECT/reverse off the level, 0 = strong SWEEP through,
-// 50 = neutral. A level is RESTING LIQUIDITY, so it blends:
-//   • importance/type: major levels (weekly/PDH) defend harder -> reject; minor swings less so
-//   • EQUAL highs/lows are ENGINEERED to be taken -> lean SWEEP (the key level-specific nuance)
-//   • approach strength: fast momentum into it -> sweep; slow/tentative -> reject
-//   • absorption wick on the touch bar (toward the level) -> reject
-//   • tested: an already-probed level is weaker on the next touch -> sweep
-//   • confluence (0..1): stacked / OB-FVG-backed levels react harder -> reject
-// name is the level label (e.g. "PWH","EQH","BSL"); conf01 is a 0..1 confluence strength.
-f_lvlGauge(float price, string name, bool tested, float conf01, float atrU) =>
-    float atrL = math.max(nz(atrU), syminfo.mintick)
-    bool active = math.abs(close - price) <= atrL * 0.15 or (high >= price and low <= price)
-    float lean = 50.0
-    if active
-        // 1) importance by type (mirrors the DOL hierarchy) -> reject strength 0..1
-        float imp = 0.4
-        if str.contains(name, "PWH") or str.contains(name, "PWL") or str.contains(name, "PMH") or str.contains(name, "PML")
-            imp := 1.0
-        else if str.contains(name, "PDH") or str.contains(name, "PDL")
-            imp := 0.8
-        else if str.contains(name, "Open") or str.contains(name, "Midnight")
-            imp := 0.75
-        else if str.contains(name, "POC") or str.contains(name, "VAH") or str.contains(name, "VAL")
-            imp := 0.7
-        else if str.contains(name, "Breaker")
-            imp := 0.7
-        else if str.contains(name, "NY") or str.contains(name, "London") or str.contains(name, "Asia")
-            imp := 0.5
-        lean := lean + (imp - 0.5) * 2.0 * 16.0
-        // 2) EQUAL highs/lows are engineered stop liquidity -> lean SWEEP (overrides importance)
-        if str.contains(name, "EQ")
-            lean := lean - 18.0
-        // 3) approach strength — fast into the level sweeps (-), slow rejects (+). ±16
-        float apSpeed = math.min(nz(velocity) / (atrL * 0.5), 2.0) / 2.0
-        lean := lean - (apSpeed - 0.5) * 2.0 * 16.0
-        // 4) absorption wick toward the level on the touch bar. ±20
-        float rng = math.max(high - low, syminfo.mintick)
-        float lowerWick = (math.min(open, close) - low) / rng
-        float upperWick = (high - math.max(open, close)) / rng
-        bool  above = price >= close                     // resistance above -> upper wick rejects
-        float absorb = above ? upperWick : lowerWick
-        lean := lean + (absorb - 0.2) * 20.0 / 0.8
-        // 5) tested state — a probed level is weaker next touch -> sweep. -12
-        if tested
-            lean := lean - 12.0
-        // 6) confluence — stacked / backed levels react harder -> reject. ±12
-        lean := lean + (math.min(math.max(nz(conf01), 0.0), 1.0) - 0.5) * 2.0 * 12.0
-    [active, int(math.max(0.0, math.min(100.0, math.round(lean))))]
 
 f_tablePos(string p) =>
     p == "Top Right" ? position.top_right : p == "Top Left" ? position.top_left : p == "Bottom Right" ? position.bottom_right : p == "Bottom Left" ? position.bottom_left : p == "Middle Left" ? position.middle_left : position.middle_right
 
-// median of a float array (Pine has no built-in). copies + sorts so the caller's array is
-// untouched; averages the two middles for even sizes; returns na for an empty array.
-f_medianArr(array<float> a) =>
-    int n = array.size(a)
-    float med = na
-    if n > 0
-        array<float> s = array.copy(a)
-        array.sort(s, order.ascending)
-        int mid = n / 2
-        med := n % 2 == 1 ? array.get(s, mid) : (array.get(s, mid - 1) + array.get(s, mid)) / 2.0
-    med
 
 // clamp a drawing's start bar to inside the loaded history buffer (never < 0)
 f_clampBar(int b) =>
@@ -766,28 +512,12 @@ f_sideEmojiI(int side, float lvl) =>
 f_sideTagI(int side, float lvl) =>
     lvl >= close ? "BSL" : "SSL"
 
-// level importance tier for the clarity declutter: 1 = major, 2 = significant, 3 = minor
-f_lvlTier(string nm) =>
-    int t = 3
-    if str.contains(nm, "PDH") or str.contains(nm, "PDL") or str.contains(nm, "PWH") or str.contains(nm, "PWL") or str.contains(nm, "PMH") or str.contains(nm, "PML") or str.contains(nm, "Open") or str.contains(nm, "Midnight")
-        t := 1
-    else if str.contains(nm, "EQH") or str.contains(nm, "EQL") or str.contains(nm, "POC") or str.contains(nm, "VAH") or str.contains(nm, "VAL") or str.contains(nm, "Breaker")
-        t := 2
-    t
 
 f_sessName(string base, bool carried) =>
     (sessReclassify and carried) ? (base + " (swing)") : base
 
-f_inCompactRange(float lvl) =>
-    not compact or (na(lvl) ? false : math.abs(lvl - close) <= nz(atr) * (nearN * compactBand))
 
-f_extLen(int birthBar) =>
-    if not ageExtend or na(birthBar)
-        extendR
-    else
-        int age = math.max(bar_index - birthBar, 0)
-        int extra = int(math.min(age * ageScale, ageMaxBars))
-        extendR + extra
+f_extLen(int birthBar) => extendR
 
 // -----------------------------------------------------------------------------
 // LEVEL SOURCES
@@ -808,60 +538,6 @@ if newNYDay
     midO := open
 // session VWAP (scoring factor only)
 vwapVal = ta.vwap(hlc3)
-
-// -----------------------------------------------------------------------------
-// VOLUME PROFILE — rough POC / Value Area over a lookback (computed on last bar)
-// -----------------------------------------------------------------------------
-var float vpPOC = na
-var float vpVAH = na
-var float vpVAL = na
-// ta.highest/ta.lowest must be evaluated every bar (not inside a conditional) for a consistent
-// series; compute at global scope and read the results inside the VP block below.
-float vpHiP = ta.highest(high, vpLen)
-float vpLoP = ta.lowest(low, vpLen)
-if showVP and barstate.islast
-    float hiP = vpHiP
-    float loP = vpLoP
-    if not na(hiP) and not na(loP) and hiP > loP
-        float binW = (hiP - loP) / vpBins
-        var bins = array.new<float>()
-        array.clear(bins)
-        for bni = 0 to vpBins - 1
-            array.push(bins, 0.0)
-        // distribute each bar's volume into the bin covering its hlc3
-        for bk = 0 to vpLen - 1
-            float pxk = (high[bk] + low[bk] + close[bk]) / 3.0
-            float vk  = nz(volume[bk], 1.0)
-            int bidx = int(math.floor((pxk - loP) / binW))
-            bidx := math.max(0, math.min(vpBins - 1, bidx))
-            array.set(bins, bidx, array.get(bins, bidx) + vk)
-        // POC = highest-volume bin center; total for value-area
-        float totV = array.sum(bins)
-        int pocI = 0
-        float pocV = 0.0
-        for bni = 0 to vpBins - 1
-            if array.get(bins, bni) > pocV
-                pocV := array.get(bins, bni)
-                pocI := bni
-        vpPOC := loP + (pocI + 0.5) * binW
-        // expand around POC until ~70% of volume is captured -> value area
-        float acc = pocV
-        int lo_i = pocI
-        int hi_i = pocI
-        while acc < totV * 0.70 and (lo_i > 0 or hi_i < vpBins - 1)
-            float belowV = lo_i > 0 ? array.get(bins, lo_i - 1) : -1.0
-            float aboveV = hi_i < vpBins - 1 ? array.get(bins, hi_i + 1) : -1.0
-            if aboveV >= belowV and hi_i < vpBins - 1
-                hi_i := hi_i + 1
-                acc := acc + array.get(bins, hi_i)
-            else if lo_i > 0
-                lo_i := lo_i - 1
-                acc := acc + array.get(bins, lo_i)
-            else if hi_i < vpBins - 1
-                hi_i := hi_i + 1
-                acc := acc + array.get(bins, hi_i)
-        vpVAL := loP + lo_i * binW
-        vpVAH := loP + (hi_i + 1) * binW
 
 // -----------------------------------------------------------------------------
 // SESSIONS
@@ -973,26 +649,38 @@ var float pdFib2 = 0.788
 var float pdFib3 = 0.886
 
 // -----------------------------------------------------------------------------
-// MARKET CONDITIONS (REGIME) — DIRECTIONAL / BALANCED / UNCLEAR, from transparent signals
+// MARKET CONDITION — one shared classifier: 1 TREND · 2 RANGE · 3 TRANSITION
 // -----------------------------------------------------------------------------
-// 1) trend strength: fast/slow EMA separation vs ATR (reuses dolTrendV). 2) VWAP-cross count in
-// a window (chop). 3) position in the dealing range (middle = balance-leaning). Combined into a
-// readable state. regimeState: 1 = DIRECTIONAL, 0 = UNCLEAR, -1 = BALANCED.
-float vwapCrossRaw = (not na(vwapVal) and ((close > vwapVal and close[1] <= vwapVal) or (close < vwapVal and close[1] >= vwapVal))) ? 1.0 : 0.0
-float vwapCrosses  = math.sum(vwapCrossRaw, regimeChopBars)
-bool  regimeChop   = vwapCrosses >= regimeChopN
-float trendStrength = math.abs(nz(dolTrendV))                 // EMA separation in ATRs
-bool  regimeTrending = trendStrength >= regimeTrendMin and not regimeChop
-// position in the dealing range (0..1); 0.5 = equilibrium. Falls back to neutral if range off.
+// Efficiency ratio (net move / path), bar overlap, VWAP-cross frequency and EMA slope blend into
+// a 0..1 trend score. TRANSITION = efficiency collapsing from a trending read, especially right
+// after a genuine microtrendline break (mtLastGenBar is set by the Brooks engine, one bar lag).
+// regimeState mapping for consumers: 1 TREND, -1 RANGE, 0 TRANSITION.
+var int mtLastGenBar = -1000
+float mtEma20  = ta.ema(close, 20)
+float mtPath   = math.sum(math.abs(ta.change(close)), 20)
+float mtEr20   = mtPath > 0 ? math.abs(close - close[20]) / mtPath : 0.0
+float mtPath10 = math.sum(math.abs(ta.change(close)), 10)
+float mtErNow  = mtPath10 > 0 ? math.abs(close - close[10]) / mtPath10 : 0.0
+float mtErPrev = nz(mtErNow[10])
+float mtBarRng = high - low
+float mtOvl    = mtBarRng > 0 ? math.max(0.0, math.min(1.0, (math.min(high, high[1]) - math.max(low, low[1])) / mtBarRng)) : 1.0
+float mtOvlAvg = ta.sma(mtOvl, 20)
+float vwapCrosses = math.sum((not na(vwapVal) and ((close > vwapVal and close[1] <= nz(vwapVal[1])) or (close < vwapVal and close[1] >= nz(vwapVal[1])))) ? 1.0 : 0.0, 20)
+bool  regimeChop  = vwapCrosses >= 4
+float mtSlopeAtr  = atr > 0 ? math.abs(mtEma20 - mtEma20[5]) / atr : 0.0
+float mtTrendScore = 0.4 * mtEr20 + 0.2 * (1.0 - mtOvlAvg) + 0.2 * (1.0 - math.min(1.0, vwapCrosses / 4.0)) + 0.2 * math.min(1.0, mtSlopeAtr)
+f_mtCondCalc(int lastGen) =>
+    int c = 2
+    if mtErPrev >= 0.4 and mtErNow <= 0.6 * mtErPrev and (bar_index - lastGen <= mtTransBars or mtErNow <= 0.25)
+        c := 3
+    else if mtTrendScore >= mtTrendHi
+        c := 1
+    c
+int mtCond = f_mtCondCalc(mtLastGenBar)
+int regimeState = mtCond == 1 ? 1 : mtCond == 2 ? -1 : 0
+// "chop" for the FVG execution gate: VWAP chop OR price rotating in the middle of the dealing range
 float regimePos = (not na(rngHi) and not na(rngLo) and rngHi > rngLo) ? math.min(1.0, math.max(0.0, (close - rngLo) / (rngHi - rngLo))) : 0.5
-bool  regimeMidRange = regimePos > 0.38 and regimePos < 0.62   // rotating in the middle
-int   regimeState = 0
-if regimeTrending
-    regimeState := 1                                           // DIRECTIONAL
-else if regimeChop or regimeMidRange
-    regimeState := -1                                          // BALANCED / rotating
-else
-    regimeState := 0                                           // UNCLEAR
+bool  regimeMidRange = regimePos > 0.38 and regimePos < 0.62
 
 // historical swing storage
 var swHi   = array.new<float>()
@@ -1154,7 +842,7 @@ while array.size(reqLoA) > swingHist
     array.shift(reqLoB)
 
 // -----------------------------------------------------------------------------
-// BIRTH-BAR TRACKING (for age-scaled extension)
+// BIRTH-BAR TRACKING (level age → DOL age weighting)
 // -----------------------------------------------------------------------------
 var int b_pdh = na, var int b_pdl = na
 var int b_pwh = na, var int b_pwl = na
@@ -1180,199 +868,6 @@ b_lh  := (na(b_lh)  or londH != londH[1]) ? bar_index : b_lh
 b_ll  := (na(b_ll)  or londL != londL[1]) ? bar_index : b_ll
 b_nh  := (na(b_nh)  or nyH != nyH[1]) ? bar_index : b_nh
 b_nl  := (na(b_nl)  or nyL != nyL[1]) ? bar_index : b_nl
-
-// -----------------------------------------------------------------------------
-// OVERNIGHT SESSION H/L LINES (Asia + London) — plain labelled horizontal overlay
-// -----------------------------------------------------------------------------
-// Additive visual only: draw each of the four session extremes the indicator already tracks
-// (asiaH/asiaL/londH/londL) as a simple labelled line. Each value goes na when there is no
-// current level / when it has been swept (f_sessHL + sessRemoveSwept). Instead of deleting a
-// line the instant its value goes na, each line now CAPTURES the swept price and keeps drawing
-// it in a DOTTED style (so the taken liquidity level stays visible and marked). All four lines
-// (live or swept/dotted) are then cleared together at the END of the NY session (the falling
-// edge of NY session membership), resetting their held state for the next day.
-// Because the source series go na on sweep, the overlay cannot rely on them to carry the price
-// past the sweep instant; so each line gets PERSISTENT per-line state (held price + swept flag)
-// updated every bar. Four persistent line + four persistent label handles, created once and
-// reused (never re-created every bar). Pine has no usable way to mutate caller `var` handles
-// through a function, so the four per-line bodies are written inline (short repeated blocks),
-// mirroring the ATR-projection / ORB line pattern elsewhere in the file.
-var line  ovAsiaHiLn = na
-var line  ovAsiaLoLn = na
-var line  ovLondHiLn = na
-var line  ovLondLoLn = na
-var label ovAsiaHiLb = na
-var label ovAsiaLoLb = na
-var label ovLondHiLb = na
-var label ovLondLoLb = na
-// Per-line held price (last live value, retained after sweep) + swept flag (true once taken).
-var float ovAsiaHiPx = na
-var bool  ovAsiaHiSwept = false
-var float ovAsiaLoPx = na
-var bool  ovAsiaLoSwept = false
-var float ovLondHiPx = na
-var bool  ovLondHiSwept = false
-var float ovLondLoPx = na
-var bool  ovLondLoSwept = false
-
-// NY session end = falling edge of NY session membership. nySess is NOT drawn as a line here;
-// it is only used to detect the moment at which all four overnight lines should be cleared.
-bool ovNyInSess  = f_inSession(nySess)
-bool ovNySessEnd = ovNyInSess[1] and not ovNyInSess
-
-// Asia High
-if not (masterOn and showOvernightLines and showAsia) or ovNySessEnd
-    // Feature off for this session OR NY session just ended: tear down and reset held state.
-    if not na(ovAsiaHiLn)
-        line.delete(ovAsiaHiLn)
-        ovAsiaHiLn := na
-        label.delete(ovAsiaHiLb)
-        ovAsiaHiLb := na
-    ovAsiaHiSwept := false
-    ovAsiaHiPx    := na
-else
-    // Capture the price at the sweep instant; otherwise track the live level.
-    if na(asiaH) and not na(asiaH[1]) and sessRemoveSwept
-        ovAsiaHiPx    := asiaH[1]
-        ovAsiaHiSwept := true
-    else if not na(asiaH)
-        ovAsiaHiPx    := asiaH
-        ovAsiaHiSwept := false
-    if not na(ovAsiaHiPx)
-        int ovXL = na(b_ah) ? bar_index - 50 : b_ah
-        int ovXR = ovLineExtend ? bar_index + 5 : bar_index
-        styAsiaHi = ovAsiaHiSwept ? line.style_dotted : f_lineStyle()
-        if na(ovAsiaHiLn)
-            ovAsiaHiLn := line.new(ovXL, ovAsiaHiPx, ovXR, ovAsiaHiPx, xloc = xloc.bar_index, color = ovAsiaCol, width = lineWidth, style = styAsiaHi)
-            ovAsiaHiLb := label.new(ovXR, ovAsiaHiPx, "Asia H", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(ovAsiaCol, 20), textcolor = color.white, size = size.small)
-        line.set_xy1(ovAsiaHiLn, ovXL, ovAsiaHiPx)
-        line.set_xy2(ovAsiaHiLn, ovXR, ovAsiaHiPx)
-        line.set_color(ovAsiaHiLn, ovAsiaCol)
-        line.set_width(ovAsiaHiLn, lineWidth)
-        line.set_style(ovAsiaHiLn, styAsiaHi)
-        label.set_xy(ovAsiaHiLb, ovXR, ovAsiaHiPx)
-        label.set_text(ovAsiaHiLb, ovShowLabels ? ("Asia H" + (ovAsiaHiSwept ? " ·swept" : "")) : "")
-        label.set_color(ovAsiaHiLb, ovShowLabels ? color.new(ovAsiaCol, 20) : color.new(ovAsiaCol, 100))
-        label.set_textcolor(ovAsiaHiLb, ovShowLabels ? color.white : color.new(color.white, 100))
-    else if not na(ovAsiaHiLn)
-        line.delete(ovAsiaHiLn)
-        ovAsiaHiLn := na
-        label.delete(ovAsiaHiLb)
-        ovAsiaHiLb := na
-
-// Asia Low
-if not (masterOn and showOvernightLines and showAsia) or ovNySessEnd
-    if not na(ovAsiaLoLn)
-        line.delete(ovAsiaLoLn)
-        ovAsiaLoLn := na
-        label.delete(ovAsiaLoLb)
-        ovAsiaLoLb := na
-    ovAsiaLoSwept := false
-    ovAsiaLoPx    := na
-else
-    if na(asiaL) and not na(asiaL[1]) and sessRemoveSwept
-        ovAsiaLoPx    := asiaL[1]
-        ovAsiaLoSwept := true
-    else if not na(asiaL)
-        ovAsiaLoPx    := asiaL
-        ovAsiaLoSwept := false
-    if not na(ovAsiaLoPx)
-        int ovXL = na(b_al) ? bar_index - 50 : b_al
-        int ovXR = ovLineExtend ? bar_index + 5 : bar_index
-        styAsiaLo = ovAsiaLoSwept ? line.style_dotted : f_lineStyle()
-        if na(ovAsiaLoLn)
-            ovAsiaLoLn := line.new(ovXL, ovAsiaLoPx, ovXR, ovAsiaLoPx, xloc = xloc.bar_index, color = ovAsiaCol, width = lineWidth, style = styAsiaLo)
-            ovAsiaLoLb := label.new(ovXR, ovAsiaLoPx, "Asia L", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(ovAsiaCol, 20), textcolor = color.white, size = size.small)
-        line.set_xy1(ovAsiaLoLn, ovXL, ovAsiaLoPx)
-        line.set_xy2(ovAsiaLoLn, ovXR, ovAsiaLoPx)
-        line.set_color(ovAsiaLoLn, ovAsiaCol)
-        line.set_width(ovAsiaLoLn, lineWidth)
-        line.set_style(ovAsiaLoLn, styAsiaLo)
-        label.set_xy(ovAsiaLoLb, ovXR, ovAsiaLoPx)
-        label.set_text(ovAsiaLoLb, ovShowLabels ? ("Asia L" + (ovAsiaLoSwept ? " ·swept" : "")) : "")
-        label.set_color(ovAsiaLoLb, ovShowLabels ? color.new(ovAsiaCol, 20) : color.new(ovAsiaCol, 100))
-        label.set_textcolor(ovAsiaLoLb, ovShowLabels ? color.white : color.new(color.white, 100))
-    else if not na(ovAsiaLoLn)
-        line.delete(ovAsiaLoLn)
-        ovAsiaLoLn := na
-        label.delete(ovAsiaLoLb)
-        ovAsiaLoLb := na
-
-// London High
-if not (masterOn and showOvernightLines and showLond) or ovNySessEnd
-    if not na(ovLondHiLn)
-        line.delete(ovLondHiLn)
-        ovLondHiLn := na
-        label.delete(ovLondHiLb)
-        ovLondHiLb := na
-    ovLondHiSwept := false
-    ovLondHiPx    := na
-else
-    if na(londH) and not na(londH[1]) and sessRemoveSwept
-        ovLondHiPx    := londH[1]
-        ovLondHiSwept := true
-    else if not na(londH)
-        ovLondHiPx    := londH
-        ovLondHiSwept := false
-    if not na(ovLondHiPx)
-        int ovXL = na(b_lh) ? bar_index - 50 : b_lh
-        int ovXR = ovLineExtend ? bar_index + 5 : bar_index
-        styLondHi = ovLondHiSwept ? line.style_dotted : f_lineStyle()
-        if na(ovLondHiLn)
-            ovLondHiLn := line.new(ovXL, ovLondHiPx, ovXR, ovLondHiPx, xloc = xloc.bar_index, color = ovLondCol, width = lineWidth, style = styLondHi)
-            ovLondHiLb := label.new(ovXR, ovLondHiPx, "London H", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(ovLondCol, 20), textcolor = color.white, size = size.small)
-        line.set_xy1(ovLondHiLn, ovXL, ovLondHiPx)
-        line.set_xy2(ovLondHiLn, ovXR, ovLondHiPx)
-        line.set_color(ovLondHiLn, ovLondCol)
-        line.set_width(ovLondHiLn, lineWidth)
-        line.set_style(ovLondHiLn, styLondHi)
-        label.set_xy(ovLondHiLb, ovXR, ovLondHiPx)
-        label.set_text(ovLondHiLb, ovShowLabels ? ("London H" + (ovLondHiSwept ? " ·swept" : "")) : "")
-        label.set_color(ovLondHiLb, ovShowLabels ? color.new(ovLondCol, 20) : color.new(ovLondCol, 100))
-        label.set_textcolor(ovLondHiLb, ovShowLabels ? color.white : color.new(color.white, 100))
-    else if not na(ovLondHiLn)
-        line.delete(ovLondHiLn)
-        ovLondHiLn := na
-        label.delete(ovLondHiLb)
-        ovLondHiLb := na
-
-// London Low
-if not (masterOn and showOvernightLines and showLond) or ovNySessEnd
-    if not na(ovLondLoLn)
-        line.delete(ovLondLoLn)
-        ovLondLoLn := na
-        label.delete(ovLondLoLb)
-        ovLondLoLb := na
-    ovLondLoSwept := false
-    ovLondLoPx    := na
-else
-    if na(londL) and not na(londL[1]) and sessRemoveSwept
-        ovLondLoPx    := londL[1]
-        ovLondLoSwept := true
-    else if not na(londL)
-        ovLondLoPx    := londL
-        ovLondLoSwept := false
-    if not na(ovLondLoPx)
-        int ovXL = na(b_ll) ? bar_index - 50 : b_ll
-        int ovXR = ovLineExtend ? bar_index + 5 : bar_index
-        styLondLo = ovLondLoSwept ? line.style_dotted : f_lineStyle()
-        if na(ovLondLoLn)
-            ovLondLoLn := line.new(ovXL, ovLondLoPx, ovXR, ovLondLoPx, xloc = xloc.bar_index, color = ovLondCol, width = lineWidth, style = styLondLo)
-            ovLondLoLb := label.new(ovXR, ovLondLoPx, "London L", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(ovLondCol, 20), textcolor = color.white, size = size.small)
-        line.set_xy1(ovLondLoLn, ovXL, ovLondLoPx)
-        line.set_xy2(ovLondLoLn, ovXR, ovLondLoPx)
-        line.set_color(ovLondLoLn, ovLondCol)
-        line.set_width(ovLondLoLn, lineWidth)
-        line.set_style(ovLondLoLn, styLondLo)
-        label.set_xy(ovLondLoLb, ovXR, ovLondLoPx)
-        label.set_text(ovLondLoLb, ovShowLabels ? ("London L" + (ovLondLoSwept ? " ·swept" : "")) : "")
-        label.set_color(ovLondLoLb, ovShowLabels ? color.new(ovLondCol, 20) : color.new(ovLondCol, 100))
-        label.set_textcolor(ovLondLoLb, ovShowLabels ? color.white : color.new(color.white, 100))
-    else if not na(ovLondLoLn)
-        line.delete(ovLondLoLn)
-        ovLondLoLn := na
-        label.delete(ovLondLoLb)
-        ovLondLoLb := na
 
 // -----------------------------------------------------------------------------
 // SWEEP MASKING for previous-period levels
@@ -1768,7 +1263,7 @@ var lv_primary = array.new<bool>() // declutter: true = among the Top-N by confi
 
 // variant that can flag a level as "no magnet" (still drawn, but excluded from the DOL pull)
 f_addLevelM(bool active, float price, string name, color col, string emo, int birthBar, int side, bool noMagnet) =>
-    if masterOn and active and not na(price) and f_inCompactRange(price)
+    if masterOn and active and not na(price)
         array.push(lv_price, price)
         array.push(lv_name, name)
         array.push(lv_col, col)
@@ -1790,7 +1285,6 @@ var fvgCE     = array.new<line>()    // optional consequent-encroachment (50%) l
 var fvgArmed  = array.new<int>()     // execution state per gap: 0 watching · 1 armed · 2 confirmed · 3 dead (stop hit / expired)
 var fvgArmBar = array.new<int>()     // bar_index the gap ARMED on (for setup expiry); na while watching
 var fvgApproached = array.new<bool>() // approach alert already fired for this gap (cooldown)
-var fvgCreatQ = array.new<float>()   // creation displacement quality 0..1 (for the rejection gauge)
 // FVG execution setup drawings (entry/stop/target lines + label), redrawn each bar from the
 // armed gaps so only the nearest active setups show. Alert flags are raised in the gap loop.
 var exec_lines  = array.new<line>()
@@ -1813,7 +1307,7 @@ var invWasBull = array.new<bool>()   // polarity of the gap that got invalidated
 var invBar    = array.new<int>()     // bar it was invalidated on
 
 // How important is the strongest liquidity pool sitting on/just-beyond a gap? Returns 0..1,
-// graded by a type hierarchy (weekly/monthly > equal highs/lows > prev-day > opens > VP >
+// graded by a type hierarchy (weekly/monthly > equal highs/lows > prev-day > opens >
 // session > swing), mirroring the DOL type weights. "Near" = overlap OR within fvgLiqATR of a
 // gap edge, so it also rewards a gap that GUARDS a pool just beyond it (the fuel price hunts).
 // is a price within [lo..hi]? (helper for f_gapLiqPool; top-level since Pine has no nesting)
@@ -1852,12 +1346,6 @@ f_gapLiqPool(float gTop, float gBot, bool isBull) =>
         best := math.max(best, 0.85)
     if f_inBand(dOpen, lo, hi) or f_inBand(midO, lo, hi)
         best := math.max(best, 0.65)
-    // volume-profile acceptance levels
-    if showVP
-        if f_inBand(vpPOC, lo, hi)
-            best := math.max(best, 0.80)
-        if f_inBand(vpVAH, lo, hi) or f_inBand(vpVAL, lo, hi)
-            best := math.max(best, 0.65)
     // session highs/lows
     if f_inBand(asiaH, lo, hi) or f_inBand(asiaL, lo, hi) or f_inBand(londH, lo, hi) or f_inBand(londL, lo, hi) or f_inBand(nyH, lo, hi) or f_inBand(nyL, lo, hi)
         best := math.max(best, 0.55)
@@ -2208,9 +1696,9 @@ f_confScore(float mid, float loB, float hiB, int members) =>
     int s = int(math.min(math.round(score), 100))
     [s, parts]
 
-// ---- per-level DOL pull + magnet-quality (accuracy pass) ----
+// ---- per-level DOL pull + magnet-quality ----
 // Two scores are produced from the same weights:
-//   • pull  = distance-decay(#2) × type × age × freshness(#3) × confluence(#1)
+//   • pull  = distance-decay × type × age × freshness × confluence
 //             — proximity dominates. Drives the DOL arrow/bias and the 🎯 magnet.
 //   • qual  = type × age × freshness × confluence  (distance REMOVED)
 //             — "how strong a magnet is this for its distance". Drives the
@@ -2230,14 +1718,10 @@ f_pull(float pk, string nk, int bk, float sensK, float atrU) =>
             typeW := 2.4                 // exact equal H/L — engineered liquidity, top
         else if str.contains(nk, "PMH") or str.contains(nk, "PML")
             typeW := 2.2
-        else if str.contains(nk, "POC")
-            typeW := 2.1                 // volume point of control — heavy acceptance
         else if str.contains(nk, "PWH") or str.contains(nk, "PWL")
             typeW := 1.9
         else if str.contains(nk, "M.Open") or str.contains(nk, "W.Open")
             typeW := 1.8                 // monthly / weekly opens — institutional refs
-        else if str.contains(nk, "VAH") or str.contains(nk, "VAL")
-            typeW := 1.7                 // value-area edges
         else if str.contains(nk, "Breaker")
             typeW := 1.7                 // flipped OB — strong reaction zone
         else if str.contains(nk, "PDH") or str.contains(nk, "PDL")
@@ -2316,224 +1800,11 @@ f_pathClear(float fromP, float toP, float atrU) =>
     float clr = 100.0 * math.pow(0.72, projClearW * severity)
     [math.round(clr), obstacles]
 
-// RETURN-LIKELIHOOD — how likely price is to come BACK to a zone (gap/OB) from here. 0..100.
-// Blends: proximity (closer = higher), path clearance between price and the zone (reuses
-// f_pathClear), daily-bias alignment (zone on the side the bias points toward = higher), and
-// volume (creatVol 0..1 = the zone's participation). Heuristic, not a probability.
-f_returnLikelihood(float zTop, float zBot, float creatVol) =>
-    float atrU = math.max(nz(atr), syminfo.mintick)
-    float zMid = (zTop + zBot) / 2.0
-    // 1) proximity — exponential decay with ATR distance (1 ATR away ~0.7, 4 ATR ~0.3)
-    float distATR = math.abs(zMid - close) / atrU
-    float prox = math.pow(0.85, distATR)                       // 0..1
-    // 2) path clearance between price and the zone (0..100 -> 0..1)
-    [clrScore, obsN] = f_pathClear(close, zMid, atrU)
-    float clear01 = clrScore / 100.0
-    // 3) daily-bias alignment — bias DOWN favours returning to zones BELOW price; bias UP, above.
-    //    NEUTRAL bias = neutral 0.5.
-    float biasAlign = 0.5
-    if biasOn and dayBias != 0
-        bool zoneBelow = zMid < close
-        bool favoured  = dayBias < 0 ? zoneBelow : (not zoneBelow)
-        biasAlign := favoured ? 0.85 : 0.25
-    // 4) volume — the zone's creation participation (0..1), lightly nudged by current rel-volume
-    float volF = math.min(math.max(nz(creatVol, 0.5), 0.0), 1.0)
-    float volNow = math.min(nz(rvol) / 2.0, 1.0)               // current participation 0..1
-    float volF2 = math.min(1.0, volF * 0.7 + volNow * 0.3)
-    // weighted blend -> 0..100 (proximity + clearance carry most weight)
-    float rl = (prox * 0.34 + clear01 * 0.30 + biasAlign * 0.22 + volF2 * 0.14) * 100.0
-    int(math.max(0.0, math.min(100.0, math.round(rl))))
 
-// (J) strongest SAME-DIRECTION FVG just BEYOND an ORB edge (continuation fuel). isUp=true looks
-// for a BULLISH gap whose body sits at/above `edge` within `atrU` ATRs; isUp=false a BEARISH
-// gap at/below. Returns a 0..1 pull = (gap strength/100) scaled by proximity (at edge=1, far=0).
-// Reads the chart-TF unfilled-FVG arrays (fvgBoxes/fvgIsBull/fvgStr, defined above) as globals.
-// The 3.0-ATR window and the -0.25-ATR inside-tolerance are tuned for the 5-minute ORB: a gap
-// from just inside the edge out to 3 ATR beyond counts, decaying linearly to 0 at the far end.
-f_orbLaunchpad(float edge, bool isUp, float atrU) =>
-    float best = 0.0
-    if array.size(fvgBoxes) > 0
-        for i = 0 to array.size(fvgBoxes) - 1
-            bool gb = array.get(fvgIsBull, i)
-            if gb == isUp
-                box bx = array.get(fvgBoxes, i)
-                float gt  = box.get_top(bx)
-                float glo = box.get_bottom(bx)
-                float gmid = (gt + glo) / 2.0
-                // distance of the gap from the edge in the breakout direction (must be beyond the edge)
-                float dist = isUp ? (gmid - edge) / atrU : (edge - gmid) / atrU
-                if dist >= -0.25 and dist <= 3.0        // from just-inside-edge out to 3 ATR beyond
-                    float prox = math.max(0.0, math.min(1.0, 1.0 - dist / 3.0))
-                    float pull = (array.get(fvgStr, i) / 100.0) * prox
-                    best := math.max(best, pull)
-    best
 
-// (K) strongest unfilled FVG sitting INSIDE [lo, hi] (the opening range). An interior imbalance is
-// a reversion magnet that argues AGAINST a clean breakout. Returns 0..1 = (best interior gap
-// strength/100), weighted by how centered it is in the range (a mid-range gap contains most; a
-// gap hugging an edge contains less, floored at 0.3 so it never fully vanishes). Reads the same
-// chart-TF FVG arrays as globals. Direction-agnostic (a containing gap dampens both sides).
-f_orbInteriorFvg(float lo, float hi) =>
-    float best = 0.0
-    float rng = hi - lo
-    if rng > 0 and array.size(fvgBoxes) > 0
-        for i = 0 to array.size(fvgBoxes) - 1
-            box bx = array.get(fvgBoxes, i)
-            float gmid = (box.get_top(bx) + box.get_bottom(bx)) / 2.0
-            if gmid > lo and gmid < hi                   // midpoint inside the range
-                float centered = 1.0 - math.abs((gmid - lo) / rng - 0.5) * 2.0   // 1 at center, 0 at edges
-                float v = (array.get(fvgStr, i) / 100.0) * math.max(0.3, centered)
-                best := math.max(best, v)
-    best
 
-// (O) strongest OPPOSING structure sitting JUST BEYOND an edge — a reversal WALL that fades a
-// breakout. For an UP break (isUp=true) an opposing wall is a BEARISH/supply order block (or a
-// BEARISH fair value gap) at/above `edge`; for a DOWN break, a BULLISH/demand block or BULLISH gap
-// at/below. Returns 0..1 = (wall strength/100) scaled by proximity (at the edge = full, >=3 ATR
-// away = 0). Mirrors f_orbLaunchpad but for OPPOSING structure. Reads OB + FVG arrays as globals.
-// The 3.0-ATR window and the -0.25-ATR inside-tolerance match f_orbLaunchpad exactly.
-f_orbWall(float edge, bool isUp, float atrU) =>
-    float best = 0.0
-    // opposing ORDER BLOCKS / breakers (bearish block walls an up-break; bullish block walls a down-break)
-    if array.size(obTop) > 0
-        for i = 0 to array.size(obTop) - 1
-            bool bull = array.get(obBull, i)
-            if bull != isUp                              // opposing polarity to the breakout
-                float ot = array.get(obTop, i)
-                float ob = array.get(obBot, i)
-                float omid = (ot + ob) / 2.0
-                float dist = isUp ? (omid - edge) / atrU : (edge - omid) / atrU
-                if dist >= -0.25 and dist <= 3.0         // from just-inside-edge out to 3 ATR beyond
-                    float prox = math.max(0.0, math.min(1.0, 1.0 - dist / 3.0))
-                    float strv = i < array.size(obStr) ? array.get(obStr, i) : na
-                    float pull = (na(strv) ? 0.5 : strv / 100.0) * prox
-                    best := math.max(best, pull)
-    // opposing FAIR VALUE GAPS (a bearish gap just above walls an up-break; bullish gap below a down-break)
-    if array.size(fvgBoxes) > 0
-        for j = 0 to array.size(fvgBoxes) - 1
-            bool gb = array.get(fvgIsBull, j)
-            if gb != isUp                                // opposing polarity
-                box bx = array.get(fvgBoxes, j)
-                float gmid = (box.get_top(bx) + box.get_bottom(bx)) / 2.0
-                float dist = isUp ? (gmid - edge) / atrU : (edge - gmid) / atrU
-                if dist >= -0.25 and dist <= 3.0
-                    float prox = math.max(0.0, math.min(1.0, 1.0 - dist / 3.0))
-                    float strv = j < array.size(fvgStr) ? array.get(fvgStr, j) : na
-                    float pull = (na(strv) ? 0.5 : strv / 100.0) * prox
-                    best := math.max(best, pull)
-    best
 
-// (H) ORB breakout-likelihood CORE: the exact A-D per-side blend, refactored to a module-level
-// helper so BOTH the live display AND the no-look-ahead prediction snapshot call the SAME math
-// and therefore produce byte-for-byte identical [upPct, dnPct]. Depends only on already-computed
-// globals (close / atr / regimeState / dayBias / biasOn) plus the passed range + rVol + box pool;
-// it reads NO future data, so it is safe to evaluate on a confirmed historical bar. The weights
-// and expressions below are IDENTICAL to the original inline block (A-D plus J/K/L/M) and must
-// stay in sync. oSweep = the formation-window SFP side (+1 bullish / -1 bearish / 0 none);
-// oUseFvg = the orbUseFvg toggle (zeroes the beyond-edge term symmetrically when off).
-f_orbPredict(float oHi, float oLo, float oRvol, int oSweep, bool oUseFvg, array<box> boxes) =>
-    float atrO = math.max(nz(atr), syminfo.mintick)
-    float rng  = oHi - oLo
-    // PRICE ACTION: position in range (near an edge = loaded that way) + tightness (A)
-    float posIn = math.min(1.0, math.max(0.0, (close - oLo) / rng))     // 0 at low, 1 at high
-    float tight = math.min(atrO / rng, 1.5) / 1.5                       // ATR-based fallback (day one)
-    float widthFactor = tight                                          // default to fallback
-    int nBoxes = array.size(boxes)
-    if nBoxes >= 2
-        array<float> pastRng = array.new<float>()
-        for i = 0 to nBoxes - 2                                         // skip last = current forming day
-            box pb = array.get(boxes, i)
-            array.push(pastRng, box.get_top(pb) - box.get_bottom(pb))
-        float medRng = f_medianArr(pastRng)
-        if not na(medRng) and medRng > 0
-            float ratio = rng / medRng
-            widthFactor := math.max(0.0, math.min(1.0, 1.5 - ratio))   // 0.5x->1.0, 1.0x->0.5, >=1.5x->0.0
-    // (B) RELATIVE-VOLUME factor (soft)
-    float volFactor = math.max(0.0, math.min(1.0, (nz(oRvol, 1.0) - 0.8) / 1.2))
-    // LIQUIDITY: nearest pool beyond each edge + how clear the path to it is
-    float upLiq = f_nextOppLiq(oHi, true)
-    float dnLiq = f_nextOppLiq(oLo, false)
-    [upClrS, upO] = f_pathClear(close, na(upLiq) ? oHi + rng : upLiq, atrO)
-    [dnClrS, dnO] = f_pathClear(close, na(dnLiq) ? oLo - rng : dnLiq, atrO)
-    // (C) DISTANCE-scaled liquidity magnet
-    float upDist = na(upLiq) ? na : (upLiq - oHi) / atrO
-    float dnDist = na(dnLiq) ? na : (oLo - dnLiq) / atrO
-    float upMagnet = na(upLiq) ? 0.3 : math.max(0.3, math.min(1.0, 1.0 - upDist / 3.0))
-    float dnMagnet = na(dnLiq) ? 0.3 : math.max(0.3, math.min(1.0, 1.0 - dnDist / 3.0))
-    // BIAS + REGIME
-    float biasUp = biasOn and dayBias > 0 ? 1.0 : (biasOn and dayBias < 0 ? 0.0 : 0.5)
-    float regimeMul = regimeState == 1 ? 1.15 : regimeState == -1 ? 0.6 : 0.9
-    // (J) launchpad fuel just beyond each edge (strongest same-direction gap, proximity-scaled)
-    float upLaunch = f_orbLaunchpad(oHi, true,  atrO)
-    float dnLaunch = f_orbLaunchpad(oLo, false, atrO)
-    // (L) sweep-before-break: a bullish sweep during the window (swept a low, reversed up) favors an
-    // UP break; a bearish sweep favors a DOWN break. 0..1 nudge on the favored side only.
-    float upSweep = (oSweep == 1) ? 1.0 : 0.0
-    float dnSweep = (oSweep == -1) ? 1.0 : 0.0
-    // (M) DE-CORRELATED beyond-edge composite: J and L both point the SAME way as the (C) magnet on
-    // a real breakout, so blend launchpad + sweep into ONE 0..1 per side (launchpad weighted more)
-    // and add it as a SINGLE weighted term rather than triple-counting independent signals.
-    float upBeyond = math.min(1.0, upLaunch * 0.7 + upSweep * 0.5)
-    float dnBeyond = math.min(1.0, dnLaunch * 0.7 + dnSweep * 0.5)
-    // (K) INTERIOR-FVG CONTAINMENT acts THROUGH the beyond-edge term: an unfilled gap inside the
-    // range discounts the launchpad/sweep fuel (reversion magnet cancels continuation fuel). Bounded
-    // so the term can't go negative. oUseFvg off -> zero the term on BOTH sides (symmetric, no bias).
-    float containment = f_orbInteriorFvg(oLo, oHi)
-    float upBeyondAdj = oUseFvg ? upBeyond * (1.0 - 0.5 * containment) : 0.0
-    float dnBeyondAdj = oUseFvg ? dnBeyond * (1.0 - 0.5 * containment) : 0.0
-    // (O) BEYOND-EDGE WALL: strong OPPOSING structure just outside an edge fades a breakout that way
-    // (the trap that burns high-conviction ORB breaks). A multiplicative dampener on that side's
-    // score; gated by the same orbUseFvg toggle as the FVG terms. wallMul ranges 1.0 (no wall) down
-    // to (1 - orbWallW) at a full-strength wall right at the edge. Applied to BOTH sides independently.
-    float upWall = oUseFvg ? f_orbWall(oHi, true,  atrO) : 0.0
-    float dnWall = oUseFvg ? f_orbWall(oLo, false, atrO) : 0.0
-    float upWallMul = 1.0 - orbWallW * upWall
-    float dnWallMul = 1.0 - orbWallW * dnWall
-    // compose per-side raw scores (0..1), then scale to 100. per-side weights sum to 1.00:
-    // posIn 0.24 + widthFactor 0.12 + pathClear 0.16 + magnet 0.10 + bias 0.14 + volFactor 0.12
-    // + beyondAdj (J/K/L/M) 0.12. widthFactor/volFactor are symmetric; the rest are side-specific.
-    // (O) wall is a separate MULTIPLIER (like regimeMul), NOT a weighted term, so the weight budget
-    // stays at 1.00; a strong opposing wall at the edge scales that side down by up to orbWallW.
-    float upRaw = (posIn * 0.24 + widthFactor * 0.12 + (upClrS / 100.0) * 0.16 + upMagnet * 0.10 + biasUp * 0.14 + volFactor * 0.12 + upBeyondAdj * 0.12) * regimeMul * upWallMul
-    float dnRaw = ((1.0 - posIn) * 0.24 + widthFactor * 0.12 + (dnClrS / 100.0) * 0.16 + dnMagnet * 0.10 + (1.0 - biasUp) * 0.14 + volFactor * 0.12 + dnBeyondAdj * 0.12) * regimeMul * dnWallMul
-    int upPct = int(math.max(0.0, math.min(100.0, math.round(upRaw * 100.0))))
-    int dnPct = int(math.max(0.0, math.min(100.0, math.round(dnRaw * 100.0))))
-    [upPct, dnPct]
 
-// ETA to a target price from recent velocity (independent of the countdown toggle so the
-// projETA switch works on its own). Formats per the Countdown units setting.
-f_eta(float target) =>
-    string outTxt = ""
-    if nz(velocity) > 0 and not na(target)
-        float bars = math.abs(target - close) / velocity
-        if cdMode == "Bars"
-            outTxt := " ⏱≈" + str.tostring(math.round(bars)) + "b"
-        else
-            float secs = bars * secPerBar
-            outTxt := secs < 3600 ? (" ⏱≈" + str.tostring(math.round(secs / 60)) + "m") : (secs < 86400 ? (" ⏱≈" + str.tostring(math.round(secs / 3600)) + "h") : (" ⏱≈" + str.tostring(math.round(secs / 86400)) + "d"))
-    outTxt
-
-// Confidence momentum: remember each level's confidence % keyed by rounded price so we
-// can show ▲/▼ vs the previous bar. Two maps: *_prev is last bar's snapshot (read from),
-// *_now is this bar's fresh values (written to); they swap at the end of the last-bar block.
-var cm_keysPrev = array.new<float>()
-var cm_valsPrev = array.new<float>()
-var cm_keysNow  = array.new<float>()
-var cm_valsNow  = array.new<float>()
-f_cmKey(float p, float atrU) =>
-    math.round(p / math.max(atrU * 0.1, syminfo.mintick))
-f_cmPrev(float p, float atrU) =>
-    float k = f_cmKey(p, atrU)
-    float found = na
-    if array.size(cm_keysPrev) > 0
-        for ci = 0 to array.size(cm_keysPrev) - 1
-            if array.get(cm_keysPrev, ci) == k
-                found := array.get(cm_valsPrev, ci)
-    found
-f_cmStore(float p, float atrU, float confPct) =>
-    array.push(cm_keysNow, f_cmKey(p, atrU))
-    array.push(cm_valsNow, confPct)
-    0
 
 // Stacked agreement: does a price band overlap an order block OR an FVG?
 f_hasOBFVG(float loB, float hiB) =>
@@ -2581,8 +1852,6 @@ if barstate.islast
     array.clear(lv_inwin)
     array.clear(lv_nomag)
     array.clear(lv_primary)
-    array.clear(cm_keysNow)          // fresh confidence-momentum snapshot this bar
-    array.clear(cm_valsNow)
 
     f_addLevel(showPDHL, pdhM,   "PDH",     colBull, emoPrev, b_pdh,  1)
     f_addLevel(showPDHL, pdlM,   "PDL",     colBear, emoPrev, b_pdl, -1)
@@ -2626,10 +1895,6 @@ if barstate.islast
             float bmid = (array.get(brkTop, bri) + array.get(brkBot, bri)) / 2.0
             bool  bbl  = array.get(brkBull, bri)
             f_addLevel(true, bmid, bbl ? "Breaker▲" : "Breaker▼", bbl ? colBull : colBear, emoLiq, array.get(brkBirth, bri), bbl ? 1 : -1)
-    if showVP
-        f_addLevel(not na(vpPOC), vpPOC, "POC", colZone, emoPrev, na, 0)
-        f_addLevel(not na(vpVAH), vpVAH, "VAH", colZone, emoPrev, na, 1)
-        f_addLevel(not na(vpVAL), vpVAL, "VAL", colZone, emoPrev, na, -1)
 
     // ---- DOL gravity: pull = distance x type x age, per side ----
     float bslStrength = 0.0
@@ -2754,30 +2019,12 @@ if barstate.islast
     float dm_liqBias = dm_totalG > 0 ? (bslEff - sslEff) / dm_totalG : 0.0
     float dm_bias = (1.0 - dolMomWt / 100.0) * dm_liqBias + (dolMomWt / 100.0) * dolMom
     // ---- deadband + hysteresis: only flip when the opposing side wins DECISIVELY ----
-    // Legacy behaviour flipped the arrow the instant dm_bias crossed exactly 0, so distance
-    // decay, the hard distance-floor cut, discrete path-clearance steps and live momentum all
-    // whipsawed the direction as price approached a key level. Here the committed direction
-    // (dm_dirState, +1 up / -1 down) is held UNLESS the bias clears the deadband on the OTHER
-    // side: an UP arrow only turns DOWN once dm_bias < -dolDeadband, and vice-versa. Inside
-    // [-dolDeadband, +dolDeadband] the prior direction persists. When "confirm on bar close"
-    // is on, the flip is only committed on a closed bar; intrabar we surface a "turning" hint
-    // but keep the committed direction so a single spike through a level can't flip the read.
-    bool  dm_turning = false
-    if dolStable
-        float band = dolDeadband
-        bool  wantUp   = dm_bias >  band      // BSL decisively ahead
-        bool  wantDown = dm_bias < -band      // SSL decisively ahead
-        bool  crossUp   = wantUp   and dm_dirState < 0    // currently DOWN, bias says flip UP
-        bool  crossDown = wantDown and dm_dirState > 0    // currently UP,   bias says flip DOWN
-        bool  canCommit = (not dolFlipConfirm) or barstate.isconfirmed
-        if (crossUp or crossDown) and canCommit
-            dm_dirState := crossUp ? 1.0 : -1.0
-        else if crossUp or crossDown
-            // deadband cleared but waiting on bar close to confirm — flag the pending turn
-            dm_turning := true
-    else
-        // legacy: instant flip at zero, no memory
-        dm_dirState := dm_bias >= 0 ? 1.0 : -1.0
+    // flip stability: hold the prior direction until the bias clears the deadband on the other
+    // side, committed on a closed bar only (no flicker near a key level)
+    bool crossUp   = dm_bias >  dolDeadband and dm_dirState < 0
+    bool crossDown = dm_bias < -dolDeadband and dm_dirState > 0
+    if (crossUp or crossDown) and ((not dolFlipConfirm) or barstate.isconfirmed)
+        dm_dirState := crossUp ? 1.0 : -1.0
     bool  dolDrawUp = dm_dirState >= 0
     float dolTgt = dolDrawUp ? bslTopPrice : sslTopPrice
     // single MOST-LIKELY target = the level with the greatest pull overall
@@ -2816,7 +2063,7 @@ if barstate.islast
             bool  zPrimary = array.get(lv_primary, array.get(idx, gi))   // declutter: any Top-N member?
             float sumPull = zInWin ? array.get(lv_pull, array.get(idx, gi)) : 0.0
             float sumQual = zInWin ? array.get(lv_qual, array.get(idx, gi)) : 0.0
-            while clusterOn and not clarityOn and gi + 1 < idxN and (array.get(lv_price, array.get(idx, gi + 1)) - array.get(lv_price, array.get(idx, gi))) <= mergeDist
+            while clusterOn and gi + 1 < idxN and (array.get(lv_price, array.get(idx, gi + 1)) - array.get(lv_price, array.get(idx, gi))) <= mergeDist
                 gi := gi + 1
                 float p = array.get(lv_price, array.get(idx, gi))
                 sumP := sumP + p
@@ -2838,27 +2085,6 @@ if barstate.islast
             bool drawGroup = members >= minStrength
             if drawGroup and members == 1
                 float p = array.get(lv_price, array.get(idx, startI))
-                string pName = array.get(lv_name, array.get(idx, startI))
-                // ---- level-clarity mode: importance floor + top-N-by-importance labeling ----
-                int   clTier = f_lvlTier(pName)
-                int   floorTier = clarityFloor == "Tier 1 only (major)" ? 1 : clarityFloor == "Tier 2+ (hide minor)" ? 2 : 3
-                bool  claritySkip = clarityOn and clTier > floorTier     // below the importance floor -> don't draw
-                bool  clarityLabeled = true
-                if clarityOn and not claritySkip
-                    // labeled if fewer than clarityLblN same-side levels outrank it (better tier,
-                    // or equal tier but nearer to price) — so only the top-N important per side get text.
-                    bool  above0 = p >= close
-                    float dist0  = math.abs(p - close)
-                    int   outrank = 0
-                    for jj = 0 to nl - 1
-                        if not array.get(lv_nomag, jj)
-                            float pj = array.get(lv_price, jj)
-                            if (pj >= close) == above0 and not (pj == p)
-                                int tj = f_lvlTier(array.get(lv_name, jj))
-                                bool better = tj < clTier or (tj == clTier and math.abs(pj - close) < dist0)
-                                if better
-                                    outrank := outrank + 1
-                    clarityLabeled := outrank < clarityLblN
                 int  sd = array.get(lv_side, array.get(idx, startI))
                 color c = f_sideColI(sd, p, array.get(lv_col, array.get(idx, startI)))
                 string emo = sideColorOn ? f_sideEmojiI(sd, p) : array.get(lv_emo, array.get(idx, startI))
@@ -2872,24 +2098,12 @@ if barstate.islast
                 float lp = lpDen > 0 ? lpNum / lpDen * 100.0 : 0.0
                 bool isTop = not na(topPullPrice) and math.abs(p - topPullPrice) <= syminfo.mintick
                 float atrUt = math.max(nz(atr), syminfo.mintick)
-                // confidence momentum ▲/▼ vs previous bar (feature 4)
-                string momTag = ""
-                if projConfMom and showLvlConf and lInWin
-                    float prevC = f_cmPrev(p, atrUt)
-                    momTag := na(prevC) ? "" : (lp > prevC + 0.5 ? " ▲" : (lp < prevC - 0.5 ? " ▼" : " ="))
-                    f_cmStore(p, atrUt, lp)
-                // stacked-agreement ⭐: DOL-side agrees + it's the magnet + overlaps OB/FVG (feature 8)
+                // stacked-agreement ⭐: DOL-side agrees + it's the magnet + overlaps OB/FVG
                 bool sideAgree = (dolDrawUp and p >= close) or (not dolDrawUp and p < close)
                 string stackTag = (projStacked and lInWin and isTop and sideAgree and f_hasOBFVG(p - atrUt * 0.05, p + atrUt * 0.05)) ? " ⭐" : ""
                 // tested/virgin: probed levels get a ✓ + dotted, dimmed line (still standing, just 'used')
                 bool lTested = f_isTested(p, atrUt)
-                // live level-reaction gauge (reject vs sweep) — only while price is at/near the level
-                string lvlGaugeTag = ""
-                if lvlRejGauge and lInWin
-                    [lgActive, lgLean] = f_lvlGauge(p, array.get(lv_name, array.get(idx, startI)), lTested, 0.4, atrUt)
-                    if lgActive
-                        lvlGaugeTag := lgLean >= 50 ? (" ⟲" + str.tostring(lgLean)) : (" ⇥" + str.tostring(lgLean))
-                string confLvlTag = (showLvlConf and lInWin) ? ((isTop ? " 🎯" : " ") + str.tostring(math.round(lp)) + "%" + momTag + stackTag + lvlGaugeTag) : ""
+                string confLvlTag = (showLvlConf and lInWin) ? ((isTop ? " 🎯" : " ") + str.tostring(math.round(lp)) + "%" + stackTag) : ""
                 string testTag = (showTested and lTested) ? " ✓" : ""
                 // declutter: faint if de-prioritised (beyond Top-N) or below the confidence gate
                 bool lPrimary = array.get(lv_primary, array.get(idx, startI))
@@ -2898,17 +2112,13 @@ if barstate.islast
                 bool lFaint = (densOn and (not lPrimary or (lInWin and lp < eGate))) or lCounterBias
                 color cLine = lFaint ? color.new(c, densFadeOp) : ((showTested and lTested) ? color.new(c, 55) : c)
                 string lStyle = (lFaint or (showTested and lTested)) ? line.style_dotted : f_lineStyle()
-                // clarity mode: a non-top-N level draws as a BARE line (tiny price or nothing);
-                // a below-floor level is skipped entirely. Faint levels shed tags as before.
-                bool clarityBareLine = clarityOn and not clarityLabeled
-                string full = clarityBareLine ? (clarityBare ? str.tostring(p, format.mintick) : "") : (lFaint ? (array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick)) : (tier + (emo == "None" ? "" : emo + " ") + array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick) + confLvlTag + testTag + f_countdown(p)))
-                if not claritySkip
-                    line ln = line.new(bar_index, p, bar_index + ext, p, color = cLine, width = lineWidth, style = lStyle)
-                    color soloBg  = (lFaint or clarityBareLine) ? color.new(c, densFadeOp) : (outlineTags ? c : color.new(c, 85))
-                    color soloTxt = (lFaint or clarityBareLine) ? color.new(c, math.max(densFadeOp - 30, 0)) : (outlineTags ? clustLblTxt : c)
-                    label lb = label.new(bar_index + ext, p, full, style = label.style_label_left, color = soloBg, textcolor = soloTxt, size = clarityBareLine ? size.tiny : f_labelSize())
-                    array.push(pool_lines, ln)
-                    array.push(pool_labels, lb)
+                string full = lFaint ? (array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick)) : (tier + (emo == "None" ? "" : emo + " ") + array.get(lv_name, array.get(idx, startI)) + " " + str.tostring(p, format.mintick) + confLvlTag + testTag + f_countdown(p))
+                line ln = line.new(bar_index, p, bar_index + ext, p, color = cLine, width = lineWidth, style = lStyle)
+                color soloBg  = lFaint ? color.new(c, densFadeOp) : (outlineTags ? c : color.new(c, 85))
+                color soloTxt = lFaint ? color.new(c, math.max(densFadeOp - 30, 0)) : (outlineTags ? clustLblTxt : c)
+                label lb = label.new(bar_index + ext, p, full, style = label.style_label_left, color = soloBg, textcolor = soloTxt, size = f_labelSize())
+                array.push(pool_lines, ln)
+                array.push(pool_labels, lb)
             else if drawGroup
                 float mid = sumP / members
                 float t = math.min((members - 1) / 4.0, 1.0)
@@ -2936,24 +2146,12 @@ if barstate.islast
                     float zPull = zDen > 0 ? zNum / zDen * 100.0 : 0.0
                     bool zTop = not na(topPullPrice) and topPullPrice >= minP - pad and topPullPrice <= maxP + pad
                     float atrUz = math.max(nz(atr), syminfo.mintick)
-                    // confidence momentum ▲/▼ vs previous bar (feature 4)
-                    string zMomTag = ""
-                    if projConfMom and showLvlConf and zInWin
-                        float zPrevC = f_cmPrev(mid, atrUz)
-                        zMomTag := na(zPrevC) ? "" : (zPull > zPrevC + 0.5 ? " ▲" : (zPull < zPrevC - 0.5 ? " ▼" : " ="))
-                        f_cmStore(mid, atrUz, zPull)
-                    // stacked-agreement ⭐: DOL-side agrees + it's the magnet + zone overlaps OB/FVG (feature 8)
+                    // stacked-agreement ⭐: DOL-side agrees + it's the magnet + zone overlaps OB/FVG
                     bool zSideAgree = (dolDrawUp and mid >= close) or (not dolDrawUp and mid < close)
                     string zStackTag = (projStacked and zInWin and zTop and zSideAgree and f_hasOBFVG(minP - pad, maxP + pad)) ? " ⭐" : ""
                     // tested/virgin zone: dashed hollow border + ✓ when price has probed the zone
                     bool zTested = showTested and (f_isTested(mid, atrUz) or f_isTested(minP, atrUz) or f_isTested(maxP, atrUz))
-                    // live level-reaction gauge (reject vs sweep) for the zone, using its confluence score
-                    string zGaugeTag = ""
-                    if lvlRejGauge and zInWin
-                        [zgActive, zgLean] = f_lvlGauge(mid, names, zTested, math.min(confS / 100.0, 1.0), atrUz)
-                        if zgActive
-                            zGaugeTag := zgLean >= 50 ? (" ⟲" + str.tostring(zgLean)) : (" ⇥" + str.tostring(zgLean))
-                    string lvlConfTag = (showLvlConf and zInWin) ? ((zTop ? "  🎯" : "  →") + str.tostring(math.round(zPull)) + "%" + zMomTag + zStackTag + zGaugeTag) : ""
+                    string lvlConfTag = (showLvlConf and zInWin) ? ((zTop ? "  🎯" : "  →") + str.tostring(math.round(zPull)) + "%" + zStackTag) : ""
                     if zTested
                         box.set_border_style(bx, line.style_dashed)
                         box.set_bgcolor(bx, color.new(zbase, 92))
@@ -2994,26 +2192,12 @@ if barstate.islast
                     label olb = label.new(obCx, (obT + obB) / 2.0, str.tostring(obSc) + "%", style = label.style_text_outline, textcolor = color.white, color = color.new(bull ? obColBull : obColBear, 100), size = size.small)
                     array.push(xtra_labels, olb)
 
-    // confidence-momentum: snapshot this bar's values into *_prev for next bar's ▲/▼
-    array.clear(cm_keysPrev)
-    array.clear(cm_valsPrev)
-    if array.size(cm_keysNow) > 0
-        for ci = 0 to array.size(cm_keysNow) - 1
-            array.push(cm_keysPrev, array.get(cm_keysNow, ci))
-            array.push(cm_valsPrev, array.get(cm_valsNow, ci))
 
-    // (DOL banner removed — it conflicted with the Daily Bias banner. The DOL COMPUTATION
-    //  above — dm_dirState / dm_bias / bslEff / sslEff / dolTgt — is retained because the
-    //  execution engine, stacked-agreement ⭐, and path-clearance all still rely on it.)
-
-// ---- CONSOLIDATED CONTEXT PANEL (Daily Bias + Market Regime + RSI in one table) ----
-// Replaces three separate floating banners with one stacked panel, positioned top-left.
-// Each section still honours its own show-toggle; it just renders as a row here.
+// ---- CONTEXT PANEL (Daily Bias + market condition) ----
 if masterOn and barstate.islast
     bool ctxBias   = biasOn and biasBanner
-    bool ctxRegime = regimeOn and regimeBanner
-    bool ctxRsi    = exhOn and exhShow and not na(exhRsi)
-    if ctxBias or ctxRegime or ctxRsi
+    bool ctxRegime = regimeOn and not (mtOn and mtShowDash)   // Brooks dashboard already shows it
+    if ctxBias or ctxRegime
         // --- Daily Bias rows ---
         color  biasAccent = dayBias > 0 ? themeUpSolid : dayBias < 0 ? themeDnSolid : themeMuted
         string biasWord = dayBias > 0 ? "LONG" : dayBias < 0 ? "SHORT" : "NEUTRAL"
@@ -3022,19 +2206,14 @@ if masterOn and barstate.islast
         string whyTxt = dayBias == 0 ? "no clean structure" : (biasWhyStruct + biasWhySweep)
         biasSzB = biasBanSize == "Huge" ? size.large : biasBanSize == "Large" ? size.normal : size.small
         // --- Regime row ---
-        string regWord = regimeState == 1 ? "DIRECTIONAL" : regimeState == -1 ? "BALANCED" : "UNCLEAR"
-        string regEmo  = regimeState == 1 ? "➡️" : regimeState == -1 ? "↔️" : "❓"
-        color  regCol  = regimeState == 1 ? themeUpSolid : regimeState == -1 ? themeDnSolid : themeMuted
-        string regTxt  = regEmo + " MARKET: " + regWord + (regimeChop ? ("  ⚠ VWAP chop (" + str.tostring(int(vwapCrosses)) + "x)") : ("  · trend " + str.tostring(trendStrength, "#.0#") + " ATR"))
-        // --- RSI row ---
-        string rsiState = exhRsi >= exhOB ? "OVERBOUGHT" : exhRsi <= exhOS ? "OVERSOLD" : "neutral"
-        color  rsiCol = exhRsi >= exhOB ? themeDnSolid : exhRsi <= exhOS ? themeUpSolid : themeTxt
-        string divState = exhBullDiv ? " · bullish div" : exhBearDiv ? " · bearish div" : ""
-        string rsiTxt = "📊 RSI " + str.tostring(math.round(exhRsi)) + " · " + rsiState + divState
-        // build the panel (up to 4 rows: bias title, bias why, regime, rsi) at the Daily Bias position
-        var table ctxTbl = table.new(position.top_left, 1, 4, border_width = 1)
+        string regWord = mtCond == 1 ? "TREND" : mtCond == 3 ? "TRANSITION" : "RANGE"
+        string regEmo  = mtCond == 1 ? "➡" : mtCond == 3 ? "⤴" : "↔"
+        color  regCol  = mtCond == 1 ? themeUpSolid : mtCond == 3 ? color.orange : themeMuted
+        string regTxt  = regEmo + " MARKET: " + regWord + "  · trend score " + str.tostring(100.0 * mtTrendScore, "#") + (regimeChop ? ("  ⚠ VWAP chop (" + str.tostring(int(vwapCrosses)) + "x)") : "")
+        // build the panel (up to 3 rows: bias title, bias why, market condition)
+        var table ctxTbl = table.new(position.top_left, 1, 3, border_width = 1)
         table.set_position(ctxTbl, f_tablePos(biasBanPos))
-        table.clear(ctxTbl, 0, 0, 0, 3)
+        table.clear(ctxTbl, 0, 0, 0, 2)
         int cr = 0
         if ctxBias
             table.cell(ctxTbl, 0, cr, biasArrow + " TODAY: " + biasWord + cautionTxt, text_color = biasAccent, bgcolor = themePanelBg, text_size = biasSzB)
@@ -3043,9 +2222,6 @@ if masterOn and barstate.islast
             cr := cr + 1
         if ctxRegime
             table.cell(ctxTbl, 0, cr, regTxt, text_color = regCol, bgcolor = cr == 0 ? themePanelBg : themeRowBg, text_size = size.small)
-            cr := cr + 1
-        if ctxRsi
-            table.cell(ctxTbl, 0, cr, rsiTxt, text_color = rsiCol, bgcolor = cr == 0 ? themePanelBg : themeRowBg, text_size = size.small)
             cr := cr + 1
         table.set_frame_color(ctxTbl, color.new(biasAccent, 35))
         table.set_frame_width(ctxTbl, themeBW)
@@ -3073,7 +2249,6 @@ f_delFvgAt(int ix) =>
     array.remove(fvgArmed, ix)
     array.remove(fvgArmBar, ix)
     array.remove(fvgApproached, ix)
-    array.remove(fvgCreatQ, ix)
 
 if (not masterOn or not showFVG) and array.size(fvgBoxes) > 0
     while array.size(fvgBoxes) > 0
@@ -3118,20 +2293,9 @@ if masterOn and showFVG and (bullFVG or bearFVG)
             if fvgShowStr and not weak
                 string suffix = (htfAl ? " htf" : "") + (liqAl ? " liq" : "") + (swpAl ? " swp" : "") + (isInv ? " inv" : "") + (inBlock ? " blk" : "")
                 float ceY = (gTop + gBot) / 2.0
-                if fvgLblStyle == "Inside box (centered)"
-                    // % sits CENTERED inside the gap box itself — tied to its box, no callout,
-                    // so it can't blend with the level labels bunched at the right edge.
-                    int cx = int(math.round((bar_index[2] + bar_index + extendR) / 2.0))
-                    lb := label.new(cx, ceY, str.tostring(sc) + "%" + suffix, style = label.style_text_outline, textcolor = color.white, color = color.new(baseCol, 100), size = size.small)
-                else if fvgLblStyle == "Plain text (no box)"
-                    // borderless text in the gap color — most minimal, cannot blend with the solid callouts
-                    lb := label.new(bar_index + extendR, ceY, "◆ " + str.tostring(sc) + "%" + suffix, style = label.style_none, textcolor = baseCol, size = size.small)
-                else if fvgLblStyle == "Callout (like levels)"
-                    lb := label.new(bar_index + extendR, ceY, "◆ " + str.tostring(sc) + "%" + suffix, style = label.style_label_left, color = color.new(baseCol, 25), textcolor = color.white, size = size.small)
-                else
-                    // Pointer (distinct): anchored at the LEFT edge of the gap (away from the
-                    // right-edge level labels) with the pointer facing right into the gap.
-                    lb := label.new(bar_index[2], ceY, "◆ " + str.tostring(sc) + "%" + suffix, style = label.style_label_right, color = color.new(baseCol, 10), textcolor = color.white, size = size.small)
+                // % sits centered inside the gap box (tied to its box, away from the level labels)
+                int cx = int(math.round((bar_index[2] + bar_index + extendR) / 2.0))
+                lb := label.new(cx, ceY, str.tostring(sc) + "%" + suffix, style = label.style_text_outline, textcolor = color.white, color = color.new(baseCol, 100), size = size.small)
             array.push(fvgLabels, lb)
             // consequent-encroachment (CE) line at the gap midpoint — the 50% price reacts to
             line ce = na
@@ -3142,7 +2306,6 @@ if masterOn and showFVG and (bullFVG or bearFVG)
             array.push(fvgArmed, 0)   // execution state starts at 'watching'
             array.push(fvgArmBar, na) // bar it armed on (set when it arms)
             array.push(fvgApproached, false)
-            array.push(fvgCreatQ, dispQual)   // creation strength for the rejection gauge
 
 // reset this bar's execution alert flags + clear the setup drawing pool (redrawn below)
 execArmNow     := false
@@ -3184,35 +2347,9 @@ if array.size(fvgBoxes) > 0
         else
             box.set_right(bx, bar_index + extendR)
             label lb = array.get(fvgLabels, i)
-            // rebuild the label each bar from the STATIC base % + live context tags (exhaustion
-            // delta + rejection gauge). The base score never visually mutates; live reads append.
-            if not na(lb) and ((exhOn and exhW > 0) or fvgRejGauge or fvgRetGauge)
-                float baseSc = array.get(fvgStr, i)
-                string tags = ""
-                // live exhaustion context as a SEPARATE signed delta
-                if exhOn and exhW > 0
-                    int delta = int(math.round(f_exhAdj(top, bot, isBull)))
-                    tags := tags + (delta >= 1 ? (" ⛽+" + str.tostring(delta)) : (delta <= -1 ? (" ⛽" + str.tostring(delta)) : ""))
-                // return-likelihood % — how likely price comes back to the gap from here
-                if fvgRetGauge
-                    int rl = f_returnLikelihood(top, bot, array.get(fvgCreatQ, i))
-                    tags := tags + " ↩" + str.tostring(rl)
-                // live rejection gauge — only shows while price is at/in the gap
-                if fvgRejGauge
-                    [rjActive, rjLean] = f_rejGauge(top, bot, isBull, array.get(fvgCreatQ, i))
-                    if rjActive
-                        tags := tags + (rjLean >= 50 ? (" ⟲" + str.tostring(rjLean)) : (" ⇥" + str.tostring(rjLean)))
-                string pfx = fvgLblStyle == "Inside box (centered)" ? "" : "◆ "
-                label.set_text(lb, pfx + str.tostring(int(baseSc)) + "%" + tags)
-            // keep each label correctly placed as the box extends right:
-            //  • Inside box (centered): re-center over the (growing) box
-            //  • Right-edge styles (Plain / Callout): follow the right edge
-            //  • Pointer: stays anchored at the gap's left edge — don't move it
+            // keep the label centered over the (growing) box
             if not na(lb)
-                if fvgLblStyle == "Inside box (centered)"
-                    label.set_x(lb, int(math.round((box.get_left(bx) + bar_index + extendR) / 2.0)))
-                else if fvgLblStyle != "Pointer (distinct)"
-                    label.set_x(lb, bar_index + extendR)
+                label.set_x(lb, int(math.round((box.get_left(bx) + bar_index + extendR) / 2.0)))
             line ce = array.get(fvgCE, i)
             if not na(ce)
                 line.set_x2(ce, bar_index + extendR)
@@ -3222,8 +2359,7 @@ if array.size(fvgBoxes) > 0
                 // no-repaint gate: only advance state / fire alerts on a CLOSED bar (unless the
                 // user opts into intrabar). Historical bars are always confirmed, so unaffected.
                 bool   commitOK = (not execNoRepaint) or barstate.isconfirmed
-                // effective score = stored static base + live momentum-exhaustion adjustment
-                float  gsc = math.max(0.0, math.min(100.0, array.get(fvgStr, i) + f_exhAdj(top, bot, isBull)))
+                float  gsc = array.get(fvgStr, i)
                 float  ceP = mid
                 // qualification gates: strength, premium/discount side, DOL agreement
                 bool qStr = gsc >= execMinStr
@@ -3245,11 +2381,11 @@ if array.size(fvgBoxes) > 0
                 float feasRR = na(tgtLiq) ? na : (math.abs(tgtLiq - entryQ) / riskQ)
                 bool  lowRR  = execMinRR > 0 and not na(feasRR) and feasRR < execMinRR
                 bool  qRR    = (execMinRR <= 0) or (not execRRReject) or (not lowRR)
-                // regime gate: in BALANCED/chop, suppress CONTINUATION setups (gap in the middle
+                // regime gate: in RANGE + chop / mid-range, suppress CONTINUATION setups (gap in the middle
                 // of the range) but still allow REVERSAL setups at the extremes (bull gap in deep
                 // discount / bear gap in deep premium). Only active when regimeGateExec is on.
                 bool qRegime = true
-                if regimeOn and regimeGateExec and regimeState == -1
+                if regimeGateExec and regimeState == -1 and (regimeChop or regimeMidRange)
                     bool atExtreme = na(rngHi) or na(rngLo) or rngHi <= rngLo ? false : (isBull ? (ceP - rngLo) / (rngHi - rngLo) <= 0.38 : (ceP - rngLo) / (rngHi - rngLo) >= 0.62)
                     qRegime := atExtreme
                 bool qualifies = qStr and qPD and qDOL and qBias and qRR and qRegime
@@ -3430,87 +2566,54 @@ if array.size(htfFvgTop) > 0
 //  and still feed the DOL model; there is no separate HTF panel.)
 
 // -----------------------------------------------------------------------------
-// OPENING RANGE BREAKOUT (ORB) — opening-window box + directional breakout-likelihood
+// OPENING RANGE BREAKOUT (ORB) — opening-window box + confirmed break / failed break
 // -----------------------------------------------------------------------------
-// accumulate the opening window's high/low, freeze it when the window closes, draw the box, and
-// compute a directional breakout-likelihood from price action + liquidity + daily bias + regime.
-var float orbHi    = na
-var float orbLo    = na
+var float orbHi     = na
+var float orbLo     = na
 var int   orbStartB = na
 var bool  orbReady  = false       // window has closed -> range is frozen for the day
-// per-day CAPPED POOLS so each day keeps its own frozen ORB on the chart for look-back.
-// the CURRENT (forming) day's objects are always the LAST element of each pool; past days
-// are left frozen at their own session span and never touched again.
 var array<box>  orbBoxes = array.new<box>()
 var array<line> orbHiLns = array.new<line>()
 var array<line> orbLoLns = array.new<line>()
-// (G) per-day OUTCOME pool kept IN LOCKSTEP with orbBoxes: 1 = break held, -1 = break failed,
-// 0 = no clean break / undetermined. the LAST element is always the current/forming day.
-var array<int>  orbOutcomes = array.new<int>()
-// (H) PREDICTION-CALIBRATION log: a SEPARATE pool from the drawn boxes, capped by orbCalN (not
-// orbHist), so the gauge's accuracy read-out can use a bigger recent sample without cluttering the
-// chart. The three arrays below are kept IN LOCKSTEP (one entry per logged day); the LAST element
-// is the current/forming day. predSide/predPct are SNAPSHOTTED ONCE per day at the freeze and never
-// overwritten (no look-ahead); realized settles to the day's break direction as it plays out.
-var array<int>   orbPredSide = array.new<int>()   // predicted side at freeze: +1 up / -1 down
-var array<int>   orbPredPct  = array.new<int>()   // predicted % (leading side's number) at freeze
-var array<int>   orbRealized = array.new<int>()   // realized break dir: +1 up / -1 down / 0 none
-var array<int>   orbPredNet  = array.new<int>()   // (#3) frozen net spread |up-dn| at freeze, per logged day
-var bool orbPredLogged = false                    // guard: snapshotted THIS day's prediction yet?
-// (E) current-day failed-break state (updated on CONFIRMED bars only, after the range is frozen).
-var int   orbBreakDir = 0         // 0 none, +1 closed above orbHi, -1 closed below orbLo
-var bool  orbFailed   = false     // a confirmed break later reversed back inside the range (trap)
-var int   orbUpRun    = 0         // (I) consecutive qualifying up-break closes (reset each day)
-var int   orbDnRun    = 0         // (I) consecutive qualifying down-break closes (reset each day)
-var box   orbCurBox = na          // handle to the current/forming day's box
-var line  orbCurHiLn = na         // handle to the current day's high line
-var line  orbCurLoLn = na         // handle to the current day's low line
-var label orbLbl   = na
-var float orbRvol  = na           // max relative volume seen during the opening window (B)
-var int   orbWinSweep = 0         // (L) SFP side seen during the opening window: +1 bullish (sfpLong) / -1 bearish (sfpShort) / 0 none
+var array<label> orbLbls = array.new<label>()   // break / fail markers, capped at 3 per kept day
+var int   orbBreakDir = 0         // 0 none, +1 confirmed break up, -1 confirmed break down
+var bool  orbFailed   = false     // a confirmed break later closed back inside (trap)
+var int   orbUpRun    = 0
+var int   orbDnRun    = 0
+var box   orbCurBox  = na
+var line  orbCurHiLn = na
+var line  orbCurLoLn = na
+bool orbBreakUpNow = false
+bool orbBreakDnNow = false
+bool orbFailNow    = false
 bool orbInWin  = not na(time(timeframe.period, orbSession, orbTZ))
-bool orbWinNew = orbInWin and not orbInWin[1]      // first bar of the opening window (new day)
+bool orbWinNew = orbInWin and not orbInWin[1]
 if masterOn and orbOn
     if orbWinNew
-        // a new day's window opened: FINALIZE the prior day's objects by simply dropping our
-        // handles to them - they stay frozen at whatever span they had (right edge fixed).
-        orbCurBox := na
-        orbCurHiLn := na
-        orbCurLoLn := na
-        // start a fresh opening range for the new day
         orbHi := high
         orbLo := low
         orbStartB := bar_index
         orbReady := false
-        orbRvol := rvol                            // seed opening-window rVol on the first bar (B)
-        orbWinSweep := sfpLong ? 1 : sfpShort ? -1 : 0   // (L) seed the formation-window sweep side
-        orbBreakDir := 0                           // (E) reset break state for the new day
-        orbFailed   := false
-        orbUpRun    := 0                           // (I) reset break-quality run-length counters
-        orbDnRun    := 0
-        orbPredLogged := false                     // (H) allow exactly one prediction snapshot this day
-        // create fresh drawings for the new day and push them into the pools
+        orbBreakDir := 0
+        orbFailed := false
+        orbUpRun := 0
+        orbDnRun := 0
         orbCurBox  := box.new(bar_index, orbHi, bar_index, orbLo, border_color = color.new(orbCol, 30), border_width = 1, bgcolor = color.new(orbCol, 90))
         orbCurHiLn := line.new(bar_index, orbHi, bar_index, orbHi, color = orbCol, width = 1)
         orbCurLoLn := line.new(bar_index, orbLo, bar_index, orbLo, color = orbCol, width = 1)
         array.push(orbBoxes, orbCurBox)
         array.push(orbHiLns, orbCurHiLn)
         array.push(orbLoLns, orbCurLoLn)
-        array.push(orbOutcomes, 0)                 // (G) placeholder for the new/current day, kept in lockstep
-        // cap the pools: drop the OLDEST day when we exceed the keep count
         if array.size(orbBoxes) > orbHist
             box.delete(array.shift(orbBoxes))
             line.delete(array.shift(orbHiLns))
             line.delete(array.shift(orbLoLns))
-            array.shift(orbOutcomes)               // (G) keep outcomes aligned with the box pool
     else if orbInWin
         orbHi := math.max(nz(orbHi, high), high)
         orbLo := math.min(nz(orbLo, low), low)
-        orbRvol := math.max(nz(orbRvol, rvol), rvol)   // track peak participation in the window (B)
-        orbWinSweep := sfpLong ? 1 : sfpShort ? -1 : orbWinSweep   // (L) latch most recent sweep seen in the window
     else if orbInWin[1] and not orbInWin
-        orbReady := true                           // window just closed -> freeze
-    // draw / update ONLY the CURRENT day's objects once we have a range; past days stay frozen
+        orbReady := true
+    // draw / update only the current day's objects; past days stay frozen
     if not na(orbHi) and not na(orbLo) and not na(orbCurBox)
         int xr = orbExtend ? bar_index : (na(orbStartB) ? bar_index : orbStartB + 1)
         box.set_lefttop(orbCurBox, nz(orbStartB, bar_index), orbHi)
@@ -3519,253 +2622,37 @@ if masterOn and orbOn
         line.set_xy2(orbCurHiLn, xr, orbHi)
         line.set_xy1(orbCurLoLn, nz(orbStartB, bar_index), orbLo)
         line.set_xy2(orbCurLoLn, xr, orbLo)
-    // ---- (H) PREDICTION SNAPSHOT (no look-ahead): the FIRST confirmed bar at/after the range
-    // freezes, capture the gauge's predicted side + % and push a realized placeholder, ONCE per day.
-    // We call the SAME f_orbPredict helper the display uses, evaluated on this confirmed bar from
-    // state that is already final for the day (orbHi/orbLo are frozen once orbReady is true and the
-    // window has closed). The orbPredLogged guard ensures we never overwrite it, so the graded
-    // number is exactly what the gauge showed at freeze and never peeks at the day's outcome.
-    if barstate.isconfirmed and orbReady and not orbPredLogged and not na(orbHi) and not na(orbLo) and orbHi > orbLo
-        [pUp, pDn] = f_orbPredict(orbHi, orbLo, orbRvol, orbWinSweep, orbUseFvg, orbBoxes)
-        int predSide = pUp >= pDn ? 1 : -1
-        int predPct  = math.max(pUp, pDn)
-        int predNet  = math.abs(pUp - pDn)         // (#3) frozen net spread (conviction) at freeze
-        array.push(orbPredSide, predSide)
-        array.push(orbPredPct,  predPct)
-        array.push(orbRealized, 0)                 // placeholder, settled in the E block below
-        array.push(orbPredNet,  predNet)           // (#3) lockstep with the other three
-        orbPredLogged := true
-        // cap all four IN LOCKSTEP by orbCalN (independent of the drawn-box pool / orbHist)
-        if array.size(orbPredSide) > orbCalN
-            array.shift(orbPredSide)
-            array.shift(orbPredPct)
-            array.shift(orbRealized)
-            array.shift(orbPredNet)                // (#3) keep index-aligned
-    // ---- (E) FAILED-BREAK DETECTION: track the current day's break state on CONFIRMED bars only,
-    // after the range is frozen. a confirmed close beyond an edge arms the break; a later confirmed
-    // close back inside the range marks it a failed break (trap). (G) mirror the outcome into the
-    // last element of orbOutcomes so the per-day record settles to the day's final state.
+    // break state on CONFIRMED bars only: a close must clear the edge by orbBrkBuf ATRs for
+    // orbBrkBars consecutive closes; a later close back inside (past the buffer) = failed break.
     if barstate.isconfirmed and orbReady and not na(orbHi) and not na(orbLo)
-        // (I) BREAK-QUALITY GATES: a close must clear the edge by orbBrkBuf ATRs (buffer), on
-        // elevated rVol if orbBrkVol is on (volume), for orbBrkBars consecutive confirmed closes
-        // (multi-bar confirmation) before the break arms. this keeps noise pokes out of
-        // orbBreakDir, so the (G) held/failed outcomes and (H) calibration all consume a cleaner
-        // signal. the failed-break test is buffered the same way so a one-tick wiggle back inside
-        // doesn't instantly flip a real break to "failed".
         float orbBrkAbs = orbBrkBuf * math.max(nz(atr), syminfo.mintick)
-        bool  orbVolOk  = not orbBrkVol or rvol >= rvolMult
-        bool  orbUpQual = close > orbHi + orbBrkAbs and orbVolOk
-        bool  orbDnQual = close < orbLo - orbBrkAbs and orbVolOk
         if orbBreakDir == 0
-            // run-length: count CONSECUTIVE qualifying closes on each side; arm once a run
-            // reaches orbBrkBars. only one side can be beyond its edge on a given close.
-            orbUpRun := orbUpQual ? orbUpRun + 1 : 0
-            orbDnRun := orbDnQual ? orbDnRun + 1 : 0
+            orbUpRun := close > orbHi + orbBrkAbs ? orbUpRun + 1 : 0
+            orbDnRun := close < orbLo - orbBrkAbs ? orbDnRun + 1 : 0
             if orbUpRun >= orbBrkBars
                 orbBreakDir := 1
+                orbBreakUpNow := true
             else if orbDnRun >= orbBrkBars
                 orbBreakDir := -1
-        else if orbBreakDir == 1 and close < orbHi - orbBrkAbs
-            orbFailed := true                      // armed up, closed back inside (past buffer) -> failed upside break
-        else if orbBreakDir == -1 and close > orbLo + orbBrkAbs
-            orbFailed := true                      // armed down, closed back inside (past buffer) -> failed downside break
-        // (G) write this day's running outcome into its (last) slot: -1 failed, 1 held, 0 no clean break
-        if array.size(orbOutcomes) > 0
-            int outVal = orbFailed ? -1 : (orbBreakDir != 0 ? 1 : 0)
-            array.set(orbOutcomes, array.size(orbOutcomes) - 1, outVal)
-        // (H) settle THIS day's realized break DIRECTION into the last calibration slot (only after a
-        // prediction has been logged, so predSide/realized indices stay aligned). +1/-1/0; it freezes
-        // once the next day pushes a new last element.
-        if orbPredLogged and array.size(orbRealized) > 0
-            array.set(orbRealized, array.size(orbRealized) - 1, orbBreakDir)
-    // ---- breakout-likelihood (only once the range is frozen) ----
-    if orbScore and orbReady and barstate.islast and not na(orbHi) and not na(orbLo) and orbHi > orbLo
-        float atrO = math.max(nz(atr), syminfo.mintick)
-        float rng  = orbHi - orbLo
-        // PRICE ACTION: position in range (near an edge = loaded that way) + tightness
-        float posIn = math.min(1.0, math.max(0.0, (close - orbLo) / rng))   // 0 at low, 1 at high
-        // (A) ORB-WIDTH PERCENTILE vs recent days: gather PAST days' ranges (exclude the last/
-        // current, still-forming element) from the frozen box pool, take their median, and map a
-        // NARROW range -> high factor (clean run), a WIDE range -> low factor (day tends to contain).
-        float tight = math.min(atrO / rng, 1.5) / 1.5                       // ATR-based fallback (day one)
-        float widthFactor = tight                                          // default to fallback
-        int nBoxes = array.size(orbBoxes)
-        if nBoxes >= 2
-            array<float> pastRng = array.new<float>()
-            for i = 0 to nBoxes - 2                                         // skip last = current forming day
-                box pb = array.get(orbBoxes, i)
-                array.push(pastRng, box.get_top(pb) - box.get_bottom(pb))
-            float medRng = f_medianArr(pastRng)
-            if not na(medRng) and medRng > 0
-                float ratio = rng / medRng
-                widthFactor := math.max(0.0, math.min(1.0, 1.5 - ratio))   // 0.5x->1.0, 1.0x->0.5, >=1.5x->0.0
-        // (B) RELATIVE-VOLUME factor (soft): thin opening volume dampens conviction, a surge lifts it.
-        // ~0.8x -> 0, ~1.0x (avg) -> ~0.17, ~2.0x -> 1.0. symmetric to both sides.
-        float volFactor = math.max(0.0, math.min(1.0, (nz(orbRvol, 1.0) - 0.8) / 1.2))
-        // LIQUIDITY: nearest pool beyond each edge + how clear the path to it is
-        float upLiq = f_nextOppLiq(orbHi, true)
-        float dnLiq = f_nextOppLiq(orbLo, false)
-        [upClrS, upO] = f_pathClear(close, na(upLiq) ? orbHi + rng : upLiq, atrO)
-        [dnClrS, dnO] = f_pathClear(close, na(dnLiq) ? orbLo - rng : dnLiq, atrO)
-        // (C) DISTANCE-scaled liquidity magnet: a pool near the edge (in ATR units) pulls hard,
-        // a far pool pulls weakly, no pool -> 0.3 floor. pool at edge -> 1.0, >=3 ATR away -> 0.3.
-        float upDist = na(upLiq) ? na : (upLiq - orbHi) / atrO
-        float dnDist = na(dnLiq) ? na : (orbLo - dnLiq) / atrO
-        float upMagnet = na(upLiq) ? 0.3 : math.max(0.3, math.min(1.0, 1.0 - upDist / 3.0))
-        float dnMagnet = na(dnLiq) ? 0.3 : math.max(0.3, math.min(1.0, 1.0 - dnDist / 3.0))
-        // BIAS + REGIME: with-bias breaks are higher-prob; chop lowers breakout odds, trend raises
-        float biasUp = biasOn and dayBias > 0 ? 1.0 : (biasOn and dayBias < 0 ? 0.0 : 0.5)
-        float regimeMul = regimeState == 1 ? 1.15 : regimeState == -1 ? 0.6 : 0.9
-        // (J) launchpad fuel just beyond each edge (strongest same-direction gap, proximity-scaled)
-        float upLaunch = f_orbLaunchpad(orbHi, true,  atrO)
-        float dnLaunch = f_orbLaunchpad(orbLo, false, atrO)
-        // (L) sweep-before-break: a bullish sweep during the window (swept a low, reversed up) favors an
-        // UP break; a bearish sweep favors a DOWN break. 0..1 nudge on the favored side only.
-        float upSweep = (orbWinSweep == 1) ? 1.0 : 0.0
-        float dnSweep = (orbWinSweep == -1) ? 1.0 : 0.0
-        // (M) DE-CORRELATED beyond-edge composite: J and L both point the SAME way as the (C) magnet on
-        // a real breakout, so blend launchpad + sweep into ONE 0..1 per side (launchpad weighted more)
-        // and add it as a SINGLE weighted term rather than triple-counting independent signals.
-        float upBeyond = math.min(1.0, upLaunch * 0.7 + upSweep * 0.5)
-        float dnBeyond = math.min(1.0, dnLaunch * 0.7 + dnSweep * 0.5)
-        // (K) INTERIOR-FVG CONTAINMENT acts THROUGH the beyond-edge term: an unfilled gap inside the
-        // range discounts the launchpad/sweep fuel (reversion magnet cancels continuation fuel). Bounded
-        // so the term can't go negative. orbUseFvg off -> zero the term on BOTH sides (symmetric, no bias).
-        float containment = f_orbInteriorFvg(orbLo, orbHi)
-        float upBeyondAdj = orbUseFvg ? upBeyond * (1.0 - 0.5 * containment) : 0.0
-        float dnBeyondAdj = orbUseFvg ? dnBeyond * (1.0 - 0.5 * containment) : 0.0
-        // (O) BEYOND-EDGE WALL: strong OPPOSING structure just outside an edge fades a breakout that way
-        // (the trap that burns high-conviction ORB breaks). A multiplicative dampener on that side's
-        // score; gated by the same orbUseFvg toggle as the FVG terms. wallMul ranges 1.0 (no wall) down
-        // to (1 - orbWallW) at a full-strength wall right at the edge. Applied to BOTH sides independently.
-        float upWall = orbUseFvg ? f_orbWall(orbHi, true,  atrO) : 0.0
-        float dnWall = orbUseFvg ? f_orbWall(orbLo, false, atrO) : 0.0
-        float upWallMul = 1.0 - orbWallW * upWall
-        float dnWallMul = 1.0 - orbWallW * dnWall
-        // compose per-side raw scores (0..1), then scale to 100. per-side weights sum to 1.00:
-        // posIn 0.24 + widthFactor 0.12 + pathClear 0.16 + magnet 0.10 + bias 0.14 + volFactor 0.12
-        // + beyondAdj (J/K/L/M) 0.12. widthFactor/volFactor are symmetric; the rest are side-specific.
-        // (O) wall is a separate MULTIPLIER (like regimeMul), NOT a weighted term, so the weight budget
-        // stays at 1.00; a strong opposing wall at the edge scales that side down by up to orbWallW.
-        float upRaw = (posIn * 0.24 + widthFactor * 0.12 + (upClrS / 100.0) * 0.16 + upMagnet * 0.10 + biasUp * 0.14 + volFactor * 0.12 + upBeyondAdj * 0.12) * regimeMul * upWallMul
-        float dnRaw = ((1.0 - posIn) * 0.24 + widthFactor * 0.12 + (dnClrS / 100.0) * 0.16 + dnMagnet * 0.10 + (1.0 - biasUp) * 0.14 + volFactor * 0.12 + dnBeyondAdj * 0.12) * regimeMul * dnWallMul
-        int upPct = int(math.max(0.0, math.min(100.0, math.round(upRaw * 100.0))))
-        int dnPct = int(math.max(0.0, math.min(100.0, math.round(dnRaw * 100.0))))
-        // (D) NET CONVICTION + confidence (heuristic read, not a probability): leading side + spread,
-        // damped in balanced/unclear regimes, boosted in directional; thin volume trims it lightly.
-        string netArrow = upPct >= dnPct ? "▲" : "▼"
-        int netMag = math.abs(upPct - dnPct)
-        float confRaw = math.max(0.0, math.min(1.0, netMag / 40.0)) * (regimeState == 1 ? 1.0 : regimeState == -1 ? 0.6 : 0.8) * (0.7 + 0.3 * volFactor)
-        string confTxt = confRaw >= 0.66 ? "High" : confRaw >= 0.33 ? "Med" : "Low"
-        string netTxt  = "net " + netArrow + " +" + str.tostring(netMag) + "   conf: " + confTxt
-        // (E)/(I) surface the break state in the header: a trap takes priority, then the QUALIFIED
-        // break direction (orbBreakDir, set only on a quality break) instead of a raw close-beyond-edge,
-        // so the header stays honest vs the new break-quality gates.
-        string brokeTxt = orbFailed ? "  ⚠ failed break" : (orbBreakDir == 1 ? "  ▲ broke up" : orbBreakDir == -1 ? "  ▼ broke down" : "")
-        // (G) ON-CHART HIT-RATE TALLY: tally PAST days' recorded outcomes (exclude the last/current,
-        // still-settling element, like the width-percentile does). held = 1, failed = -1, skip 0.
-        // honest small-sample read, NOT a probability.
-        int held   = 0
-        int failed = 0
-        int nOut = array.size(orbOutcomes)
-        if nOut >= 2
-            for i = 0 to nOut - 2                                           // skip last = current forming day
-                int ov = array.get(orbOutcomes, i)
-                if ov == 1
-                    held += 1
-                else if ov == -1
-                    failed += 1
-        int decided = held + failed
-        int holdRate = decided > 0 ? int(math.round(100.0 * held / decided)) : 0
-        string tallyTxt = decided > 0 ? "recent breaks held " + str.tostring(holdRate) + "% (" + str.tostring(held) + "/" + str.tostring(decided) + ")" : "recent breaks held: calibrating…"
-        // (H) PREDICTION-CALIBRATION READ-OUT: did the gauge call the break DIRECTION right, and does
-        // a HIGHER predicted % actually buy more accuracy? Tally PAST logged days only (exclude the
-        // last/current, still-settling element). A day is CORRECT when realized != 0 and realized ==
-        // predSide (broke in the predicted direction). realized == 0 (no clean break) = UNDECIDED and
-        // excluded. Buckets split on a fixed confidence threshold of 65% (matches the existing band).
-        // Honest small-sample recent tally, NOT a probability.
-        int CAL_HI = 65
-        int decidedH  = 0
-        int correctH  = 0
-        int hiDec     = 0
-        int hiCorrect = 0
-        int loDec     = 0
-        int loCorrect = 0
-        int abstained = 0                                                  // (#3) decided days excluded by the no-call band
-        int nCal = array.size(orbRealized)
-        if nCal >= 2
-            for i = 0 to nCal - 2                                           // skip last = current forming day
-                int rz = array.get(orbRealized, i)
-                // (#3) count a decided day toward the hit-rate ONLY if the frozen net spread cleared
-                // the no-call floor; low-conviction days are abstained (tracked separately, not graded).
-                if rz != 0 and array.get(orbPredNet, i) >= orbMinNet
-                    int ps = array.get(orbPredSide, i)
-                    int pp = array.get(orbPredPct, i)
-                    bool ok = rz == ps
-                    decidedH += 1
-                    if ok
-                        correctH += 1
-                    if pp >= CAL_HI
-                        hiDec += 1
-                        if ok
-                            hiCorrect += 1
-                    else
-                        loDec += 1
-                        if ok
-                            loCorrect += 1
-                else if rz != 0                                            // (#3) decided but below the net floor → no-call
-                    abstained += 1
-        int hitRate = decidedH > 0 ? int(math.round(100.0 * correctH / decidedH)) : 0
-        int hiRate  = hiDec > 0 ? int(math.round(100.0 * hiCorrect / hiDec)) : 0
-        int loRate  = loDec > 0 ? int(math.round(100.0 * loCorrect / loDec)) : 0
-        int edge    = hitRate - 50                                         // (#1) skill over the 50/50 coin-flip baseline
-        string hitTxt = decidedH > 0 ? "gauge right " + str.tostring(hitRate) + "%  (" + (edge >= 0 ? "+" : "") + str.tostring(edge) + " vs 50/50 · " + str.tostring(correctH) + "/" + str.tostring(decidedH) + (abstained > 0 ? " · " + str.tostring(abstained) + " no-call" : "") + ")" : "gauge accuracy: calibrating…"
-        string bucketTxt = "≥65%: " + (hiDec > 0 ? str.tostring(hiRate) + "% (" + str.tostring(hiCorrect) + "/" + str.tostring(hiDec) + ")" : "—") + "  ·  <65%: " + (loDec > 0 ? str.tostring(loRate) + "% (" + str.tostring(loCorrect) + "/" + str.tostring(loDec) + ")" : "—")
-        // (N) ADAPTIVE TRUST THRESHOLD: scan candidate predicted-% levels T (55..80 step 5) and, over
-        // PAST decided days (realized != 0) whose predicted % was >= T, measure the directional
-        // hit-rate. Surface the SMALLEST T that recently met the target hit-rate (orbTrustHit) over a
-        // minimum sample (TRUST_MIN) — the user's empirical "trust this reading" level, learned from
-        // their own log. Same PAST-only loop bounds the (H) calibration uses. Small-sample read, NOT a
-        // probability; shows "need more data" when nothing qualifies.
-        int TRUST_MIN = 4                                          // minimum decided days at/above T to trust the level
-        int trustT    = na
-        int trustHit  = 0
-        int trustN    = 0
-        if nCal >= 2
-            for T = 55 to 80 by 5
-                int tn = 0
-                int tc = 0
-                for i = 0 to nCal - 2                               // skip last = current forming day
-                    int rz = array.get(orbRealized, i)
-                    // (#3) apply the same no-call band here so the trust threshold is honest to the
-                    // same decided set the hit-rate uses (abstained low-conviction days excluded).
-                    if rz != 0 and array.get(orbPredPct, i) >= T and array.get(orbPredNet, i) >= orbMinNet
-                        tn += 1
-                        if rz == array.get(orbPredSide, i)
-                            tc += 1
-                int tr = tn > 0 ? int(math.round(100.0 * tc / tn)) : 0
-                if na(trustT) and tn >= TRUST_MIN and tr >= orbTrustHit
-                    trustT   := T
-                    trustHit := tr
-                    trustN   := tn
-        string trustTxt = na(trustT) ? "adaptive trust: need more data" : "trust ≥" + str.tostring(trustT) + "% (" + str.tostring(trustHit) + "% · " + str.tostring(trustN) + "d)"
-        color orbAccent = upPct >= dnPct ? themeUpSolid : themeDnSolid
-        var table orbTbl = table.new(position.middle_left, 1, 7, border_width = 1)
-        table.set_position(orbTbl, f_tablePos(orbScorePos))
-        table.clear(orbTbl, 0, 0, 0, 6)
-        table.cell(orbTbl, 0, 0, "📐 ORB breakout" + brokeTxt, text_color = orbAccent, bgcolor = themePanelBg, text_size = size.small)
-        table.cell(orbTbl, 0, 1, "▲ " + str.tostring(upPct) + "%   ▼ " + str.tostring(dnPct) + "%", text_color = themeTxt, bgcolor = themeRowBg, text_size = size.normal)
-        table.cell(orbTbl, 0, 2, netTxt, text_color = orbAccent, bgcolor = themeRowBg, text_size = size.small)
-        table.cell(orbTbl, 0, 3, tallyTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)   // (G) calibration read
-        table.cell(orbTbl, 0, 4, hitTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)     // (H) directional hit-rate
-        table.cell(orbTbl, 0, 5, bucketTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)  // (H) bucketed calibration
-        table.cell(orbTbl, 0, 6, trustTxt, text_color = themeTxt, bgcolor = themeRowBg, text_size = size.small)   // (N) adaptive trust threshold
-        table.set_frame_color(orbTbl, color.new(orbAccent, 35))
-        table.set_frame_width(orbTbl, themeBW)
-// wipe ALL ORB drawings (every pooled day) when off
-if (not masterOn or not orbOn) and array.size(orbBoxes) > 0
-    for b in orbBoxes
-        box.delete(b)
+                orbBreakDnNow := true
+        else if not orbFailed and ((orbBreakDir == 1 and close < orbHi - orbBrkAbs) or (orbBreakDir == -1 and close > orbLo + orbBrkAbs))
+            orbFailed := true
+            orbFailNow := true
+        if orbBreakUpNow
+            array.push(orbLbls, label.new(bar_index, high, "ORB ▲", style = label.style_label_down, color = color.new(themeUpSolid, 20), textcolor = color.white, size = size.tiny))
+        if orbBreakDnNow
+            array.push(orbLbls, label.new(bar_index, low, "ORB ▼", style = label.style_label_up, color = color.new(themeDnSolid, 20), textcolor = color.white, size = size.tiny))
+        if orbFailNow
+            array.push(orbLbls, label.new(bar_index, orbBreakDir == 1 ? high : low, "ORB fail", style = orbBreakDir == 1 ? label.style_label_down : label.style_label_up, color = color.new(color.orange, 20), textcolor = color.white, size = size.tiny))
+        while array.size(orbLbls) > 3 * orbHist
+            label.delete(array.shift(orbLbls))
+// wipe all ORB drawings when off
+if (not masterOn or not orbOn) and array.size(orbBoxes) + array.size(orbLbls) > 0
+    for lbx in orbLbls
+        label.delete(lbx)
+    array.clear(orbLbls)
+    for bx in orbBoxes
+        box.delete(bx)
     for l in orbHiLns
         line.delete(l)
     for l in orbLoLns
@@ -3773,18 +2660,12 @@ if (not masterOn or not orbOn) and array.size(orbBoxes) > 0
     array.clear(orbBoxes)
     array.clear(orbHiLns)
     array.clear(orbLoLns)
-    array.clear(orbOutcomes)      // (G) reset outcomes with the pools
-    array.clear(orbPredSide)      // (H) reset prediction-calibration log with the pools
-    array.clear(orbPredPct)
-    array.clear(orbRealized)
-    array.clear(orbPredNet)       // (#3) keep the net-spread log index-aligned on reset
-    orbPredLogged := false
     orbCurBox := na
     orbCurHiLn := na
     orbCurLoLn := na
 
 // =============================================================================
-// ⑰ AL BROOKS MICROTRENDLINE PRICE ACTION MODULE  (toggle: "Enable module")
+// ⑬ AL BROOKS MICROTRENDLINE PRICE ACTION MODULE  (toggle: "Enable module")
 //   Setup A  Failed microtrendline breakout (primary)
 //   Setup B  Microtrendline break + pullback continuation
 //   Setup C  Failed-breakout reversal (stricter confirmation)
@@ -3796,105 +2677,6 @@ if (not masterOn or not orbOn) and array.size(orbBoxes) > 0
 // higher-timeframe context uses lookahead_on with a [1] offset (last CLOSED HTF bar).
 // The confluence score is a technical confluence rating, NOT a probability.
 // =============================================================================
-var string G_MT  = "⑰ Brooks Microtrendlines · Core & Display"
-var string G_MTD = "⑰ Brooks Microtrendlines · Detection"
-var string G_MTS = "⑰ Brooks Microtrendlines · Setups & Signal Bar"
-var string G_MTC = "⑰ Brooks Microtrendlines · Confidence Weights"
-var string G_MTT = "⑰ Brooks Microtrendlines · Trade Plan"
-var string G_MTA = "⑰ Brooks Microtrendlines · Alerts & Stats"
-
-// ---- core & display ----
-mtOn        = input.bool(true, "Enable Brooks microtrendline module", tooltip = "Master on/off for the whole microtrendline price-action module (trendlines, setups, dashboard, alerts, stats). Off = nothing from this module is calculated or drawn.", group = G_MT)
-mtTF5       = input.timeframe("5", "  Secondary context timeframe", group = G_MT)
-mtTF15      = input.timeframe("15", "  Higher-timeframe directional context", group = G_MT)
-mtCtxPiv    = input.int(3, "  Context swing pivot length", minval = 2, maxval = 10, group = G_MT)
-mtShowDash  = input.bool(true, "Show dashboard", group = G_MT)
-mtDashPos   = input.string("Top Right", "  Dashboard position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_MT)
-mtShowTL    = input.bool(true, "Show active trendlines", group = G_MT)
-mtShowHist  = input.bool(true, "Show historical trendlines", group = G_MT)
-mtHistKeep  = input.int(12, "  Historical trendlines kept", minval = 1, maxval = 60, group = G_MT)
-mtShowBrk   = input.bool(true, "Show break / failed-breakout markers", group = G_MT)
-mtShowSig   = input.bool(true, "Show LONG / SHORT signal markers", group = G_MT)
-mtShowHL    = input.bool(true, "Show H1/H2/L1/L2 markers", group = G_MT)
-mtShowLvls  = input.bool(true, "Show entry / stop / target levels", group = G_MT)
-mtKeepLvls  = input.bool(true, "  Keep finished setups' levels (last few)", group = G_MT)
-mtShowVwap  = input.bool(false, "Show VWAP", group = G_MT)
-mtShowBg    = input.bool(false, "Market-condition background shading", group = G_MT)
-mtColBull   = input.color(#00c853, "  Bullish trendline", group = G_MT)
-mtColBear   = input.color(#ff1744, "  Bearish trendline", group = G_MT)
-mtColBrk    = input.color(#ff9800, "  Break marker / broken line", group = G_MT)
-
-// ---- detection ----
-mtPivL      = input.int(2, "Pivot sensitivity · bars left", minval = 1, maxval = 6, group = G_MTD)
-mtPivR      = input.int(1, "Pivot sensitivity · bars right", minval = 1, maxval = 4, tooltip = "Pivots are confirmed this many bars late (no repaint). Smaller = faster, noisier.", group = G_MTD)
-mtMinTouch  = input.int(2, "Minimum trendline touches", minval = 2, maxval = 5, group = G_MTD)
-mtMaxAge    = input.int(30, "Maximum trendline age (bars since last touch)", minval = 5, maxval = 200, group = G_MTD)
-mtMinBetween = input.int(2, "Min bars between pivots", minval = 1, maxval = 10, group = G_MTD)
-mtMaxBetween = input.int(10, "Max bars between pivots", minval = 3, maxval = 30, tooltip = "Keeps lines MICRO (about 2-10 bars) rather than structural trendlines.", group = G_MTD)
-mtMinSlope  = input.float(0.02, "Minimum slope (ATR per bar)", minval = 0.0, step = 0.01, group = G_MTD)
-mtMaxPen    = input.float(0.15, "Max penetration before 'broken' (× ATR)", minval = 0.0, step = 0.05, group = G_MTD)
-mtTouchTol  = input.float(0.12, "Touch tolerance (× ATR)", minval = 0.0, step = 0.02, group = G_MTD)
-mtMcOn      = input.bool(true, "Microchannel detection (few-bar channels)", tooltip = "Strong microchannels can develop over very few bars. Consecutive bars with rising lows/highs (falling for bears) get a supporting line without needing separated pivots.", group = G_MTD)
-mtMcMin     = input.int(4, "  Microchannel min bars", minval = 3, maxval = 10, group = G_MTD)
-mtMcTol     = input.float(0.05, "  Microchannel tolerance (× ATR)", minval = 0.0, step = 0.01, group = G_MTD)
-mtMcMinMove = input.float(1.0, "  Microchannel min net move (× ATR)", minval = 0.0, step = 0.1, group = G_MTD)
-mtFailBars  = input.int(4, "Failed-breakout window (bars to reclaim)", minval = 1, maxval = 12, tooltip = "After a penetration, price must close back on the trend side of the line within this many bars to count as a FAILED breakout; otherwise it is a genuine break.", group = G_MTD)
-mtSigWait   = input.int(2, "Signal-bar wait after reclaim (bars)", minval = 0, maxval = 6, group = G_MTD)
-
-// ---- setups & signal bar ----
-mtSetA      = input.bool(true, "Setup A · Failed microtrendline breakout", group = G_MTS)
-mtSetB      = input.bool(true, "Setup B · Break + pullback continuation", group = G_MTS)
-mtSetC      = input.bool(true, "Setup C · Failed-breakout reversal", group = G_MTS)
-mtSetD      = input.bool(true, "Setup D · High 2 / Low 2", group = G_MTS)
-mtPostBreak = input.int(20, "Post-break window for B / C (bars)", minval = 5, maxval = 100, group = G_MTS)
-mtMaxRetr   = input.float(0.75, "B · max pullback retracement of the leg", minval = 0.2, maxval = 1.0, step = 0.05, group = G_MTS)
-mtSupTol    = input.float(0.8, "B · support/resistance proximity (× ATR)", minval = 0.1, step = 0.1, group = G_MTS)
-mtExtATR    = input.float(3.0, "C · min extension of prior move (× ATR)", minval = 0.5, step = 0.5, group = G_MTS)
-mtRetestTol = input.float(0.25, "C · retest zone around old extreme (× ATR)", minval = 0.0, step = 0.05, group = G_MTS)
-mtRetestOver = input.float(0.25, "C · max overshoot of old extreme (× ATR)", minval = 0.0, step = 0.05, group = G_MTS)
-mtRevConf   = input.int(3, "C · confirmations required (of 5)", minval = 1, maxval = 5, group = G_MTS)
-mtRevSbMin  = input.float(0.65, "C · min signal-bar quality (0-1)", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
-mtPbMax     = input.int(15, "H/L · max pullback length (bars)", minval = 3, maxval = 50, group = G_MTS)
-mtPbDepth   = input.float(5.0, "H/L · max pullback depth (× ATR)", minval = 1.0, step = 0.5, group = G_MTS)
-mtSbBody    = input.float(0.45, "Signal bar · min body / range", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
-mtSbClose   = input.float(0.65, "Signal bar · min close position (0=far, 1=at extreme)", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
-mtSbWick    = input.float(0.30, "Signal bar · max opposing wick / range", minval = 0.0, maxval = 1.0, step = 0.05, group = G_MTS)
-mtSbSize    = input.float(0.6, "Signal bar · min size vs 20-bar average range", minval = 0.0, step = 0.1, group = G_MTS)
-mtTrendHi   = input.float(0.55, "Market condition · trend score threshold", minval = 0.2, maxval = 0.9, step = 0.05, group = G_MTS)
-mtTransBars = input.int(15, "Market condition · transition window after break (bars)", minval = 3, maxval = 60, group = G_MTS)
-
-// ---- confidence weights (normalised, so they need not sum to 100) ----
-mtWHtf      = input.float(15, "Weight · higher-timeframe alignment", minval = 0, group = G_MTC)
-mtWTl       = input.float(15, "Weight · microtrendline quality", minval = 0, group = G_MTC)
-mtWFbo      = input.float(20, "Weight · pattern / failed-breakout confirmation", minval = 0, group = G_MTC)
-mtWSb       = input.float(15, "Weight · signal bar quality", minval = 0, group = G_MTC)
-mtWMkt      = input.float(10, "Weight · market-condition suitability", minval = 0, group = G_MTC)
-mtWVwap     = input.float(10, "Weight · VWAP alignment", minval = 0, group = G_MTC)
-mtWH        = input.float(10, "Weight · H1/H2 · L1/L2 confluence", minval = 0, group = G_MTC)
-mtWRoom     = input.float(5, "Weight · room to target", minval = 0, group = G_MTC)
-mtVwapOn    = input.bool(true, "VWAP filter (scoring only; off = VWAP weight ignored)", group = G_MTC)
-mtMinScore  = input.int(65, "Minimum score to display an actionable signal", minval = 30, maxval = 95, group = G_MTC)
-
-// ---- trade plan ----
-mtStopMode  = input.string("Wider of both", "Stop placement", options = ["Signal bar","Structural","Wider of both"], group = G_MTT)
-mtMinStopATR = input.float(0.4, "Minimum stop distance (× ATR)", minval = 0.05, step = 0.05, group = G_MTT)
-mtMaxStopATR = input.float(3.0, "Maximum stop distance (× ATR) · wider = no setup", minval = 0.5, step = 0.25, group = G_MTT)
-mtTgtMode   = input.string("R multiples", "Targets based on", options = ["R multiples","Market structure"], group = G_MTT)
-mtT1R       = input.float(1.0, "Target 1 (R)", minval = 0.25, step = 0.25, group = G_MTT)
-mtT2R       = input.float(2.0, "Target 2 (R)", minval = 0.5, step = 0.25, group = G_MTT)
-mtShowT3    = input.bool(true, "Show Target 3 (swing / measured move)", group = G_MTT)
-mtPendBars  = input.int(3, "Pending entry expires after (bars)", minval = 1, maxval = 20, group = G_MTT)
-mtMaxHold   = input.int(60, "Max bars in trade before time-out", minval = 5, maxval = 500, group = G_MTT)
-
-// ---- alerts & stats ----
-mtAlertFn   = input.bool(true, "Send detailed alert() messages (instrument · TF · setup · direction · score)", tooltip = "Create the alert with condition 'Any alert() function call'. The alertcondition() entries below are always available too.", group = G_MTA)
-mtShowStats = input.bool(true, "Show historical signal statistics table", group = G_MTA)
-mtStatsPos  = input.string("Bottom Right", "  Stats table position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group = G_MTA)
-mtStatsTgt  = input.string("Target 1", "  A signal 'wins' when it reaches", options = ["Target 1","Target 2"], group = G_MTA)
-mtStatsRng  = input.bool(false, "  Restrict statistics to date range", group = G_MTA)
-mtStatsFrom = input.time(timestamp("2024-01-01T00:00:00"), "    From", group = G_MTA)
-mtStatsTo   = input.time(timestamp("2100-01-01T00:00:00"), "    To", group = G_MTA)
-
 // =============================================================================
 // TYPES + STATE
 // =============================================================================
@@ -3952,8 +2734,6 @@ var array<float> mtCQ = array.new<float>()
 var array<float> mtCS = array.new<float>()
 var array<float> mtC3 = array.new<float>()
 
-var int   mtCond = 2            // 1 TREND · 2 RANGE · 3 TRANSITION
-var int   mtLastGenBar = -1000
 var int   mtLastHBar = -1000
 var int   mtLastHDir = 0
 var int   mtLastHCnt = 0
@@ -4061,30 +2841,17 @@ mtMcBull := (low >= low[1] - mtMcTol * atr and high >= high[1] - mtMcTol * atr a
 mtMcBear := (high <= high[1] + mtMcTol * atr and low <= low[1] + mtMcTol * atr and close < close[1]) ? mtMcBear + 1 : 0
 
 // ---- signal bar anatomy ----
-float mtRngBar = high - low
-float mtAvgRng = ta.sma(mtRngBar, 20)
-float mtBody = mtRngBar > 0 ? math.abs(close - open) / mtRngBar : 0.0
-float mtCPos = mtRngBar > 0 ? (close - low) / mtRngBar : 0.5
-float mtUW   = mtRngBar > 0 ? (high - math.max(open, close)) / mtRngBar : 0.0
-float mtLW   = mtRngBar > 0 ? (math.min(open, close) - low) / mtRngBar : 0.0
-float mtRelSz = mtAvgRng > 0 ? mtRngBar / mtAvgRng : 1.0
+float mtAvgRng = ta.sma(mtBarRng, 20)
+float mtBody = mtBarRng > 0 ? math.abs(close - open) / mtBarRng : 0.0
+float mtCPos = mtBarRng > 0 ? (close - low) / mtBarRng : 0.5
+float mtUW   = mtBarRng > 0 ? (high - math.max(open, close)) / mtBarRng : 0.0
+float mtLW   = mtBarRng > 0 ? (math.min(open, close) - low) / mtBarRng : 0.0
+float mtRelSz = mtAvgRng > 0 ? mtBarRng / mtAvgRng : 1.0
 bool mtSbBullOk = close > open and mtBody >= mtSbBody and mtCPos >= mtSbClose and mtUW <= mtSbWick and mtRelSz >= mtSbSize
 bool mtSbBearOk = close < open and mtBody >= mtSbBody and (1.0 - mtCPos) >= mtSbClose and mtLW <= mtSbWick and mtRelSz >= mtSbSize
 float mtSqBull = close > open ? math.max(0.0, math.min(1.0, 0.30 * math.min(1.0, mtBody / 0.7) + 0.30 * mtCPos + 0.20 * (1.0 - math.min(1.0, mtUW / 0.4)) + 0.20 * math.min(1.0, mtRelSz / 1.2))) : 0.0
 float mtSqBear = close < open ? math.max(0.0, math.min(1.0, 0.30 * math.min(1.0, mtBody / 0.7) + 0.30 * (1.0 - mtCPos) + 0.20 * (1.0 - math.min(1.0, mtLW / 0.4)) + 0.20 * math.min(1.0, mtRelSz / 1.2))) : 0.0
 
-// ---- market-condition inputs ----
-float mtEma20 = ta.ema(close, 20)
-float mtPath  = math.sum(math.abs(ta.change(close)), 20)
-float mtEr20  = mtPath > 0 ? math.abs(close - close[20]) / mtPath : 0.0
-float mtPath10 = math.sum(math.abs(ta.change(close)), 10)
-float mtErNow = mtPath10 > 0 ? math.abs(close - close[10]) / mtPath10 : 0.0
-float mtErPrev = nz(mtErNow[10])
-float mtOvl = mtRngBar > 0 ? math.max(0.0, math.min(1.0, (math.min(high, high[1]) - math.max(low, low[1])) / mtRngBar)) : 1.0
-float mtOvlAvg = ta.sma(mtOvl, 20)
-float mtVCross = math.sum((not na(vwapVal) and ((close > vwapVal and close[1] <= nz(vwapVal[1])) or (close < vwapVal and close[1] >= nz(vwapVal[1])))) ? 1.0 : 0.0, 20)
-float mtSlopeAtr = atr > 0 ? math.abs(mtEma20 - mtEma20[5]) / atr : 0.0
-float mtTrendScore = 0.4 * mtEr20 + 0.2 * (1.0 - mtOvlAvg) + 0.2 * (1.0 - math.min(1.0, mtVCross / 4.0)) + 0.2 * math.min(1.0, mtSlopeAtr)
 float mtVwapSlp = (not na(vwapVal) and atr > 0) ? (vwapVal - nz(vwapVal[5], vwapVal)) / atr : 0.0
 
 // ---- time-of-day bucket (New York): 0 open · 1 late AM · 2 midday · 3 afternoon · 4 other ----
@@ -4565,15 +3332,7 @@ if mtOn and barstate.isconfirmed and not na(atr) and bar_index > 30
         mtEvFboBear := true
     if mtBull.evGenuine or mtBear.evGenuine
         mtLastGenBar := bi
-
-    // ---- 3) market condition: TREND / RANGE / TRANSITION ----
-    bool recentBrk = bi - mtLastGenBar <= mtTransBars
-    if mtErPrev >= 0.4 and mtErNow <= 0.6 * mtErPrev and (recentBrk or mtErNow <= 0.25)
-        mtCond := 3
-    else if mtTrendScore >= mtTrendHi
-        mtCond := 1
-    else
-        mtCond := 2
+        mtCond := f_mtCondCalc(mtLastGenBar)   // same-bar TRANSITION after a genuine break
 
     // ---- 4) High 1/2 · Low 1/2 sequences (directional context required) ----
     bool ctxBull = mtD1 >= 0 and (mtD1 == 1 or mtD5 == 1) and mtD15 != -1
@@ -5143,3 +3902,5 @@ alertcondition(execArmNow,     "FVG setup armed",       "Price tapped a qualifyi
 alertcondition(execConfirmNow, "FVG setup confirmed",   "FVG setup CONFIRMED — entry trigger met")
 alertcondition(execInvalidNow, "FVG setup invalidated", "FVG setup INVALIDATED — stop breached or expired")
 alertcondition(biasFlipNow,    "Daily bias flipped",    "The Daily Bias direction changed")
+alertcondition(orbBreakUpNow or orbBreakDnNow, "ORB break", "Opening range: confirmed break")
+alertcondition(orbFailNow, "ORB failed break", "Opening range: break failed back inside")
