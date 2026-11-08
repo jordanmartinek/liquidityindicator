@@ -1,129 +1,42 @@
 # Liquidity Radar
 
-A focused **TradingView Pine Script v6** indicator for trading liquidity. It maps the key resting liquidity levels, rates their confluence, shows which way price is being drawn, and marks the order blocks and fair value gaps around them — nothing more, so it stays fast and stable.
+A focused **TradingView Pine Script v6** indicator for trading liquidity. It maps the resting liquidity levels, rates their confluence, shows which level price is most likely heading to next, and marks the order blocks and fair value gaps around them. An optional **Al Brooks microtrendline module** handles execution and entries.
 
 > Single file: [`LiquidityRadar.pine`](./LiquidityRadar.pine). Copy its contents into a new indicator in the TradingView Pine Editor and **Add to chart**.
+> Raw copy link: https://raw.githubusercontent.com/jordanmartinek/liquidityindicator/main/LiquidityRadar.pine
 
-> **Publishing?** A ready-to-paste **“About this indicator”** write-up is included — a full how-to-use guide, an explanation of every setting, how to read the DOL banner, and a complete Draw-on-Liquidity trading workflow. Copy it into the TradingView description box when you publish. Two formats: [`DESCRIPTION.md`](./DESCRIPTION.md) (Markdown) and [`DESCRIPTION.txt`](./DESCRIPTION.txt) (plain text — pastes cleanest into the TradingView box).
+> **Publishing?** [`DESCRIPTION.txt`](./DESCRIPTION.txt) is a ready-to-paste "About this indicator" guide (plain text pastes cleanly into the TradingView box).
 
 ---
 
 ## Features
 
-Settings are organized into numbered groups in the indicator's inputs.
+Settings are organised into numbered groups.
 
-### ① Previous-Period Levels
-Previous day/week/month highs and lows (PDH/PDL, PWH/PWL, PMH/PML) and the daily open. Removed once swept.
-
-### ② Sessions
-Asian / London / New York session highs and lows, with a daily reset, sweep-removal, and reclassification of unswept session extremes into swing liquidity.
-
-### ③ Structure
-- **Swing highs/lows** kept as historical unswept liquidity, plus optional **higher-timeframe swings** for major structure far back.
-- **Equal highs/lows** via rolling-buffer detection (catches non-consecutive equals).
-- **Fair Value Gaps** with selectable invalidation (body close through / wick touch / full fill) **and a strength filter** that scores every gap **0–100** for how likely price is to *respect* it, then only draws the ones that clear a threshold (weak gaps are dimmed or hidden). The score blends **gap size vs ATR**, the **relative volume / displacement** of the candle that created it, whether it sits **inside an order block or breaker block**, and whether it is an **inversion (IFVG)** of a prior opposite gap. This cuts the flood of trivial gaps on low timeframes (e.g. the 5-minute chart). A **Max FVGs kept** setting controls how many unfilled gaps are retained before the oldest is dropped — raise it to keep more / older gaps far back in history. The 0–100 figure is a **relative quality ranking, not a probability**: a **core base** (the quality every gap has — size · volume · displacement · premium/discount, landing a clean ordinary gap ~40–55) **plus bonus points** added on top only when the occasional factors fire (OB/breaker overlap, inversion, HTF-gap alignment, round/VWAP/OTE confluence, liquidity-pool confluence, sweep precedence). Absent bonuses never penalise, so valid gaps keep a usable score and confluent gaps rise above ordinary ones (trivial <30, ordinary ~45–60, confluent 65–90+). The core sub-scores are calibrated so a *typical* low-timeframe gap reads mid-range rather than near zero; tune **Min FVG strength %** to the values you actually see. A **poor-location (trapped) discount** cuts the rank when a gap is walled against opposing structure in its intended direction (a bullish gap with major resistance just above it, or a bearish gap with support just below), and SFP signals have a **per-level cooldown** so a wick repeatedly poking one level doesn't re-fire the signal every bar. Each kept gap can print its strength % with `inv` / `blk` tags, in a selectable **label style** (default: the % sits **centered inside the gap box itself**, so it's tied to its box and never blends into the level/cluster callouts at the right edge; also a left-edge pointer tag, plain borderless text, or the legacy right-edge callout). The strength score also **feeds the rest of the model**: it weights the gap's contribution to the confluence score, scales how hard the gap walls the **path-clearance / resistance** read on the DOL banner (a strong gap blocks harder than a trivial one), and gates whether a gap counts toward the high-conviction **stacked-agreement ⭐** flag.
-  - **Min gap size (× ATR)** — a hard noise floor: gaps smaller than this many ATRs are ignored entirely (never scored, drawn, or tracked), killing micro-gaps at the source.
-  - **CE (50%) line** — optional dashed line at each gap's midpoint (the *consequent encroachment* — the 50% level price often reacts to instead of the full fill).
-  - **Higher-timeframe (HTF) FVG alignment** — detect gaps on the HTF timeframe (reuses the `HTF timeframe` input you already set for HTF swings — edit it to pick 60 / 240 / D). HTF gaps are **not drawn** on the chart; instead, a chart-TF gap that aligns with an HTF gap gets a large **score boost** (the single biggest accuracy signal — a gap sitting inside an HTF imbalance is defended by far heavier flow), and HTF gaps still feed the DOL model (confluence, path-clearance / resistance, ⭐). Aligned gaps are tagged `htf`. **This factor only applies on low timeframes** (default: chart TF ≤ 5 min, configurable). On higher chart timeframes the gap score reverts to the original full-weight model (plus the premium/discount, displacement, confluence and freshness factors), so HTF charts keep scoring gaps the way they always did.
-  - **Expanded strength model** — the gap score now also factors in **premium/discount location** (a bullish gap in discount or bearish gap in premium scores higher), **displacement quality** (the creating candle's body dominance + whether it broke structure), **confluence** (midpoint near a round number / VWAP / OTE), a **freshness discount** (a gap already probed by price is treated as weaker), **liquidity-pool confluence** (the gap sits on or just beyond a tracked pool — equal highs/lows, previous-period levels, opens, sessions, swings, or volume-profile POC/VAH/VAL — graded by the most important nearby pool), and **sweep precedence** (the gap formed right after a same-direction liquidity sweep / SFP — the ICT sweep → displacement → FVG sequence). Every factor has its own weight slider, and drawn gaps are tagged (`htf` / `liq` / `swp` / `inv` / `blk`) to show what reinforced them.
-- **Sweep + reversal (SFP)** markers: a wick pierces a tracked level then the candle closes back on the origin side (a stop-run), optionally volume-confirmed.
-- **Order Blocks**: after a sweep + displacement, the last opposing candle is marked as a demand/supply zone until mitigated. Each block is **scored 0–100 at formation** (displacement body + zone size + whether it formed from a sweep + relative volume); an optional **strength filter** draws only blocks above a threshold, and the score prints **inside the box** (no right-edge label). The demand/supply text has been removed — the colored box conveys it.
-
-All swing / equal / previous-period levels are removed once price sweeps them.
-
-### ④ Countdown
-Per-level "time-to-reach" estimate based on price velocity (clock time or bars), optionally direction-aware.
-
-### ⑤ Clustering & Confluence
-Nearby levels merge into a single **strength-rated zone**, color-coded by side — **BSL** (buy-side, above price) vs **SSL** (sell-side, below price) — with tiered strength emojis and a min-strength filter. Each zone gets a **confluence score (0–100)** rolling up stacked levels + order-block overlap + **FVG overlap (weighted by the gap's own strength score)** + **OTE-fib proximity + premium/discount extreme** (computed from the live dealing range internally — not drawn on the chart) + round-number proximity, and the zone shades from its side color toward hot amber as the score climbs.
-
-### ⑥ Draw-on-Liquidity (model)
-> The DOL *banner* has been removed to reduce on-chart clutter (it overlapped with the Daily Bias banner). The DOL **gravity model** still runs under the hood — it powers the per-level confidence %, the execution engine, the stacked-agreement ⭐, and path-clearance — it simply no longer draws its own panel. Direction now lives solely in the **Daily Bias** read.
-A corner banner showing the side price is most likely being drawn toward. Each level's pull is `distance-decay × type × age × freshness × confluence`, summed per side and blended with a momentum tilt. The banner shows direction, conviction %, a conviction meter, an optional **tug-of-war bar** (BSL vs SSL balance), and an optional primary-magnet **target** row (price + distance in ATR / %).
-
-**Accuracy model:**
-- **Confluence-weighted pull** — each level's pull is amplified by its own confluence score, so a level sitting in an OB + OTE + round number pulls far harder than a lone level.
-- **Nearest-pool emphasis** — a sharpened distance decay so the closest untapped pool dominates (price hunts the nearest liquidity first).
-- **Freshness premium** — untested levels pull harder; a level price is currently sitting on is discounted.
-- **Equal highs/lows rank top** — engineered liquidity is the textbook draw target.
-- **Balance-aware conviction** — a near-50/50 tug-of-war reads as low confidence even when the winning side's absolute pull is large.
-- **Flip stability (deadband + hysteresis)** — the arrow no longer flips the instant one side edges out the other. The committed direction is held until the opposing side wins *decisively* (the bias clears an adjustable **deadband**); inside the band it keeps its prior direction. Optionally the flip is only committed **on bar close** (a single intrabar spike through a level can't turn it — a faint **⟳** hint shows a pending turn intrabar). This removes the random flip near a key level, which matters most on lower timeframes (e.g. the 5-minute chart). Set the deadband to 0 for the legacy instant-flip behavior.
-
-**Per-level confidence:** every drawn level/zone shows a **0–100 % target-likelihood** (its share of total liquidity pull), and the single most-likely target is flagged **🎯** — so you can see at a glance which level price is most likely to head toward next.
-
-**Level reaction gauge:** a *live* read shown next to a level's confidence % **only while price is at/near the level** — how likely price is to **reject/reverse off** it (`⟲NN`, 50–100) vs **sweep through** it (`⇥NN`, 0–50). This answers *what happens when price gets there*, distinct from the confidence % (*how likely it heads there*). It blends the level's importance/type, approach strength (fast momentum → sweep, slow → reject), an absorption wick on the touch bar, tested-state (a probed level is weaker → sweep), and confluence — and correctly leans **equal highs/lows toward sweep-through** since they're engineered stop liquidity. Works on both single levels and cluster zones; a live heuristic read, not a probability.
-
-### ⑦ Style
-Theme (Refined Dark/Light, Midnight, Slate, Classic), line/label styling, FVG opacity, age-scaled line extension (older = longer), and a compact mode to hide far-from-price levels.
-
-### ⑧ Emoji Tags
-Configurable emoji tags per level class.
-
-### ⑨ Tested Levels
-Flags levels a wick has already **probed** into (reacted off) but not fully swept — "used" liquidity vs a virgin, untouched level. Tested levels get a **✓** and a dotted/dimmed outline; untouched ones stay solid. (Fully swept levels are removed already.) Optionally **discount tested levels in scoring** so a probed level is treated as a slightly weaker DOL magnet. Adjustable probe depth, discount amount, and max tracked.
-
-### ⑪ Daily Bias
-A **sticky, structural daily bias** meant to be a directional *anchor* rather than a reactive arrow. It's built from **resolved higher-timeframe structure** — the last 1–2 completed **daily candles** (higher-high/higher-low vs lower-high/lower-low, plus the last daily's close position) combined with the most recent **PDH/PDL sweep + close-confirmed reclaim/reject** (PDL swept then reclaimed → bullish; PDH swept then rejected → bearish). Because it uses daily structure and confirmed sweeps (no intraday proximity, no momentum tilt), it **leads** rather than follows, and **holds** between real events (a new daily candle or a confirmed sweep) instead of flickering on 5-minute noise.
-- **Fast flip** (default): a confirmed counter-direction PDH/PDL sweep flips the bias immediately. **Conservative:** a counter sweep only raises a *caution* flag; the bias flips only when daily structure itself breaks.
-- Shown as a clean **"TODAY: LONG / SHORT / NEUTRAL"** read with a one-line *why*. The Daily Bias, **Market Regime**, and **RSI** reads are now **consolidated into one stacked "context" panel** (top-left) instead of three separate floating windows — each still has its own show-toggle and renders as a row when enabled.
-- **Bias-aligned declutter:** counter-bias FVGs are faded (or hidden), and optionally the counter-bias side's levels are faded — so the chart visually agrees with your one directional thesis for the day.
-- The FVG execution engine can **require Daily Bias agreement** to arm (NEUTRAL = both directions allowed).
-
-### ⑫ Moving Averages (EMA)
-Up to **four exponential moving averages** overlaid on the chart. **EMA 1 is on by default at length 20**; EMA 2–4 are off by default (preset 50 / 100 / 200) — toggle them on as needed. Each has its own length and color, with a shared line-width control and a configurable source. An optional **EMA timeframe** computes them on a higher timeframe (non-repainting) and overlays them on the chart; blank uses the chart timeframe.
-
-### ⑰ Brooks Microtrendlines (price action) — toggle: *Enable Brooks microtrendline module*
-An Al Brooks–style price-action layer, fully switchable on/off (off = nothing is calculated or drawn). Built for NQ 1-minute charts (5m / 15m context, both configurable), usable on ES / GC / CL.
-- **Microtrendlines:** pivot-based support/resistance lines over ~2–10 bars (configurable pivot sensitivity, min touches, max age, bars between pivots, min slope, max penetration), plus a separate **microchannel** detector for strong few-bar channels. Each line tracks touches, age, slope and a quality score.
-- **Break vs failed breakout:** a penetration beyond tolerance is only a *potential* break; if price closes back on the trend side within N bars it becomes a **failed breakout**, otherwise a genuine break.
-- **Setups:** **A** failed-breakout (primary) · **B** break + pullback continuation · **C** failed-breakout reversal (stricter confirmation) · **D** High 2 / Low 2 with trend context. H1/H2/L1/L2 markers are drawn on the chart.
-- **Market condition:** TREND / RANGE / TRANSITION (efficiency ratio, bar overlap, VWAP crosses, EMA slope, recent break). Range sharply lowers continuation scores.
-- **Signal-bar quality** (body, close position, opposing wick, relative size — all configurable) and a **0–100 confluence score** with configurable weights (A+ ≥ 85, A ≥ 75, B ≥ 65; minimum score configurable). It is a technical confluence rating, **not** a probability.
-- **Trade plan:** pending stop-entry beyond the signal bar, stop, T1/T2 (R multiples or structure), optional T3. The state machine separates *setup identified → entry triggered → stop / T1 / T2 / invalidated / expired*; a pending setup is never shown as executed.
-- **Dashboard** (top-right) with market, trendline, setup, trade and score-driver rows; **statistics table** (overall, by setup, market condition, time of day, score bucket) with optional date range. Stats are *signal* statistics, not a strategy backtest: one position at a time, no costs, and a stop wins any same-bar tie with a target.
-- **Non-repainting:** the engine runs only on closed bars; higher-timeframe context uses the last *closed* HTF bar.
-- **Alerts:** 16 `alertcondition`s (`MT 1 … MT 16`) plus optional detailed `alert()` messages (instrument · timeframe · setup · direction · score).
-
-### ⑯ Opening Range Breakout (ORB)
-Draws the **high/low of the opening window** (default the first 5 minutes of the NY session, 09:30–09:35 ET, configurable session + timezone) as a box, frozen once the window closes and extended across the session, with a breakout marked when price closes beyond an edge. A **directional breakout-likelihood** read (`▲ NN%  ▼ NN%`) blends: **price action** (where price sits in the range + how tight the range is vs ATR), **liquidity** (resting pools just beyond each edge and how clear the path to them is), **daily-bias alignment**, and the **market regime** (DIRECTIONAL boosts breakout odds; BALANCED/chop lowers them, since ORB breaks tend to fake out in chop). Shown in its own small banner. Heuristic, not a probability.
-
-### ⑮ Level Clarity (importance declutter)
-An alternative to merged cluster zones for when you want to see **exactly which level price is reacting to** without the right edge flooding. Keeps **every level as its own distinct line**, but only the most **important** ones get a full name/%/tag label — the rest draw as **bare lines with just a small price** (or nothing). Importance tiers: **Tier 1** (PDH/PDL · PWH/PWL · PMH/PML · key opens), **Tier 2** (equal highs/lows · HTF swings · VP POC/VAH/VAL · breakers), **Tier 3** (local swings · session H/L · relative-EQ). Controls: an **importance floor** (hide below Tier 2, or show Tier 1 only), and **labels per side** (top-N by importance each side get the full label). Turning the mode on overrides cluster merging so you always see individual levels. Off by default (clustering remains the default; this is the opt-in clean alternative).
-
-### ⑭ Market Conditions (regime)
-Classifies the tape as **DIRECTIONAL** (trend + structure aligned), **BALANCED** (rotating in a range), or **UNCLEAR**, from three transparent signals: **EMA-trend strength** (fast/slow EMA separation vs ATR), **position in the dealing range** (middle = balance-leaning), and **VWAP-cross frequency** (many crosses in the window = chop, flagged `⚠ VWAP chop`). Shown as a small banner (own corner, default bottom-left). Optionally **gates the execution engine**: in BALANCED/chop it suppresses *continuation* setups in the middle of the range while still allowing *reversal* setups at the extremes — directly targeting the "getting chopped trading the middle of a range" problem. Gating is off by default (informational unless enabled).
-
-### ⑬ ATR Range Projection
-Projects the **currently forming bar's** expected **high and low** — two horizontal lines at the bar's `open ± (mult × ATR)` (where the candle would reach on a typical one-ATR move), extended to the right of price with `ATR H` / `ATR L` price labels so they're clearly visible. The lines track the live candle and are anchored to its open (using the prior bar's ATR), so they don't repaint. If price pushes past a line, the move is stretched versus its average true range. A **session-adaptive** mode (on by default) blends a short, fast ATR into the projection so the band **contracts during quiet periods and widens when pace picks up**, instead of lagging on the slow 14-bar average. Configurable base + fast ATR lengths and blend weight, multiple (default 1×), color, and an optional open midline. On by default.
-
-**Return-likelihood %** (in group ③): a live, directional read shown as `↩NN` next to a **fair value gap's** label — how likely price is to **come back to the gap from here** (distinct from the formation strength % and the rejection gauge). It blends **proximity** (closer gaps are revisited far more, ATR-normalized), the **resistance in the path** between price and the gap (reuses the path-clearance engine), **daily-bias alignment** (a gap on the side the bias points toward is more reachable), and **volume** (high-participation gaps get revisited to rebalance). Heuristic, not a probability.
-
-**Rejection gauge** (in group ③): a *live* reaction read shown next to the % **only while price is at/returning into the gap** — how likely price is to **reject** (bounce) vs **accept** (fill through) right now, as `⟲NN` (reject-leaning) or `⇥NN` (accept-leaning). It blends the strength of the move that created the gap, the strength/speed of the pullback returning into it, absorption (a wick pushing back out on the touch bar), and the character of the approach candles (trend bodies → accept-leaning, wicky → reject-leaning). A live heuristic read (updates intrabar), separate from the formation strength %.
-
-**Momentum-exhaustion dynamic weighting** (in group ③): a *live* layer that nudges each gap's effective score as momentum exhausts, driven primarily by **RSI divergence**. If price pushes to a new low while RSI makes a higher low (the down-push is tiring), **bullish gaps below price gain a rising bonus** (likely reversal/support) while bearish continuation gaps below are discounted — and the mirror for an exhausting up-push; overbought/oversold adds a secondary nudge. Unlike the static scoring factors (fixed at gap creation), this one **re-evaluates every bar**, so the on-chart % visibly breathes (⛽▲ / ⛽▽) and the execution engine's arming score responds live. (It does not alter the DOL gauge.) A **dedicated RSI gauge banner** (its own corner) displays pure RSI information — the live RSI value, its overbought/oversold/neutral state, and whether an RSI divergence is active — with no directional-bias framing (bias lives only in the Daily Bias banner).
-
-### ⑩ FVG Execution (setups)
-Turns high-quality gaps into actionable, *wait-for-the-setup* trade plans (off by default; this is a planning/signalling overlay — it never places orders). The engine stays quiet until price **retraces back into a qualifying gap**, then runs a small state machine: **watching → armed → confirmed**.
-- **Qualification gates:** a gap can only arm if its strength ≥ a threshold, (optionally) it sits in the correct **premium/discount** half, and (optionally) its direction **agrees with the DOL bias** — so only A+, with-the-draw setups arm.
-- **Arm:** when price taps the entry (the **CE/50%** by default, or the proximal edge), the setup arms and draws **entry · stop · TP1 · TP2** with the **risk:reward**. The stop sits beyond the far edge by an ATR buffer; targets are R-multiples.
-- **Confirm:** optionally wait for a candle to **close rejecting back out** of the gap before flagging *confirmed*.
-- Only the nearest *N* setups draw lines (keeps the chart clean); all qualifying gaps still fire alerts: **FVG setup approaching / armed / confirmed / invalidated**.
-- **Lifecycle:** an armed/confirmed setup is marked **dead** (stops drawing, no more alerts) the moment price breaches its stop level, or after a configurable **expiry** in bars — so stale setups don't linger. The approach alert fires **once per gap** (no per-bar repeats).
-- **Target feasibility & min R:R:** before arming, the engine finds the nearest **opposing liquidity pool** in the trade's direction (the realistic target) and measures reward:risk to it. A setup whose reachable target offers less than the configured **min R:R** is skipped (or just flagged `⚠ low R:R`), so you don't take a long into a wall half a unit of risk away. The actual liquidity target is drawn as a 🎯 line alongside the R-multiple TP1/TP2.
-
----
+| Group | What it does |
+|---|---|
+| ① Previous-Period Levels | PDH/PDL, PWH/PWL, PMH/PML, daily / weekly / monthly opens, NY midnight open. Removed once swept. |
+| ② Sessions | Asia / London / NY highs and lows, daily reset, remove once swept, relabel unswept extremes as swings. |
+| ③ Structure | Swings (+ HTF swings), equal and relative-equal highs/lows, **fair value gaps ranked 0–100** (size, volume, displacement, premium/discount + bonuses for OB overlap, inversion, HTF-gap alignment, round/VWAP/OTE confluence, liquidity pool, sweep precedence; discounts for tested / walled gaps), **SFP** sweep + reversal markers, **order blocks** (scored) and **breakers**. |
+| ④ Countdown | Time (or bars) to reach each level from recent velocity. |
+| ⑤ Clustering & Confluence | Nearby levels merge into BSL/SSL zones with a 0–100 confluence score. **Chart density** is the single declutter control (Minimal / Balanced / Everything / Custom). |
+| ⑥ Level Confidence | Per-level confidence % (share of liquidity pull), 🎯 most-likely target, ⭐ stacked agreement. The draw-on-liquidity model behind it runs on fixed internal settings. |
+| ⑦ Style | Dark / light panel theme, line + label style, colors, FVG opacity. |
+| ⑧ Tested Levels | Probed-but-not-swept levels get ✓ + dotted line and pull slightly less. |
+| ⑨ FVG Execution | Off by default. Arms when price returns into a qualifying gap; draws entry / stop / TP1 / TP2 + liquidity target with R:R gates. Bar-close commits. |
+| ⑩ Daily Bias | Sticky structural bias from the last two daily candles + PDH/PDL sweep/reclaim. Can fade counter-bias FVGs and levels. |
+| ⑪ Market Condition | One shared **TREND / RANGE / TRANSITION** classifier (efficiency ratio, bar overlap, VWAP crosses, EMA slope, recent microtrendline break). Feeds the FVG execution gate and the Brooks module. |
+| ⑫ Opening Range (ORB) | Opening-window box with confirmed break (ATR buffer + N closes) and failed-break markers. |
+| ⑬ Brooks Microtrendlines | **Execution + entries** (toggle). Microtrendlines + microchannels, break vs failed breakout, setups A–D (failed breakout, pullback continuation, failed-breakout reversal, High 2 / Low 2), H1/H2/L1/L2, signal-bar quality, 0–100 confluence score, pending → triggered → stop / target / invalidated tracking, dashboard, signal statistics. |
 
 ## Alerts
 
-`PD level touched`, `Liquidity swept`, `Session level touched`, `SFP fired`, `SFP long`, `SFP short`, `FVG setup approaching`, `FVG setup armed`, `FVG setup confirmed`, `FVG setup invalidated`, `Daily bias flipped`.
-
----
+`PD level touched`, `Liquidity swept`, `Session level touched`, `SFP fired / long / short`, `FVG setup approaching / armed / confirmed / invalidated`, `Daily bias flipped`, `ORB break`, `ORB failed break`, `MT 1 … MT 16` (Brooks module), plus optional detailed `alert()` messages from the Brooks module.
 
 ## Notes
 
-- Written for **Pine Script v6**; `max_bars_back = 1000`.
-- A **MASTER** toggle (in ⑤) turns all drawings on/off at once.
-- Levels removed once swept keep the chart honest — only *live, untapped* liquidity is shown.
-- **No-repaint by default:** SFP markers/alerts and FVG execution setup states (arm/confirm) commit on **bar close**, so they can't flash on the forming bar and then vanish. Each has an opt-in intrabar-preview toggle. The Daily Bias daily feed uses non-repainting `lookahead_off`.
+- Pine Script v6, `max_bars_back = 5000`.
+- **No repaint by default:** SFPs, FVG setup states, Brooks signals and Daily Bias commit on bar close; higher-timeframe context uses the last closed HTF bar.
+- Scores and percentages are heuristic ratings, not probabilities. Brooks statistics are signal statistics, not a strategy backtest.
 
 *Not financial advice. For research and educational use.*

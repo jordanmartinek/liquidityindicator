@@ -9,7 +9,7 @@
 //   • Per-level confidence % + 🎯 most-likely target (draw-on-liquidity model).
 //   • Order Blocks / Breakers and Fair Value Gaps (strength-ranked) + FVG execution setups.
 //   • Sweep + reversal (SFP) markers, per-level countdown, Daily Bias, ORB.
-//   • ⑰ Brooks microtrendline module for execution + entries (toggle).
+//   • ⑬ Brooks microtrendline module for execution + entries (toggle).
 // =============================================================================
 indicator("Liquidity Radar", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 5000)
 
@@ -26,11 +26,11 @@ var string G_CD     = "④ Countdown"
 var string G_CLUST  = "⑤ Clustering & Confluence"
 var string G_DOL    = "⑥ Level Confidence"
 var string G_STYLE  = "⑦ Style"
-var string G_TESTED = "⑨ Tested Levels"
-var string G_EXEC   = "⑩ FVG Execution (setups)"
-var string G_BIAS   = "⑪ Daily Bias"
-var string G_REGIME = "⑭ Market Condition (shared)"
-var string G_ORB    = "⑯ Opening Range Breakout (ORB)"
+var string G_TESTED = "⑧ Tested Levels"
+var string G_EXEC   = "⑨ FVG Execution (setups)"
+var string G_BIAS   = "⑩ Daily Bias"
+var string G_REGIME = "⑪ Market Condition (shared)"
+var string G_ORB    = "⑫ Opening Range Breakout (ORB)"
 
 // -----------------------------------------------------------------------------
 // INPUTS — PREVIOUS-PERIOD LEVELS
@@ -293,14 +293,14 @@ orbBrkBuf  = input.float(0.10, "  Break buffer (× ATR beyond edge)", minval = 0
 orbBrkBars = input.int(1, "  Break confirmation (consecutive closes)", minval = 1, maxval = 5, tooltip = "How many CONSECUTIVE confirmed closes beyond the buffered edge are required before a break is registered. 1 = a single qualifying close (legacy). 2+ filters flash-breaks that immediately reverse, raising the hold rate.", group = G_ORB)
 
 // -----------------------------------------------------------------------------
-// INPUTS — ⑰ BROOKS MICROTRENDLINES (execution + entries)
+// INPUTS — ⑬ BROOKS MICROTRENDLINES (execution + entries)
 // -----------------------------------------------------------------------------
-var string G_MT  = "⑰ Brooks Microtrendlines · Core & Display"
-var string G_MTD = "⑰ Brooks Microtrendlines · Detection"
-var string G_MTS = "⑰ Brooks Microtrendlines · Setups & Signal Bar"
-var string G_MTC = "⑰ Brooks Microtrendlines · Confidence Weights"
-var string G_MTT = "⑰ Brooks Microtrendlines · Trade Plan"
-var string G_MTA = "⑰ Brooks Microtrendlines · Alerts & Stats"
+var string G_MT  = "⑬ Brooks Microtrendlines · Core & Display"
+var string G_MTD = "⑬ Brooks Microtrendlines · Detection"
+var string G_MTS = "⑬ Brooks Microtrendlines · Setups & Signal Bar"
+var string G_MTC = "⑬ Brooks Microtrendlines · Confidence Weights"
+var string G_MTT = "⑬ Brooks Microtrendlines · Trade Plan"
+var string G_MTA = "⑬ Brooks Microtrendlines · Alerts & Stats"
 
 // ---- core & display ----
 mtOn        = input.bool(true, "Enable Brooks microtrendline module", tooltip = "Master on/off for the whole microtrendline price-action module (trendlines, setups, dashboard, alerts, stats). Off = nothing from this module is calculated or drawn.", group = G_MT)
@@ -2653,7 +2653,7 @@ if (not masterOn or not orbOn) and array.size(orbBoxes) > 0
     orbCurLoLn := na
 
 // =============================================================================
-// ⑰ AL BROOKS MICROTRENDLINE PRICE ACTION MODULE  (toggle: "Enable module")
+// ⑬ AL BROOKS MICROTRENDLINE PRICE ACTION MODULE  (toggle: "Enable module")
 //   Setup A  Failed microtrendline breakout (primary)
 //   Setup B  Microtrendline break + pullback continuation
 //   Setup C  Failed-breakout reversal (stricter confirmation)
