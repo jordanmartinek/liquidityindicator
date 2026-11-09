@@ -329,7 +329,26 @@ ema3Col  = input.color(color.new(#26a69a, 0), "", inline = "e3", group = G_EMA)
 ema4On   = input.bool(false, "EMA 4", inline = "e4", group = G_EMA)
 ema4Len  = input.int(200, "", minval = 1, inline = "e4", group = G_EMA)
 ema4Col  = input.color(color.new(#d500f9, 0), "", inline = "e4", group = G_EMA)
+ema5On   = input.bool(true,  "EMA 10", inline = "e5", group = G_EMA)
+ema5Len  = input.int(10, "", minval = 1, inline = "e5", group = G_EMA)
+ema5Col  = input.color(color.new(#ffd600, 0), "", inline = "e5", group = G_EMA)
 emaWidth = input.int(1, "EMA line width", minval = 1, maxval = 4, group = G_EMA)
+// --- higher-timeframe EMA labels: a column to the RIGHT of the last candle (never over price action) ---
+htfEmaLblOn = input.bool(true, "Higher-timeframe EMA labels (right of price)", tooltip = "Shows where the fast (10) and slow (20) EMAs of each higher timeframe below currently sit, as labelled price tags in a column to the RIGHT of the last candle — off the price action. Each tag reads e.g. '1h EMA20 27,105.25' and has a short dotted guide back to the last bar. Values use the higher timeframe's live (forming) bar, like the EMA lines.", group = G_EMA)
+htfEmaFast  = input.int(10, "  Fast EMA length", minval = 1, inline = "hl", group = G_EMA)
+htfEmaSlow  = input.int(20, "  Slow EMA length", minval = 1, inline = "hl", group = G_EMA)
+htfEmaTf1On = input.bool(true,  "  TF 1", inline = "h1", group = G_EMA)
+htfEmaTf1   = input.timeframe("15",  "", inline = "h1", group = G_EMA)
+htfEmaTf2On = input.bool(true,  "  TF 2", inline = "h2", group = G_EMA)
+htfEmaTf2   = input.timeframe("60",  "", inline = "h2", group = G_EMA)
+htfEmaTf3On = input.bool(true,  "  TF 3", inline = "h3", group = G_EMA)
+htfEmaTf3   = input.timeframe("240", "", inline = "h3", group = G_EMA)
+htfEmaTf4On = input.bool(true,  "  TF 4", inline = "h4", group = G_EMA)
+htfEmaTf4   = input.timeframe("D",   "", inline = "h4", group = G_EMA)
+htfEmaColF  = input.color(color.new(#ffd600, 0), "  Fast EMA label color", group = G_EMA)
+htfEmaColS  = input.color(color.new(#2962ff, 0), "  Slow EMA label color", group = G_EMA)
+htfEmaOff   = input.int(3, "  Label offset right of last bar (bars)", minval = 1, maxval = 100, tooltip = "How far to the right of the last candle the EMA tags sit. Raise it if they overlap the level labels.", group = G_EMA)
+htfEmaGuide = input.bool(true, "  Dotted guide from last bar to tag", group = G_EMA)
 
 // -----------------------------------------------------------------------------
 // INPUTS — ATR RANGE PROJECTION
@@ -464,6 +483,43 @@ plot(masterOn and ema1On ? emaV1 : na, "EMA 1", color = ema1Col, linewidth = ema
 plot(masterOn and ema2On ? emaV2 : na, "EMA 2", color = ema2Col, linewidth = emaWidth)
 plot(masterOn and ema3On ? emaV3 : na, "EMA 3", color = ema3Col, linewidth = emaWidth)
 plot(masterOn and ema4On ? emaV4 : na, "EMA 4", color = ema4Col, linewidth = emaWidth)
+emaV5 = request.security(syminfo.tickerid, emaTF, ta.ema(emaSrc, ema5Len), lookahead = barmerge.lookahead_off)
+plot(masterOn and ema5On ? emaV5 : na, "EMA 10", color = ema5Col, linewidth = emaWidth)
+
+// ---- higher-timeframe EMA labels (fast + slow per timeframe), drawn to the right of price ----
+f_htfEmaPair(string tf) =>
+    request.security(syminfo.tickerid, tf, [ta.ema(emaSrc, htfEmaFast), ta.ema(emaSrc, htfEmaSlow)], lookahead = barmerge.lookahead_off)
+[hE1f, hE1s] = f_htfEmaPair(htfEmaTf1)
+[hE2f, hE2s] = f_htfEmaPair(htfEmaTf2)
+[hE3f, hE3s] = f_htfEmaPair(htfEmaTf3)
+[hE4f, hE4s] = f_htfEmaPair(htfEmaTf4)
+// readable timeframe name: "15" -> 15m, "60" -> 1h, "240" -> 4h, "D"/"W" unchanged
+f_tfTxt(string tf) =>
+    float m = str.tonumber(tf)
+    na(m) ? tf : (m >= 60 and m % 60 == 0 ? str.tostring(m / 60, "#") + "h" : str.tostring(m, "#") + "m")
+var array<label> htfEmaLbls = array.new<label>()
+var array<line>  htfEmaLns  = array.new<line>()
+f_htfEmaTag(bool on, string tf, int len, float v, color c, color tc) =>
+    if on and not na(v)
+        int xL = bar_index + htfEmaOff
+        array.push(htfEmaLbls, label.new(xL, v, f_tfTxt(tf) + " EMA" + str.tostring(len) + "  " + str.tostring(v, format.mintick), style = label.style_label_left, color = color.new(c, 15), textcolor = tc, size = size.small))
+        if htfEmaGuide
+            array.push(htfEmaLns, line.new(bar_index, v, xL, v, color = color.new(c, 30), style = line.style_dotted, width = 1))
+    true
+if barstate.islast
+    while array.size(htfEmaLbls) > 0
+        label.delete(array.pop(htfEmaLbls))
+    while array.size(htfEmaLns) > 0
+        line.delete(array.pop(htfEmaLns))
+    if masterOn and htfEmaLblOn
+        f_htfEmaTag(htfEmaTf1On, htfEmaTf1, htfEmaFast, hE1f, htfEmaColF, color.black)
+        f_htfEmaTag(htfEmaTf1On, htfEmaTf1, htfEmaSlow, hE1s, htfEmaColS, color.white)
+        f_htfEmaTag(htfEmaTf2On, htfEmaTf2, htfEmaFast, hE2f, htfEmaColF, color.black)
+        f_htfEmaTag(htfEmaTf2On, htfEmaTf2, htfEmaSlow, hE2s, htfEmaColS, color.white)
+        f_htfEmaTag(htfEmaTf3On, htfEmaTf3, htfEmaFast, hE3f, htfEmaColF, color.black)
+        f_htfEmaTag(htfEmaTf3On, htfEmaTf3, htfEmaSlow, hE3s, htfEmaColS, color.white)
+        f_htfEmaTag(htfEmaTf4On, htfEmaTf4, htfEmaFast, hE4f, htfEmaColF, color.black)
+        f_htfEmaTag(htfEmaTf4On, htfEmaTf4, htfEmaSlow, hE4s, htfEmaColS, color.white)
 
 // -----------------------------------------------------------------------------
 // ATR RANGE PROJECTION — expected-range outline drawn at each candle open
