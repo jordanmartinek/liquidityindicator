@@ -361,6 +361,7 @@ hfTf3On = input.bool(true, "  TF 3", inline = "f3", group = G_HFVG)
 hfTf3   = input.timeframe("240", "", inline = "f3", group = G_HFVG)
 hfTf4On = input.bool(true, "  TF 4", inline = "f4", group = G_HFVG)
 hfTf4   = input.timeframe("D",   "", inline = "f4", group = G_HFVG)
+hfMinStr = input.int(70, "  Min FVG strength % to show", minval = 0, maxval = 100, tooltip = "Only higher-timeframe gaps scoring at least this on the 0-100 FVG strength model (size, displacement volume + body, premium/discount, order-block / inversion / confluence / liquidity bonuses, tested + trapped discounts) are drawn. Each box shows its score. Raise it to see only the very best gaps.", group = G_HFVG)
 hfShowN = input.int(2, "  Gaps shown per timeframe (nearest to price)", minval = 1, maxval = 10, group = G_HFVG)
 hfKeep  = input.int(10, "  Unfilled gaps tracked per timeframe", minval = 1, maxval = 30, group = G_HFVG)
 hfOff   = input.int(2, "  Column offset right of last bar (bars)", minval = 1, maxval = 100, group = G_HFVG)
@@ -507,87 +508,6 @@ f_htfEmaTag(bool on, string tf, int len, float v, color c, color tc) =>
         if htfEmaGuide
             array.push(htfEmaLns, line.new(bar_index, v, xL, v, color = color.new(c, 30), style = line.style_dotted, width = 1))
     true
-// ---- higher-timeframe FVG column ----
-// gap on the last CLOSED HTF candle (offsets [1]/[3] + lookahead_on = no repaint): dir, top, bottom, id
-f_hGapExpr() =>
-    int d = low[1] > high[3] ? 1 : high[1] < low[3] ? -1 : 0
-    [d, d == 1 ? low[1] : low[3], d == 1 ? high[3] : high[1], time[1]]
-[g1d, g1t, g1b, g1x] = request.security(syminfo.tickerid, hfTf1, f_hGapExpr(), lookahead = barmerge.lookahead_on)
-[g2d, g2t, g2b, g2x] = request.security(syminfo.tickerid, hfTf2, f_hGapExpr(), lookahead = barmerge.lookahead_on)
-[g3d, g3t, g3b, g3x] = request.security(syminfo.tickerid, hfTf3, f_hGapExpr(), lookahead = barmerge.lookahead_on)
-[g4d, g4t, g4b, g4x] = request.security(syminfo.tickerid, hfTf4, f_hGapExpr(), lookahead = barmerge.lookahead_on)
-type HGap
-    float top
-    float bot
-    bool  bull
-    int   k
-    int   t
-var array<HGap> hGaps = array.new<HGap>()
-var array<box>  hGapBoxes = array.new<box>()
-// is this column's timeframe active (on, and strictly higher than the chart)?
-f_hfLive(bool on, string tf) => hfOn and on and timeframe.in_seconds(tf) > timeframe.in_seconds()
-// register a newly closed HTF gap once (dedupe by HTF candle time), cap per timeframe
-f_hGapAdd(int k, bool live, int d, float tp, float bt, int t) =>
-    if live and d != 0 and not na(tp) and not na(bt)
-        bool dup = false
-        int cnt = 0
-        for g in hGaps
-            if g.k == k
-                cnt += 1
-                if g.t == t
-                    dup := true
-        if not dup
-            array.push(hGaps, HGap.new(math.max(tp, bt), math.min(tp, bt), d == 1, k, t))
-            if cnt + 1 > hfKeep
-                for i = 0 to array.size(hGaps) - 1
-                    if array.get(hGaps, i).k == k
-                        array.remove(hGaps, i)
-                        break
-    true
-f_hGapAdd(1, f_hfLive(hfTf1On, hfTf1), g1d, g1t, g1b, g1x)
-f_hGapAdd(2, f_hfLive(hfTf2On, hfTf2), g2d, g2t, g2b, g2x)
-f_hGapAdd(3, f_hfLive(hfTf3On, hfTf3), g3d, g3t, g3b, g3x)
-f_hGapAdd(4, f_hfLive(hfTf4On, hfTf4), g4d, g4t, g4b, g4x)
-// remove filled gaps (same invalidation rule as chart FVGs)
-f_hGapPrune() =>
-    if array.size(hGaps) > 0
-        for i = array.size(hGaps) - 1 to 0
-            HGap g = array.get(hGaps, i)
-            float m = (g.top + g.bot) / 2.0
-            bool filled = fvgFillMode == "Body close through" ? (g.bull ? close < g.bot : close > g.top) : fvgFillMode == "Wick touch (50%)" ? (g.bull ? low <= m : high >= m) : (high >= g.top and low <= g.bot)
-            if filled
-                array.remove(hGaps, i)
-    true
-f_hGapPrune()
-// draw the nearest hfShowN gaps of each timeframe in that timeframe's column
-f_hGapDraw(int k, string tf) =>
-    if array.size(hGaps) > 0
-        int x1 = bar_index + hfOff + (k - 1) * hfW
-        for i = 0 to array.size(hGaps) - 1
-            HGap g = array.get(hGaps, i)
-            if g.k == k
-                float dI = math.abs((g.top + g.bot) / 2.0 - close)
-                int nearer = 0
-                for h in hGaps
-                    if h.k == k and math.abs((h.top + h.bot) / 2.0 - close) < dI
-                        nearer += 1
-                if nearer < hfShowN
-                    color c = g.bull ? colBull : colBear
-                    array.push(hGapBoxes, box.new(x1, g.top, x1 + hfW - 1, g.bot, border_color = color.new(c, 30), bgcolor = color.new(c, 80), text = f_tfTxt(tf) + (g.bull ? " ▲" : " ▼") + " FVG", text_size = size.tiny, text_color = color.new(c, 0), text_halign = text.align_center))
-    true
-if barstate.islast
-    while array.size(hGapBoxes) > 0
-        box.delete(array.pop(hGapBoxes))
-    if masterOn
-        if f_hfLive(hfTf1On, hfTf1)
-            f_hGapDraw(1, hfTf1)
-        if f_hfLive(hfTf2On, hfTf2)
-            f_hGapDraw(2, hfTf2)
-        if f_hfLive(hfTf3On, hfTf3)
-            f_hGapDraw(3, hfTf3)
-        if f_hfLive(hfTf4On, hfTf4)
-            f_hGapDraw(4, hfTf4)
-
 if barstate.islast
     while array.size(htfEmaLbls) > 0
         label.delete(array.pop(htfEmaLbls))
@@ -3489,6 +3409,97 @@ if (not masterOn or not orbOn) and array.size(orbBoxes) > 0
     orbCurBox := na
     orbCurHiLn := na
     orbCurLoLn := na
+
+// -----------------------------------------------------------------------------
+// HIGHER-TIMEFRAME FVG COLUMN (right of price) — placed after f_fvgStrength so gaps can be scored
+// -----------------------------------------------------------------------------
+// ---- higher-timeframe FVG column ----
+// gap on the last CLOSED HTF candle (offsets [1]/[3] + lookahead_on = no repaint): dir, top, bottom, id
+f_hGapExpr() =>
+    int d = low[1] > high[3] ? 1 : high[1] < low[3] ? -1 : 0
+    float rv = nz(volume[2] / ta.sma(volume, 20)[2], 1.0)                       // displacement candle rel-volume
+    float bq = math.abs(close[2] - open[2]) / math.max(high[2] - low[2], syminfo.mintick)   // its body dominance
+    [d, d == 1 ? low[1] : low[3], d == 1 ? high[3] : high[1], time[1], rv, bq]
+[g1d, g1t, g1b, g1x, g1v, g1q] = request.security(syminfo.tickerid, hfTf1, f_hGapExpr(), lookahead = barmerge.lookahead_on)
+[g2d, g2t, g2b, g2x, g2v, g2q] = request.security(syminfo.tickerid, hfTf2, f_hGapExpr(), lookahead = barmerge.lookahead_on)
+[g3d, g3t, g3b, g3x, g3v, g3q] = request.security(syminfo.tickerid, hfTf3, f_hGapExpr(), lookahead = barmerge.lookahead_on)
+[g4d, g4t, g4b, g4x, g4v, g4q] = request.security(syminfo.tickerid, hfTf4, f_hGapExpr(), lookahead = barmerge.lookahead_on)
+type HGap
+    float top
+    float bot
+    bool  bull
+    int   k
+    int   t
+    int   sc
+var array<HGap> hGaps = array.new<HGap>()
+var array<box>  hGapBoxes = array.new<box>()
+// is this column's timeframe active (on, and strictly higher than the chart)?
+f_hfLive(bool on, string tf) => hfOn and on and timeframe.in_seconds(tf) > timeframe.in_seconds()
+// register a newly closed HTF gap once (dedupe by HTF candle time), cap per timeframe
+f_hGapAdd(int k, bool live, int d, float tp, float bt, int t, float rv, float bq) =>
+    if live and d != 0 and not na(tp) and not na(bt)
+        bool dup = false
+        int cnt = 0
+        for g in hGaps
+            if g.k == k
+                cnt += 1
+                if g.t == t
+                    dup := true
+        if not dup
+            float gT = math.max(tp, bt)
+            float gB = math.min(tp, bt)
+            // score with the same 0-100 FVG strength model (HTF volume passed as rel-volume x chart avg)
+            [sc, i1, i2, i3, i4, i5] = f_fvgStrength(gT, gB, d == 1, rv * nz(avgVol, 1.0), math.min(1.0, bq * 0.7 + 0.3), true)
+            array.push(hGaps, HGap.new(gT, gB, d == 1, k, t, sc))
+            if cnt + 1 > hfKeep
+                for i = 0 to array.size(hGaps) - 1
+                    if array.get(hGaps, i).k == k
+                        array.remove(hGaps, i)
+                        break
+    true
+f_hGapAdd(1, f_hfLive(hfTf1On, hfTf1), g1d, g1t, g1b, g1x, g1v, g1q)
+f_hGapAdd(2, f_hfLive(hfTf2On, hfTf2), g2d, g2t, g2b, g2x, g2v, g2q)
+f_hGapAdd(3, f_hfLive(hfTf3On, hfTf3), g3d, g3t, g3b, g3x, g3v, g3q)
+f_hGapAdd(4, f_hfLive(hfTf4On, hfTf4), g4d, g4t, g4b, g4x, g4v, g4q)
+// remove filled gaps (same invalidation rule as chart FVGs)
+f_hGapPrune() =>
+    if array.size(hGaps) > 0
+        for i = array.size(hGaps) - 1 to 0
+            HGap g = array.get(hGaps, i)
+            float m = (g.top + g.bot) / 2.0
+            bool filled = fvgFillMode == "Body close through" ? (g.bull ? close < g.bot : close > g.top) : fvgFillMode == "Wick touch (50%)" ? (g.bull ? low <= m : high >= m) : (high >= g.top and low <= g.bot)
+            if filled
+                array.remove(hGaps, i)
+    true
+f_hGapPrune()
+// draw the nearest hfShowN HIGH-SCORE gaps of each timeframe in that timeframe's column
+f_hGapDraw(int k, string tf) =>
+    if array.size(hGaps) > 0
+        int x1 = bar_index + hfOff + (k - 1) * hfW
+        for i = 0 to array.size(hGaps) - 1
+            HGap g = array.get(hGaps, i)
+            if g.k == k and g.sc >= hfMinStr
+                float dI = math.abs((g.top + g.bot) / 2.0 - close)
+                int nearer = 0
+                for h in hGaps
+                    if h.k == k and h.sc >= hfMinStr and math.abs((h.top + h.bot) / 2.0 - close) < dI
+                        nearer += 1
+                if nearer < hfShowN
+                    color c = g.bull ? colBull : colBear
+                    array.push(hGapBoxes, box.new(x1, g.top, x1 + hfW - 1, g.bot, border_color = color.new(c, 30), bgcolor = color.new(c, 80), text = f_tfTxt(tf) + (g.bull ? " ▲" : " ▼") + " FVG " + str.tostring(g.sc) + "%", text_size = size.tiny, text_color = color.new(c, 0), text_halign = text.align_center))
+    true
+if barstate.islast
+    while array.size(hGapBoxes) > 0
+        box.delete(array.pop(hGapBoxes))
+    if masterOn
+        if f_hfLive(hfTf1On, hfTf1)
+            f_hGapDraw(1, hfTf1)
+        if f_hfLive(hfTf2On, hfTf2)
+            f_hGapDraw(2, hfTf2)
+        if f_hfLive(hfTf3On, hfTf3)
+            f_hGapDraw(3, hfTf3)
+        if f_hfLive(hfTf4On, hfTf4)
+            f_hGapDraw(4, hfTf4)
 
 // -----------------------------------------------------------------------------
 // ALERTS
